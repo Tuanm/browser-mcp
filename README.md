@@ -57,12 +57,22 @@ Then in Chrome/Edge:
 
 1. Go to `chrome://extensions` and enable **Developer mode**.
 2. Click **Load unpacked** and select the `packages/browser-extension` directory.
-3. The toolbar icon shows the MCP mark — **gray** (disconnected) or **green** (connected).
-4. Click the icon → verify it says **Connected to Browser MCP**.
+3. The toolbar icon shows the MCP mark — **black** (disconnected) or **green** (connected).
+4. Click the icon → a minimal black/white popup with two fields:
 
-The extension auto-connects to `ws://localhost:7777/browser/ws`. If you moved the
-server (different port/host, or you set `--extension-token`), click the icon and
-update the **Server Host** / **Auth Token** fields.
+   - **ID** — your gateway device ID (e.g. `my-browser`)
+   - **Token** — the shared secret for the gateway link
+
+5. Enter both, click **Connect**. The extension connects to the local server
+   (`ws://localhost:7777/browser/ws`) and hands the ID + Token over; the server
+   then links to the gateway at `wss://code-mcp.tuanm.dev/ws/<id>` (same protocol
+   as code-mcp: register, keepalive every 25s, 75s watchdog, jittered backoff) and
+   enforces the Token on `/mcp` so the gateway's forwarded requests authenticate.
+
+> The token must match what you configured for this device on the gateway side
+> (the gateway forwards `?token=…` to the local server, exactly like code-mcp).
+> No token entered → the server warns that anyone reaching the gateway can control
+> the browser.
 
 ### 3. Point an agent at it
 
@@ -84,6 +94,12 @@ Verify it works: `curl -s http://127.0.0.1:7777/health` → `extensionConnected:
 
 ## Remote access via code-mcp-gateway
 
+**Default (popup):** enter **ID** + **Token** in the extension popup and click
+Connect — the server automatically links to `wss://code-mcp.tuanm.dev/ws/<id>`
+and uses the Token for `/mcp` auth. No server flags needed.
+
+**CLI (custom gateway):**
+
 ```bash
 bun browser-mcp.ts --gateway <domain> --token <s> --id <device-id>
 ```
@@ -93,6 +109,7 @@ bun browser-mcp.ts --gateway <domain> --token <s> --id <device-id>
 - Inbound MCP requests from the gateway are forwarded to the local `/mcp`.
 - **Use the same `--token` on the gateway device.** Never run gateway mode
   without a token — the server prints a warning if you do.
+- Set `BMCP_GATEWAY_DOMAIN` to change the popup flow's default gateway host.
 
 Remote agents can read downloaded files and screenshots that were too large to
 return inline via `browser_file_read`, or upload files inline to
@@ -139,8 +156,8 @@ Run `curl -s -X POST http://127.0.0.1:7777/mcp -H 'Content-Type: application/jso
 | `--bind <addr>` | Bind address | `127.0.0.1` |
 | `--token <s>` | Require auth on `/mcp` and `/files/*` (`?token=` or Bearer) | none |
 | `--extension-token <s>` | Require this token from the extension on `/browser/ws` + `/browser/files/*` | none |
-| `--gateway <domain>` | Tunnel the MCP endpoint through a code-mcp-gateway | none |
-| `--id <uuid>` | Gateway device id (stable reconnect identity) | random |
+| `--gateway <domain>` | Tunnel the MCP endpoint through a code-mcp-gateway (popup flow uses `code-mcp.tuanm.dev`, override with `BMCP_GATEWAY_DOMAIN`) | none |
+| `--id <uuid>` | Gateway device id (overridden by the popup ID when the extension connects) | random |
 | `--files-dir <path>` | Where downloaded/uploaded files are stored | `./files` |
 | `--allow-any-origin` | DEV ONLY: skip the extension Origin check. Never use on a shared machine | off |
 

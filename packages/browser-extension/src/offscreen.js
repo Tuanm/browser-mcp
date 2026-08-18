@@ -26,6 +26,7 @@ let reconnectTimer = null;
 let extensionId = crypto.randomUUID().slice(0, 8);
 let serverUrl = DEFAULT_URL;
 let authToken = null;
+let deviceId = null; // gateway device ID (from popup) - passed to the local server
 let connectAttempts = 0;
 let lastError = null;
 
@@ -58,6 +59,7 @@ async function connect() {
 
   connectAttempts++;
   let url = `${serverUrl}?extId=${extensionId}`;
+  if (deviceId) url += `&deviceId=${encodeURIComponent(deviceId)}`;
   if (authToken) url += `&token=${encodeURIComponent(authToken)}`;
   const safeUrl = authToken ? url.replace(/token=[^&]+/, "token=***") : url;
   console.log(`[bmcp-offscreen] Connecting to ${safeUrl} (attempt ${connectAttempts})`);
@@ -202,6 +204,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const status = {
       connected,
       extensionId,
+      deviceId,
       wsState: ws ? ws.readyState : "no-ws",
       connectAttempts,
       lastError,
@@ -241,6 +244,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.url) serverUrl = message.url;
     if (message.extensionId) extensionId = message.extensionId;
     if (message.token !== undefined) authToken = message.token || null;
+    if (message.deviceId !== undefined) deviceId = message.deviceId || null;
     if (ws) {
       ws.onclose = null;
       ws.onerror = null;

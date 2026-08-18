@@ -250,7 +250,7 @@ serverA.kill();
 
 // ===========================================================================
 console.log("\n== Auth (token + extension-token) ==");
-const serverB = spawn(["bun", ROOT + "/browser-mcp.ts", "--port", "7781", "--bind", "127.0.0.1", "--token", "sekrit", "--extension-token", "extsekrit", "--files-dir", filesDir], { stdout: "pipe", stderr: "pipe" });
+const serverB = spawn(["bun", ROOT + "/browser-mcp.ts", "--port", "7781", "--bind", "127.0.0.1", "--token", "sekrit", "--extension-token", "extsekrit", "--files-dir", filesDir], { stdout: "pipe", stderr: "pipe", env: { ...process.env, BMCP_GATEWAY_DOMAIN: "127.0.0.1:1" } });
 await sleep(1200);
 const B = "http://127.0.0.1:7781";
 
@@ -271,6 +271,23 @@ const f2 = new FormData();
 f2.append("file", new Blob(["x"]), "x.txt");
 r = await fetch(B + "/browser/files/upload", { method: "POST", body: f2 });
 ok("browser files upload without token -> 401", r.status === 401);
+
+// Popup gateway flow: extension connects with deviceId + token (the token serves BOTH the
+// extension channel AND becomes the /mcp auth token the gateway forwards).
+const popupWs = new WebSocket("ws://127.0.0.1:7781/browser/ws?extId=mock3&deviceId=dev-popup&token=extsekrit", { headers: { origin: "chrome-extension://abcdefgh" } });
+const popupOpen = await new Promise<boolean>((resolve) => {
+  const to = setTimeout(() => resolve(false), 3000);
+  popupWs.addEventListener("open", () => { clearTimeout(to); resolve(true); });
+});
+ok("popup WS connects (token satisfies extension channel)", popupOpen === true);
+await sleep(300);
+r = await mcpCall(B, { jsonrpc: "2.0", id: 90, method: "tools/list" });
+ok("popup token gates /mcp (no token -> 401)", r.status === 401, "status=" + r.status);
+r = await fetch(B + "/mcp?token=extsekrit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 91, method: "ping" }) });
+ok("popup token accepted on /mcp", r.status === 200, "status=" + r.status);
+r = await fetch(B + "/mcp?token=sekrit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 92, method: "ping" }) });
+ok("CLI --token no longer accepted once popup token set", r.status === 401, "status=" + r.status);
+popupWs.close();
 serverB.kill();
 
 // ===========================================================================

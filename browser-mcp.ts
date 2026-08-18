@@ -172,10 +172,10 @@ function extractBearer(req: Request): string | null {
 }
 
 function checkMcpToken(req: Request, url: URL): boolean {
-  if (!token) return true;
+  if (!effectiveToken) return true;
   const q = url.searchParams.get("token");
-  if (q) return checkTokenValue(q, token);
-  return checkTokenValue(extractBearer(req), token);
+  if (q) return checkTokenValue(q, effectiveToken);
+  return checkTokenValue(extractBearer(req), effectiveToken);
 }
 
 function checkExtensionToken(req: Request, url: URL): boolean {
@@ -197,6 +197,8 @@ function checkExtensionOrigin(req: Request): { ok: boolean; reason?: string } {
 }
 
 const EXT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+const DEVICE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+const TOKEN_PATTERN = /^[a-zA-Z0-9_\-.:]{1,256}$/;
 const FILE_ID_PATTERN = /^[a-f0-9]{12}$/;
 
 /**
@@ -250,6 +252,18 @@ let refCounter = 0;
 function resetRefs(): void {
   refCache.clear();
   refCounter = 0;
+}
+
+/** Store a ref, dropping the oldest entries if the cache exceeds MAX_REF_CACHE. */
+const MAX_REF_CACHE = 2000;
+function storeRef(ref: string, entry: RefEntry): void {
+  refCache.set(ref, entry);
+  if (refCache.size > MAX_REF_CACHE) {
+    for (const key of refCache.keys()) {
+      refCache.delete(key);
+      if (refCache.size <= MAX_REF_CACHE * 0.8) break;
+    }
+  }
 }
 
 /**
@@ -320,6 +334,10 @@ interface BrowserWsData {
   type: "browser-extension";
   extensionId: string;
   connectedAt: number;
+  /** Gateway device ID from the popup (ID field) - links this browser to code-mcp.tuanm.dev. */
+  deviceId?: string;
+  /** Gateway token from the popup (Token field) - becomes the effective /mcp auth token. */
+  token?: string;
 }
 
 interface PendingRequest {
@@ -344,6 +362,7 @@ const COMMAND_TIMEOUTS: Record<string, number> = {
   file_upload: 120_000,
   back: 60_000,
   forward: 60_000,
+  wait: 60_000, // must exceed browser_wait's max 30s so the bridge never races the wait
 };
 /**
  * Hard cap on bridge command duration. In gateway mode the gateway aborts its
@@ -351,7 +370,7 @@ const COMMAND_TIMEOUTS: Record<string, number> = {
  * at 55s there; locally we allow up to 120s. The extension's offscreen relay
  * timeout (125s) must stay above this cap so the server times out first.
  */
-const MAX_BRIDGE_TIMEOUT = gatewayMode ? 55_000 : 120_000;
+let maxBridgeTimeout = gatewayMode ? 55_000 : 120_000;
 const MAX_CONNECTIONS = 10;
 
 const HEARTBEAT_CHECK_INTERVAL_MS = 30_000;
@@ -382,7 +401,26 @@ function handleBrowserWsOpen(ws: any): void {
   }
   connections.set(extId, ws);
   lastPong.set(extId, Date.now());
-  console.log(`[browser-mcp] Extension connected: ${extId} (${connections.size} total)`);
+
+  // Popup gateway config: token becomes the /mcp auth token; deviceId links the
+  // gateway client (code-mcp style: the gateway forwards ?token= to local /mcp).
+  if (ws.data.token) {
+    if (token && token !== ws.data.token) {
+      console.warn("[browser-mcp] Popup token differs from --token; using the popup token for /mcp auth");
+    }
+    effectiveToken = ws.data.token;
+  }
+  if (ws.data.deviceId) {
+    if (!effectiveToken) {
+      console.warn(
+        "[browser-mcp] Extension linked gateway device '" + ws.data.deviceId + "' WITHOUT a token - " +
+        "anyone who can reach the gateway can control this browser. Enter a token in the popup.",
+      );
+    }
+    startGatewayClient(ws.data.deviceId);
+  }
+  const linkInfo = ws.data.deviceId ? " device=" + ws.data.deviceId + (effectiveToken ? " (auth)" : " (NO AUTH)") : "";
+  console.log(`[browser-mcp] Extension connected: ${extId} (${connections.size} total)${linkInfo}`);
 }
 
 function handleBrowserWsClose(ws: any): void {
@@ -446,7 +484,7 @@ function sendBrowserCommand(
   }
   const id = `req_${++requestCounter}_${randomBytes(4).toString("hex")}`;
   const extId = ws.data.extensionId;
-  const timeoutMs = Math.min(opts?.timeoutMs || COMMAND_TIMEOUTS[method] || DEFAULT_TIMEOUT_MS, MAX_BRIDGE_TIMEOUT);
+  const timeoutMs = Math.min(opts?.timeoutMs || COMMAND_TIMEOUTS[method] || DEFAULT_TIMEOUT_MS, maxBridgeTimeout);
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(id);
@@ -1112,6 +1150,19 @@ const tools: Record<string, ToolDef> = {
     handler: async (args) => {
       const f = getFile(String(args.file_id ?? ""));
       if (!f) return outError(new Error("File not found: " + args.file_id));
+      // Check size on disk FIRST - never load a large file into memory just to return a hint.
+      let size: number;
+      try { size = statSync(f.path).size; } catch { return outError(new Error("File missing on disk: " + args.file_id)); }
+      if (size > MAX_FILE_READ_TEXT && !(f.mimetype.startsWith("image/") && size <= MAX_FILE_READ_IMAGE)) {
+        return outJson({
+          file_id: f.id,
+          name: f.name,
+          mimetype: f.mimetype,
+          size,
+          sha256: f.sha256,
+          message: "File is " + (size / 1024 / 1024).toFixed(1) + " MiB - too large to return inline. Fetch it locally via GET http://localhost:" + port + "/files/" + f.id + ".",
+        });
+      }
       const buf = await Bun.file(f.path).arrayBuffer();
       const bytes = new Uint8Array(buf);
       const isText = /^(text\/|application\/(json|xml|javascript|typescript|x-javascript|x-www-form-urlencoded)|image\/svg\+xml)/.test(f.mimetype);
@@ -1165,7 +1216,7 @@ const tools: Record<string, ToolDef> = {
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           const ref = "e" + (i + 1);
-          refCache.set(ref, { selector: e.selector || "", role: e.role || "", name: e.name || "", ts: Date.now() });
+          storeRef(ref, { selector: e.selector || "", role: e.role || "", name: e.name || "", ts: Date.now() });
           let line = e.role || e.tag;
           if (e.name) line += " \"" + String(e.name).slice(0, 80) + "\"";
           line += " [ref=" + ref + "]";
@@ -1175,7 +1226,10 @@ const tools: Record<string, ToolDef> = {
           if (e.level) line += " [level=" + e.level + "]";
           lines.push(line);
         }
-        const out = "page: " + (result.url || "") + " - " + entries.length + " element" + (entries.length === 1 ? "" : "s") + " (refs valid until next snapshot)\n" + lines.map((l) => "  " + l).join("\n");
+        let body = lines.map((l) => "  " + l).join("\n");
+        const MAX_SNAPSHOT_OUT = 50_000;
+        if (body.length > MAX_SNAPSHOT_OUT) body = body.slice(0, MAX_SNAPSHOT_OUT) + "\n... (snapshot truncated at " + Math.round(MAX_SNAPSHOT_OUT / 1024) + "KB - pass a scope or max to narrow it)";
+        const out = "page: " + (result.url || "") + " - " + entries.length + " element" + (entries.length === 1 ? "" : "s") + " (refs valid until next snapshot)\n" + body;
         return { blocks: textBlocks(out) };
       } catch (e) { return outError(e); }
     },
@@ -1207,13 +1261,15 @@ const tools: Record<string, ToolDef> = {
         for (const m of matches) {
           refCounter++;
           const ref = "e" + refCounter;
-          refCache.set(ref, { selector: m.selector || "", role: m.role || "", name: m.name || "", ts: Date.now() });
+          storeRef(ref, { selector: m.selector || "", role: m.role || "", name: m.name || "", ts: Date.now() });
           let line = (m.role || m.tag) + " \"" + String(m.name || m.text || "").slice(0, 60) + "\" [ref=" + ref + "]";
           if (m.value) line += " [value=\"" + String(m.value).slice(0, 40) + "\"]";
           if (m.href) line += " -> " + String(m.href).slice(0, 150);
           lines.push(line);
         }
-        return { blocks: textBlocks("found " + matches.length + " match" + (matches.length === 1 ? "" : "es") + (lines.length ? "\n" + lines.map((l) => "  " + l).join("\n") : "")) };
+        let body = lines.map((l) => "  " + l).join("\n");
+        if (body.length > 50_000) body = body.slice(0, 50_000) + "\n... (results truncated - add more specific criteria)";
+        return { blocks: textBlocks("found " + matches.length + " match" + (matches.length === 1 ? "" : "es") + (lines.length ? "\n" + body : "")) };
       } catch (e) { return outError(e); }
     },
   },
@@ -1726,7 +1782,7 @@ function renderStatusPage(): string {
   const extClass = connected ? "ok" : "bad";
   const extLabel = connected ? "connected" : "disconnected";
   let gwHtml: string;
-  if (gatewayMode) {
+  if (gatewayActive || gatewayMode) {
     const gwClass = gw.connected ? "ok" : "bad";
     const gwLabel = gw.connected ? "connected" : "connecting/reconnecting";
     gwHtml = "<div>Gateway: <span class=\"" + gwClass + "\">" + gwLabel + "</span>" + (gw.deviceId ? " (device " + gw.deviceId + ")" : "") + "</div>";
@@ -1784,7 +1840,7 @@ const server = Bun.serve({
         extensionConnected: isExtensionConnected(),
         extensions: Array.from(connections.keys()),
         tools: Object.keys(tools).length,
-        gateway: gatewayMode ? { configured: true, connected: gatewayStatus.connected, deviceId: gatewayStatus.deviceId } : { configured: false },
+        gateway: (gatewayActive || gatewayMode) ? { configured: true, connected: gatewayStatus.connected, deviceId: gatewayStatus.deviceId } : { configured: false },
       });
     }
 
@@ -1848,9 +1904,24 @@ const server = Bun.serve({
       if (rawExtId && !EXT_ID_PATTERN.test(rawExtId)) {
         return new Response("Invalid extension ID", { status: 400 });
       }
+      // Gateway link params from the popup: device ID + token (code-mcp style).
+      const rawDeviceId = url.searchParams.get("deviceId");
+      if (rawDeviceId && !DEVICE_ID_PATTERN.test(rawDeviceId)) {
+        return new Response("Invalid device ID (use letters, digits, _ or -)", { status: 400 });
+      }
+      const rawWsToken = url.searchParams.get("token");
+      if (rawWsToken && !TOKEN_PATTERN.test(rawWsToken)) {
+        return new Response("Invalid token format", { status: 400 });
+      }
       const extId = rawExtId || ("ext_" + randomBytes(4).toString("hex"));
       const success = srv.upgrade(req, {
-        data: { type: "browser-extension" as const, extensionId: extId, connectedAt: Date.now() },
+        data: {
+          type: "browser-extension" as const,
+          extensionId: extId,
+          connectedAt: Date.now(),
+          deviceId: rawDeviceId || undefined,
+          token: rawWsToken || undefined,
+        },
       });
       if (success) return undefined;
       return new Response("WebSocket upgrade failed", { status: 400 });
@@ -1886,30 +1957,67 @@ const server = Bun.serve({
   },
 });
 
+
 // ============================================================================
 // Gateway client (mirrors code-mcp.ts protocol)
 // ============================================================================
 
-if (gatewayMode) {
-  const assignedDeviceId = deviceId ?? randomUUID();
+/** Default gateway when the extension provides a device ID (popup ID field). */
+const DEFAULT_GATEWAY_DOMAIN = process.env.BMCP_GATEWAY_DOMAIN ?? "code-mcp.tuanm.dev";
+/**
+ * Effective /mcp auth token: CLI --token by default; overridden by the popup
+ * token when the extension connects (the popup is the source of truth for the
+ * gateway link, matching code-mcp: the gateway forwards ?token= to local /mcp).
+ */
+let effectiveToken = token;
+/** Gateway is (or was requested to be) active - used by the status page and timeouts. */
+let gatewayActive = gatewayMode;
+
+let gatewayGeneration = 0;
+let gatewayWs: WebSocket | null = null;
+let currentGatewayDeviceId: string | null = null;
+
+function stopGatewayClient(): void {
+  gatewayGeneration++;
+  if (gatewayWs) {
+    try { gatewayWs.close(); } catch {}
+    gatewayWs = null;
+  }
+}
+
+/**
+ * Start (or restart, if the device ID changed) the gateway client.
+ * Called at startup with --gateway/--id, and dynamically when the extension
+ * connects with a device ID from the popup.
+ */
+function startGatewayClient(requestedDeviceId: string): void {
+  if (currentGatewayDeviceId === requestedDeviceId && gatewayWs) return; // already linked to this device
+  stopGatewayClient();
+  gatewayActive = true;
+  maxBridgeTimeout = 55_000; // gateway aborts forwards after 60s - cap bridge commands below that
+  const gen = gatewayGeneration;
+  const gwDevice = requestedDeviceId;
+  const domain = gatewayDomain || DEFAULT_GATEWAY_DOMAIN;
   const localMcpUrl = "http://127.0.0.1:" + String(port) + "/mcp";
   const BASE_DELAY_MS = 1000;
   const MAX_DELAY_MS = 60_000;
   let retries = 0;
 
-  (function connect() {
-    const isLocal = /^(localhost|127\.|192\.168\.|10\.|172\.16\.|ws:\/\/|http:\/\/)/.test(gatewayDomain ?? "");
+  function connect() {
+    if (gen !== gatewayGeneration) return; // superseded by a newer client
+    const isLocal = /^(localhost|127\.|192\.168\.|10\.|172\.16\.|ws:\/\/|http:\/\/)/.test(domain);
     const scheme = isLocal ? "ws" : "wss";
-    const url = assignedDeviceId ? scheme + "://" + gatewayDomain + "/ws/" + assignedDeviceId : scheme + "://" + gatewayDomain + "/ws";
-    console.error("[" + assignedDeviceId + "] Connecting to gateway " + url + " ...");
+    const url = scheme + "://" + domain + "/ws/" + gwDevice;
+    console.error("[" + gwDevice + "] Connecting to gateway " + url + " ...");
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
     } catch (err: any) {
-      console.error("[" + assignedDeviceId + "] WS create failed: " + (err?.message ?? err));
+      console.error("[" + gwDevice + "] WS create failed: " + (err?.message ?? err));
       scheduleRetry();
       return;
     }
+    gatewayWs = ws;
 
     let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
     let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1917,7 +2025,7 @@ if (gatewayMode) {
     const armWatchdog = () => {
       if (watchdogTimer) clearTimeout(watchdogTimer);
       watchdogTimer = setTimeout(() => {
-        console.error("[" + assignedDeviceId + "] no inbound for " + WATCHDOG_MS + "ms; forcing reconnect");
+        console.error("[" + gwDevice + "] no inbound for " + WATCHDOG_MS + "ms; forcing reconnect");
         try { ws.close(); } catch {}
       }, WATCHDOG_MS);
     };
@@ -1927,16 +2035,18 @@ if (gatewayMode) {
     };
 
     ws.addEventListener("open", () => {
-      console.error("[" + assignedDeviceId + "] Connected to gateway");
+      if (gen !== gatewayGeneration) { try { ws.close(); } catch {} return; }
+      console.error("[" + gwDevice + "] Connected to gateway");
       retries = 0;
+      currentGatewayDeviceId = gwDevice;
       gatewayStatus.connected = true;
-      gatewayStatus.deviceId = assignedDeviceId;
-      ws.send(JSON.stringify({ type: "register", deviceId: assignedDeviceId }));
+      gatewayStatus.deviceId = gwDevice;
+      ws.send(JSON.stringify({ type: "register", deviceId: gwDevice }));
       armWatchdog();
       keepaliveTimer = setInterval(() => {
         try { ws.send(JSON.stringify({ type: "keepalive" })); }
         catch (err: any) {
-          console.error("[" + assignedDeviceId + "] keepalive send failed: " + (err?.message ?? err));
+          console.error("[" + gwDevice + "] keepalive send failed: " + (err?.message ?? err));
           try { ws.close(); } catch {}
         }
       }, 25_000);
@@ -1963,39 +2073,46 @@ if (gatewayMode) {
           }
           ws.send(JSON.stringify({ id: msg.id, response: resp }));
         } catch (err: any) {
-          // Forward an error response so the remote agent does not hang.
           try {
             ws.send(JSON.stringify({ id: msg.id, response: { jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "upstream error: " + (err?.message ?? err) } } }));
           } catch {}
-          console.error("[" + assignedDeviceId + "] handle error: " + (err?.message ?? err));
+          console.error("[" + gwDevice + "] handle error: " + (err?.message ?? err));
         }
       } catch (err: any) {
-        console.error("[" + assignedDeviceId + "] gateway message error: " + (err?.message ?? err));
+        console.error("[" + gwDevice + "] gateway message error: " + (err?.message ?? err));
       }
     });
 
     ws.addEventListener("close", () => {
       cleanup();
+      if (gen !== gatewayGeneration) return; // superseded - a newer client owns the device slot
+      gatewayWs = null;
       gatewayStatus.connected = false;
       const delay = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * Math.pow(2, Math.min(retries, 6))) + Math.floor(Math.random() * 500);
       retries++;
-      console.error("[" + assignedDeviceId + "] Disconnected; retry #" + retries + " in " + delay + "ms");
+      console.error("[" + gwDevice + "] Disconnected; retry #" + retries + " in " + delay + "ms");
       setTimeout(connect, delay);
     });
 
     ws.addEventListener("error", (err: any) => {
-      console.error("[" + assignedDeviceId + "] Gateway WS error: " + (err?.message ?? err));
+      console.error("[" + gwDevice + "] Gateway WS error: " + (err?.message ?? err));
     });
 
     function scheduleRetry() {
+      if (gen !== gatewayGeneration) return;
       const delay = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * Math.pow(2, Math.min(retries, 6))) + Math.floor(Math.random() * 500);
       retries++;
-      console.error("[" + assignedDeviceId + "] Retrying in " + delay + "ms");
+      console.error("[" + gwDevice + "] Retrying in " + delay + "ms");
       setTimeout(connect, delay);
     }
-  })();
+  }
+  connect();
 }
 
+// Start the gateway client at startup when --gateway is given.
+if (gatewayMode) {
+  startGatewayClient(deviceId ?? randomUUID());
+}
 // ============================================================================
 // Startup + shutdown
 // ============================================================================

@@ -38,6 +38,7 @@ async function setActionIcon(connected) {
 const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)
 const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
 const tabEmulation = new Map(); // tabId -> {metrics, hasTouch, userAgent} for screenshot restore
+const tabSetOverrides = new Map(); // tabId -> {geo?, offline?, media?} from browser_set (cleared by emulate action=clear)
 const pendingAuth = new Map(); // requestId -> { tabId, url, scheme, realm }
 const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status lookup)
 const recentDownloads = []; // Recent download events (from CDP Browser.downloadWillBegin), max 20
@@ -66,6 +67,7 @@ chrome.debugger.onDetach.addListener((source) => {
     pageErrors.delete(source.tabId);
     networkLogs.delete(source.tabId);
     inFlightRequests.delete(source.tabId);
+    tabSetOverrides.delete(source.tabId);
   }
 });
 
@@ -1559,6 +1561,19 @@ async function handleEmulate({ action, width, height, deviceScaleFactor, isMobil
     await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride").catch(() => {});
     await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
     await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent: "" }).catch(() => {});
+    // Also reset browser_set overrides (geo/offline/media) so the browser is never left in a stuck state
+    const ov = tabSetOverrides.get(tid);
+    if (ov) {
+      if (ov.geo) await sendDebuggerCommand(tid, "Emulation.clearGeolocationOverride").catch(() => {});
+      if (ov.offline) {
+        await ensureCdpDomain(tid, "Network");
+        await sendDebuggerCommand(tid, "Network.emulateNetworkConditions", {
+          offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
+        }).catch(() => {});
+      }
+      if (ov.media) await sendDebuggerCommand(tid, "Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+      tabSetOverrides.delete(tid);
+    }
     tabEmulation.delete(tid);
     return { tabId: tid, emulation: "cleared" };
   }
@@ -2139,7 +2154,7 @@ const SNAPSHOT_FN = function (opts) {
   function buildSelector(el, root) {
     if (!el || el === document.documentElement) return "html";
     const testId = el.getAttribute && el.getAttribute("data-testid");
-    if (testId) return '[data-testid="' + testId.replace(/"/g, '\\"') + '"]';
+  if (testId) return '[data-testid="' + CSS.escape(testId) + '"]';
     if (el.id) return "#" + CSS.escape(el.id);
     const path = [];
     let cur = el;
@@ -2360,7 +2375,7 @@ const FIND_FN = function (opts) {
 
   function buildSelector(el) {
     const testId = el.getAttribute && el.getAttribute("data-testid");
-    if (testId) return '[data-testid="' + testId.replace(/"/g, '\\"') + '"]';
+  if (testId) return '[data-testid="' + CSS.escape(testId) + '"]';
     if (el.id) return "#" + CSS.escape(el.id);
     const path = [];
     let cur = el;
@@ -2832,6 +2847,9 @@ async function handleSet({ property, width, height, deviceScaleFactor, isMobile,
   if (prop === "geo" || prop === "geolocation") {
     if (latitude == null || longitude == null) throw new Error("geo requires latitude and longitude");
     await sendDebuggerCommand(tid, "Emulation.setGeolocationOverride", { latitude: Number(latitude), longitude: Number(longitude), accuracy: 1 });
+    const o = tabSetOverrides.get(tid) || {};
+    o.geo = true;
+    tabSetOverrides.set(tid, o);
     return { tabId: tid, geolocation: { latitude: Number(latitude), longitude: Number(longitude) } };
   }
 
@@ -2844,6 +2862,9 @@ async function handleSet({ property, width, height, deviceScaleFactor, isMobile,
       downloadThroughput: off ? 0 : -1,
       uploadThroughput: off ? 0 : -1,
     });
+    const o = tabSetOverrides.get(tid) || {};
+    o.offline = true;
+    tabSetOverrides.set(tid, o);
     return { tabId: tid, offline: off };
   }
 
@@ -2860,6 +2881,9 @@ async function handleSet({ property, width, height, deviceScaleFactor, isMobile,
     if (reducedMotion) features.push({ name: "prefers-reduced-motion", value: String(reducedMotion) });
     if (features.length === 0) throw new Error("media requires colorScheme and/or reducedMotion");
     await sendDebuggerCommand(tid, "Emulation.setEmulatedMedia", { features });
+    const o = tabSetOverrides.get(tid) || {};
+    o.media = true;
+    tabSetOverrides.set(tid, o);
     return { tabId: tid, media: features };
   }
 
@@ -2887,6 +2911,10 @@ async function handleWindow({ action, url, windowId }) {
   }
   if (act === "close") {
     if (!windowId) throw new Error("windowId is required for close");
+    // Safety: never close the last window — that would quit the whole browser
+    // session and disconnect the extension (and the user's other windows).
+    const wins = await chrome.windows.getAll();
+    if (wins.length <= 1) throw new Error("Refusing to close the last browser window (would quit the browser). Close tabs instead.");
     await chrome.windows.remove(Number(windowId));
     return { closed: windowId };
   }
@@ -3815,4 +3843,5 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   pageErrors.delete(tabId);
   networkLogs.delete(tabId);
   inFlightRequests.delete(tabId);
+  tabSetOverrides.delete(tabId);
 });
