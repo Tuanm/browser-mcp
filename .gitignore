@@ -1,0 +1,7 @@
+node_modules/
+dist/
+files/
+*.zip
+.DS_Store
+.test-files/
+files/
