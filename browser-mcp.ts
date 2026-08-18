@@ -433,13 +433,11 @@ const tools: Record<string, ToolDef> = {
     required: [],
     handler: async () => {
       const connected = isExtensionConnected();
-      const exts = Array.from(connections.keys());
       return outJson({
         connected,
-        extensions: exts.length,
-        browsers: exts.map((id) => ({ id })),
+        extensions: connections.size,
         message: connected
-          ? `Browser extension connected (${exts.length} instance${exts.length > 1 ? "s" : ""}).`
+          ? "Browser extension connected (" + connections.size + " instance" + (connections.size > 1 ? "s" : "") + ")."
           : "No browser extension connected. Install and enable the Browser MCP extension, then click the toolbar icon and Connect.",
       });
     },
@@ -1075,11 +1073,11 @@ const tools: Record<string, ToolDef> = {
       }
       if (bytes.length <= 50_000) {
         const body = isText ? new TextDecoder().decode(bytes) : Buffer.from(bytes).toString("base64");
-        return { blocks: textBlocks(jsonOut({ file_id: f.id, name: f.name, mimetype: f.mimetype, size: f.size, sha256: f.sha256, body })) };
+        return { blocks: textBlocks(jsonOut({ file_id: f.id, name: f.name, mimetype: f.mimetype, size: f.size, body })) };
       }
       if (bytes.length <= MAX_FILE_READ_TEXT) {
         const body = isText ? new TextDecoder().decode(bytes) : Buffer.from(bytes).toString("base64");
-        return { blocks: textBlocks("file_id: " + f.id + "\nname: " + f.name + "\nmimetype: " + f.mimetype + "\nsize: " + f.size + "\nsha256: " + f.sha256 + "\nbody:\n" + body) };
+        return { blocks: textBlocks("file_id: " + f.id + "\nname: " + f.name + "\nmimetype: " + f.mimetype + "\nsize: " + f.size + "\nbody:\n" + body) };
       }
       return outJson({
         file_id: f.id,
