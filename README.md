@@ -163,6 +163,21 @@ Run `curl -s -X POST http://127.0.0.1:7777/mcp -H 'Content-Type: application/jso
 - The server binds to `127.0.0.1` by default. Binding to `0.0.0.0` without
   `--token` prints a warning — anyone on the network could control the browser.
 
+## agent-browser parity
+
+This project ports the practical surface of [agent-browser](https://github.com/vercel-labs/agent-browser)
+(and the agent_browser_mcp 44-tool wrapper) onto our extension-based architecture,
+including the signature **`@ref` system**: `browser_snapshot` returns an
+interactive-element tree with `[ref=eN]` markers, and every interaction tool
+accepts the ref instead of a hand-written selector (refs are cached and
+resolved server-side; stale refs produce a "run browser_snapshot again" error).
+
+Deliberately NOT ported (dev/niche features that don't fit a real user's
+browser): `browser_record` (video), `browser_trace` (tracing), `browser_profiler`
+(DevTools profiling), `browser_diff` (page diff), `browser_state` (Playwright
+state dump — use `browser_store`/`browser_cookies`/`browser_storage` instead),
+`browser_tab` (we have `browser_tabs`), and `browser_mouse` (we have
+`browser_mouse_move` + coordinate interactions).
 ## Timeouts
 
 Bridge commands: 30s default, 60s for navigate/execute/wait_for, 120s for
