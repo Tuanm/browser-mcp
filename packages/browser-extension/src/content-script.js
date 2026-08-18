@@ -11,17 +11,19 @@
  * fingerprinting via known identifier patterns.
  */
 
-// Session-random prefix for all injected DOM identifiers.
-// Generated once per service worker lifecycle and passed via message.
-// Falls back to a random prefix if the content script is injected before
-// the service worker sends it (shouldn't happen in practice).
-let _pfx = "_x" + Math.random().toString(36).slice(2, 8);
-
 // Avoid re-injection. Content scripts run in Chrome's isolated world, so this
 // property is invisible to page JavaScript. Key is deliberately non-descriptive.
-const _guard = Symbol.for("_x7cs");
-if (!window[_guard]) {
-  window[_guard] = true;
+// NOTE: re-execution (chrome.scripting.executeScript on an already-injected tab)
+// must be a clean no-op — ALL declarations live inside the guard so nothing is
+// re-declared at top level.
+if (!window[Symbol.for("_x7cs")]) {
+  window[Symbol.for("_x7cs")] = true;
+
+  // Session-random prefix for all injected DOM identifiers.
+  // Generated once per service worker lifecycle and passed via message.
+  // Falls back to a random prefix if the content script is injected before
+  // the service worker sends it (shouldn't happen in practice).
+  let _pfx = "_x" + Math.random().toString(36).slice(2, 8);
 
   // ==========================================================================
   // Agent Activity Overlay — glowing border when agent is working in this tab

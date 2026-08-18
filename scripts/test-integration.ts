@@ -46,7 +46,7 @@ r = await mcpCall(A, { jsonrpc: "2.0", id: 2, method: "ping" });
 ok("ping", r.json?.result && typeof r.json.result === "object", JSON.stringify(r.json));
 
 r = await mcpCall(A, { jsonrpc: "2.0", id: 3, method: "tools/list" });
-ok("tools/list 27 tools", r.json?.result?.tools?.length === 27, "got " + (r.json?.result?.tools?.length ?? "?") + " tools");
+ok("tools/list 47 tools", r.json?.result?.tools?.length === 47, "got " + (r.json?.result?.tools?.length ?? "?") + " tools");
 const names = (r.json?.result?.tools ?? []).map((t: any) => t.name);
 ok("has browser_navigate", names.includes("browser_navigate"));
 ok("has browser_file_read", names.includes("browser_file_read"));
@@ -116,6 +116,26 @@ extWs.addEventListener("message", (ev: any) => {
     else if (data.method === "screenshot") extWs.send(JSON.stringify({ id: data.id, result: { tabId: 7, dataUrl: "data:image/jpeg;base64," + Buffer.from("fakejpeg").toString("base64") } }));
     else if (data.method === "store") extWs.send(JSON.stringify({ id: data.id, result: { stored: true, key: data.params?.key } }));
     else if (data.method === "execute") extWs.send(JSON.stringify({ id: data.id, result: { value: 42 } }));
+    else if (data.method === "snapshot") extWs.send(JSON.stringify({ id: data.id, result: { url: "https://example.com", title: "Example", entries: [
+      { role: "button", tag: "button", name: "Submit", selector: "#submit", value: "" },
+      { role: "textbox", tag: "input", name: "Name", selector: "#name", value: "" },
+      { role: "checkbox", tag: "input", name: "Subscribe", selector: "#sub", checked: false },
+    ] } }));
+    else if (data.method === "find") extWs.send(JSON.stringify({ id: data.id, result: { matches: [{ role: "button", tag: "button", name: "Submit", selector: "#submit", value: "" }] } }));
+    else if (data.method === "get_element") extWs.send(JSON.stringify({ id: data.id, result: { exists: true, tag: "input", value: "hello", text: "hello" } }));
+    else if (data.method === "is_element") extWs.send(JSON.stringify({ id: data.id, result: { exists: true, check: data.params?.check, result: true } }));
+    else if (data.method === "click" || data.method === "dblclick" || data.method === "focus" || data.method === "fill" || data.method === "check" || data.method === "uncheck") extWs.send(JSON.stringify({ id: data.id, result: { tabId: 7, element: data.params?.selector, checked: data.method === "check" } }));
+    else if (data.method === "reload" || data.method === "back" || data.method === "forward") extWs.send(JSON.stringify({ id: data.id, result: { tabId: 7, url: "https://example.com", title: "Example" } }));
+    else if (data.method === "close") extWs.send(JSON.stringify({ id: data.id, result: { closed: 7 } }));
+    else if (data.method === "storage") extWs.send(JSON.stringify({ id: data.id, result: { items: { k1: "v1" }, count: 1 } }));
+    else if (data.method === "pdf") extWs.send(JSON.stringify({ id: data.id, result: { data: Buffer.from("%PDF-1.4 fake").toString("base64"), tabId: 7 } }));
+    else if (data.method === "set") extWs.send(JSON.stringify({ id: data.id, result: { tabId: 7, viewport: { width: data.params?.width, height: data.params?.height } } }));
+    else if (data.method === "highlight") extWs.send(JSON.stringify({ id: data.id, result: { tabId: 7 } }));
+    else if (data.method === "window") extWs.send(JSON.stringify({ id: data.id, result: { windows: [{ id: 1, focused: true, type: "normal", tabs: [{ id: 1, title: "Mock Tab", url: "https://example.com", active: true }] }] } }));
+    else if (data.method === "console") extWs.send(JSON.stringify({ id: data.id, result: { messages: [{ type: "log", text: "hello from page", ts: 1 }], count: 1 } }));
+    else if (data.method === "errors") extWs.send(JSON.stringify({ id: data.id, result: { errors: [{ text: "TypeError: x", ts: 1 }], count: 1 } }));
+    else if (data.method === "network") extWs.send(JSON.stringify({ id: data.id, result: { requests: [{ url: "https://example.com/api", method: "GET", status: 200, mimeType: "application/json" }], count: 1 } }));
+    else if (data.method === "wait") extWs.send(JSON.stringify({ id: data.id, result: { tabId: 7, found: true, waited: 250 } }));
     else extWs.send(JSON.stringify({ id: data.id, result: { ok: true, tabId: data.params?.tabId ?? null } }));
   }
 });
@@ -142,6 +162,83 @@ ok("screenshot image block", blocks.some((b: any) => b.type === "image" && b.mim
 // store roundtrip
 r = await mcpCall(A, { jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "browser_store", arguments: { action: "set", key: "k1", value: "v1" } } });
 ok("store via bridge", (r.json?.result?.content?.[0]?.text ?? "").includes("stored"), JSON.stringify(r.json?.result?.content?.[0]?.text));
+
+// agent-browser port: snapshot + @ref system
+r = await mcpCall(A, { jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "browser_snapshot", arguments: {} } });
+const snapText = r.json?.result?.content?.[0]?.text ?? "";
+ok("snapshot assigns refs", snapText.includes("[ref=e1]") && snapText.includes("[ref=e2]") && snapText.includes("[ref=e3]"), snapText.slice(0, 200));
+ok("snapshot shows roles", snapText.includes("button \"Submit\"") && snapText.includes("textbox \"Name\""), snapText.slice(0, 200));
+
+// click by ref (dispatcher resolves e2 -> #name)
+r = await mcpCall(A, { jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "browser_click", arguments: { ref: "e2" } } });
+ok("click via ref", (r.json?.result?.content?.[0]?.text ?? "").includes("clicked"), JSON.stringify(r.json?.result?.content?.[0]?.text));
+ok("ref resolved to selector", commands.some((c) => c.method === "click" && c.params.selector === "#name"), JSON.stringify(commands.filter((c) => c.method === "click").map((c) => c.params)));
+
+// stale ref error
+r = await mcpCall(A, { jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "browser_click", arguments: { ref: "e99" } } });
+ok("stale ref -> helpful error", r.json?.result?.isError === true && /Run browser_snapshot again/.test(r.json?.result?.content?.[0]?.text ?? ""), JSON.stringify(r.json?.result?.content?.[0]?.text));
+
+// find
+r = await mcpCall(A, { jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "browser_find", arguments: { role: "button", name: "Submit" } } });
+ok("find returns ref", (r.json?.result?.content?.[0]?.text ?? "").includes("[ref="), JSON.stringify(r.json?.result?.content?.[0]?.text));
+
+// get / is
+r = await mcpCall(A, { jsonrpc: "2.0", id: 24, method: "tools/call", params: { name: "browser_get", arguments: { property: "value", selector: "#name" } } });
+ok("get value", (r.json?.result?.content?.[0]?.text ?? "").includes("hello"), JSON.stringify(r.json?.result?.content?.[0]?.text));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 25, method: "tools/call", params: { name: "browser_is", arguments: { check: "visible", selector: "#name" } } });
+ok("is visible -> true", (r.json?.result?.content?.[0]?.text ?? "").trim() === "true", JSON.stringify(r.json?.result?.content?.[0]?.text));
+
+// fill / check / uncheck / focus / dblclick
+r = await mcpCall(A, { jsonrpc: "2.0", id: 26, method: "tools/call", params: { name: "browser_fill", arguments: { text: "abc", selector: "#name" } } });
+ok("fill sends clear-first type", commands.some((c) => c.method === "fill" && c.params.selector === "#name"), JSON.stringify(commands.filter((c) => c.method === "fill")));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 27, method: "tools/call", params: { name: "browser_check", arguments: { selector: "#sub" } } });
+ok("check", (r.json?.result?.content?.[0]?.text ?? "").includes("checked"), JSON.stringify(r.json?.result?.content?.[0]?.text));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 28, method: "tools/call", params: { name: "browser_uncheck", arguments: { ref: "e3" } } });
+ok("uncheck via ref", (r.json?.result?.content?.[0]?.text ?? "").includes("false"), JSON.stringify(r.json?.result?.content?.[0]?.text));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 29, method: "tools/call", params: { name: "browser_focus", arguments: { ref: "e2" } } });
+ok("focus via ref", (r.json?.result?.content?.[0]?.text ?? "").includes("focused"), JSON.stringify(r.json?.result?.content?.[0]?.text));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 30, method: "tools/call", params: { name: "browser_dblclick", arguments: { selector: "#name" } } });
+ok("dblclick", commands.some((c) => c.method === "dblclick"), "ok");
+
+// reload / back / forward / close / wait / highlight
+r = await mcpCall(A, { jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "browser_reload", arguments: {} } });
+ok("reload", (r.json?.result?.content?.[0]?.text ?? "").includes("reloaded"));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 32, method: "tools/call", params: { name: "browser_back", arguments: {} } });
+ok("back", (r.json?.result?.content?.[0]?.text ?? "").includes("back"));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 33, method: "tools/call", params: { name: "browser_forward", arguments: {} } });
+ok("forward", (r.json?.result?.content?.[0]?.text ?? "").includes("forward"));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 34, method: "tools/call", params: { name: "browser_wait", arguments: { mode: "text", text: "hello" } } });
+ok("wait text", (r.json?.result?.content?.[0]?.text ?? "").includes("found"), JSON.stringify(r.json?.result?.content?.[0]?.text));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 35, method: "tools/call", params: { name: "browser_highlight", arguments: { ref: "e1" } } });
+ok("highlight", (r.json?.result?.content?.[0]?.text ?? "").includes("highlighted"));
+
+// storage / pdf / set / window
+r = await mcpCall(A, { jsonrpc: "2.0", id: 36, method: "tools/call", params: { name: "browser_storage", arguments: { action: "get", type: "local" } } });
+ok("storage get", (r.json?.result?.content?.[0]?.text ?? "").includes("k1"), JSON.stringify(r.json?.result?.content?.[0]?.text));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 37, method: "tools/call", params: { name: "browser_pdf", arguments: { format: "a4" } } });
+ok("pdf -> file_id", /file_id/.test(r.json?.result?.content?.[0]?.text ?? ""), JSON.stringify(r.json?.result?.content?.[0]?.text));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 38, method: "tools/call", params: { name: "browser_set", arguments: { property: "viewport", width: 1920, height: 1080 } } });
+ok("set viewport", (r.json?.result?.content?.[0]?.text ?? "").includes("1920"), JSON.stringify(r.json?.result?.content?.[0]?.text));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 39, method: "tools/call", params: { name: "browser_window", arguments: { action: "list" } } });
+ok("window list", (r.json?.result?.content?.[0]?.text ?? "").includes("Mock Tab"));
+
+// console / errors / network
+r = await mcpCall(A, { jsonrpc: "2.0", id: 40, method: "tools/call", params: { name: "browser_console", arguments: { action: "view" } } });
+ok("console", (r.json?.result?.content?.[0]?.text ?? "").includes("hello from page"));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 41, method: "tools/call", params: { name: "browser_errors", arguments: { action: "view" } } });
+ok("errors", (r.json?.result?.content?.[0]?.text ?? "").includes("TypeError"));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 42, method: "tools/call", params: { name: "browser_network", arguments: { action: "view" } } });
+ok("network", (r.json?.result?.content?.[0]?.text ?? "").includes("example.com/api"));
+
+// new tool names are shortened
+r = await mcpCall(A, { jsonrpc: "2.0", id: 43, method: "tools/list" });
+const allNames = (r.json?.result?.tools ?? []).map((x: any) => x.name);
+ok("renamed tools (press/dialog/upload/perms)", allNames.includes("browser_press") && allNames.includes("browser_dialog") && allNames.includes("browser_upload") && allNames.includes("browser_perms"));
+ok("removed redundant tools", !allNames.includes("browser_wait_for") && !allNames.includes("browser_history") && !allNames.includes("browser_keypress") && !allNames.includes("browser_upload_file"));
+// ref param injected into click schema
+const clickTool = allNames.length ? null : null;
+const schemaTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "browser_click");
+ok("click schema has ref", !!schemaTool?.inputSchema?.properties?.ref);
 
 // extension disconnect -> pending cleanup
 extWs.close();

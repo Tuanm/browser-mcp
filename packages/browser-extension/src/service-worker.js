@@ -61,6 +61,11 @@ chrome.debugger.onDetach.addListener((source) => {
     for (const key of frameContexts.keys()) {
       if (key.startsWith(`${source.tabId}:`)) frameContexts.delete(key);
     }
+    // Clear capture buffers for detached tab
+    consoleLogs.delete(source.tabId);
+    pageErrors.delete(source.tabId);
+    networkLogs.delete(source.tabId);
+    inFlightRequests.delete(source.tabId);
   }
 });
 
@@ -231,6 +236,50 @@ async function dispatchCommand(method, params) {
       return handleStore(params);
     case "cookies":
       return handleCookies(params);
+    case "snapshot":
+      return handleSnapshot(params);
+    case "find":
+      return handleFind(params);
+    case "get_element":
+      return handleGetElement(params);
+    case "is_element":
+      return handleIsElement(params);
+    case "fill":
+      return handleFill(params);
+    case "check":
+      return handleCheck(params);
+    case "uncheck":
+      return handleUncheck(params);
+    case "focus":
+      return handleFocus(params);
+    case "dblclick":
+      return handleDblClick(params);
+    case "reload":
+      return handleReload(params);
+    case "back":
+      return handleBack(params);
+    case "forward":
+      return handleForward(params);
+    case "close":
+      return handleCloseTab(params);
+    case "storage":
+      return handleStorage(params);
+    case "pdf":
+      return handlePdf(params);
+    case "set":
+      return handleSet(params);
+    case "highlight":
+      return handleHighlight(params);
+    case "window":
+      return handleWindow(params);
+    case "console":
+      return handleConsole(params);
+    case "errors":
+      return handleErrors(params);
+    case "network":
+      return handleNetwork(params);
+    case "wait":
+      return handleWait(params);
     default:
       throw new Error(`Unknown method: ${method}`);
   }
@@ -1158,6 +1207,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       }, 2000);
     }
   }
+
+  // Console / errors / network capture (agent-browser port)
+  if (source.tabId) {
+    handleCaptureEvent(source.tabId, method, params);
+  }
 });
 
 async function handleDialog({ action, promptText, tabId }) {
@@ -1182,16 +1236,32 @@ async function handleDialog({ action, promptText, tabId }) {
 
 async function handleHistory({ action, tabId }) {
   const tid = tabId || (await getActiveTabId());
+  // Use CDP navigation history: chrome.tabs.goBack/goForward can report an empty
+  // history even when entries exist (Chromium quirk), so drive the controller directly.
+  await ensureDebugger(tid);
+  const hist = await sendDebuggerCommand(tid, "Page.getNavigationHistory");
+  const entries = hist.entries || [];
+  const current = hist.currentIndex;
   if (action === "back") {
-    await chrome.tabs.goBack(tid);
+    if (current <= 0 || entries.length < 2) throw new Error("Cannot go back: no previous page in history");
+    await sendDebuggerCommand(tid, "Page.navigateToHistoryEntry", { entryId: entries[current - 1].id });
   } else if (action === "forward") {
-    await chrome.tabs.goForward(tid);
+    if (current >= entries.length - 1) throw new Error("Cannot go forward: no next page in history");
+    await sendDebuggerCommand(tid, "Page.navigateToHistoryEntry", { entryId: entries[current + 1].id });
   } else {
     throw new Error(`Unknown history action: ${action}. Use "back" or "forward".`);
   }
-  // Yield to let Chrome transition tab.status from "complete" to "loading"
-  await new Promise((r) => setTimeout(r, 100));
-  await waitForTab(tid, "load");
+  // Bounded poll for the navigation to land (tab.status is unreliable for
+  // CDP-driven navigations and must not hang the bridge command).
+  const targetEntry = entries[current + (action === "back" ? -1 : 1)];
+  const targetUrl = targetEntry ? targetEntry.url : "";
+  const deadline = Date.now() + 25000;
+  while (Date.now() < deadline) {
+    const t = await chrome.tabs.get(tid);
+    const cur = t.url || "";
+    if (targetUrl && (cur === targetUrl || (targetUrl.length > 20 && cur.startsWith(targetUrl.slice(0, 60))))) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
   const tab = await chrome.tabs.get(tid);
   return { tabId: tid, url: tab.url, title: tab.title, action };
 }
@@ -2057,6 +2127,899 @@ async function handleCookies({
   throw new Error(`Unknown cookies action: ${action}. Use "getAll", "get", "set", or "remove".`);
 }
 
+
+// ============================================================================
+// Agent-browser port: element discovery + interaction extras
+// ============================================================================
+
+
+// ---- Snapshot page function (SELF-CONTAINED: chrome.scripting serializes only the function, so all helpers are embedded) ----
+
+const SNAPSHOT_FN = function (opts) {
+  function buildSelector(el, root) {
+    if (!el || el === document.documentElement) return "html";
+    const testId = el.getAttribute && el.getAttribute("data-testid");
+    if (testId) return '[data-testid="' + testId.replace(/"/g, '\\"') + '"]';
+    if (el.id) return "#" + CSS.escape(el.id);
+    const path = [];
+    let cur = el;
+    while (cur && cur !== root && cur !== document.body && path.length < 10) {
+      let sel = cur.tagName.toLowerCase();
+      const cls = Array.from(cur.classList || []).filter(function (c) { return c && c.trim(); });
+      if (cls.length) sel += "." + CSS.escape(cls[0]);
+      const parent = cur.parentElement;
+      if (parent) {
+        const kids = Array.from(parent.children);
+        const same = kids.filter(function (s) {
+          if (s.tagName !== cur.tagName) return false;
+          if (cls.length && !s.classList.contains(cls[0])) return false;
+          return true;
+        });
+        if (same.length > 1) sel += ":nth-of-type(" + (same.indexOf(cur) + 1) + ")";
+      }
+      path.unshift(sel);
+      if (path.length >= 1) {
+        try {
+          if (document.querySelectorAll(path.join(" > ")).length === 1) break;
+        } catch (e) {}
+      }
+      cur = parent;
+    }
+    return path.join(" > ");
+  }
+
+  function accName(el) {
+    if (!el) return "";
+    try {
+      const labelledby = el.getAttribute("aria-labelledby");
+      if (labelledby) {
+        const parts = labelledby.split(/\s+/).map(function (id) {
+          const ref = document.getElementById(id);
+          return ref ? (ref.textContent || "").trim() : "";
+        }).filter(Boolean);
+        if (parts.length) return parts.join(" ").slice(0, 120);
+      }
+      const ariaLabel = el.getAttribute("aria-label");
+      if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim().slice(0, 120);
+      const tag = el.tagName.toLowerCase();
+      if (tag === "select") return ""; // select name must come from a label/aria, not its options
+      if (tag === "input" || tag === "textarea") {
+        const id = el.id;
+        if (id) {
+          const lab = document.querySelector('label[for="' + CSS.escape(id) + '"]');
+          if (lab && (lab.textContent || "").trim()) return lab.textContent.trim().slice(0, 120);
+        }
+        const wrapLabel = el.closest("label");
+        if (wrapLabel && (wrapLabel.textContent || "").trim()) {
+          return wrapLabel.textContent.trim().replace(el.value || "", "").trim().slice(0, 120);
+        }
+        if (tag === "input" || tag === "textarea") {
+          const ph = el.getAttribute("placeholder");
+          if (ph && ph.trim()) return ph.trim().slice(0, 120);
+        }
+      }
+      if (tag === "img" && el.alt) return el.alt.slice(0, 120);
+      const title = el.getAttribute("title");
+      if (title && title.trim()) return title.trim().slice(0, 120);
+      if (tag === "input" && el.value && /^(button|submit|reset)$/.test(el.type || "")) return el.value.slice(0, 120);
+      const txt = (el.textContent || "").trim();
+      if (txt) return txt.replace(/\s+/g, " ").slice(0, 120);
+      return "";
+    } catch (e) { return ""; }
+  }
+
+  function isVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    const style = getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+    return true;
+  }
+
+  const results = [];
+  const seen = new Set();
+  const INTERACTIVE_TAGS = new Set(["a", "button", "input", "select", "textarea", "summary", "details", "option"]);
+  const INTERACTIVE_ROLES = new Set([
+    "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox", "listbox",
+    "menuitem", "menuitemcheckbox", "menuitemradio", "option", "slider", "spinbutton", "switch", "tab", "treeitem",
+  ]);
+
+  function roleOf(el) {
+    const explicit = el.getAttribute && el.getAttribute("role");
+    if (explicit) return explicit.toLowerCase();
+    const tag = el.tagName.toLowerCase();
+    if (tag === "a" && el.href) return "link";
+    if (tag === "button") return "button";
+    if (tag === "select") return "combobox";
+    if (tag === "textarea") return "textbox";
+    if (tag === "summary") return "button";
+    if (tag === "option") return "option";
+    if (tag === "input") {
+      const t = (el.type || "text").toLowerCase();
+      if (t === "checkbox") return "checkbox";
+      if (t === "radio") return "radio";
+      if (t === "range") return "slider";
+      if (t === "number") return "spinbutton";
+      if (t === "button" || t === "submit" || t === "reset") return "button";
+      if (t === "file") return "file";
+      if (t === "search") return "searchbox";
+      if (/^(text|email|url|tel|password|date|datetime-local|month|week|time|color)$/.test(t)) return "textbox";
+      return "textbox";
+    }
+    if (el.isContentEditable) return "textbox";
+    return "generic";
+  }
+
+  function interactive(el) {
+    const role = roleOf(el);
+    if (INTERACTIVE_ROLES.has(role)) return true;
+    const tag = el.tagName.toLowerCase();
+    if (INTERACTIVE_TAGS.has(tag)) return true;
+    const tabIndex = el.getAttribute && el.getAttribute("tabindex");
+    if (tabIndex !== null && tabIndex !== "-1") return true;
+    if (el.onclick || el.getAttribute("onclick") || el.getAttribute("onkeydown")) return true;
+    return false;
+  }
+
+  function visit(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (seen.has(el)) return false;
+    seen.add(el);
+    const tag = el.tagName.toLowerCase();
+    if (tag === "script" || tag === "style" || tag === "noscript" || tag === "template") return false;
+
+    const role = roleOf(el);
+    const isHeading = /^h[1-6]$/.test(tag);
+    const isInteractive = interactive(el);
+    const cursorHit = opts.cursor && !isInteractive && (function () {
+      const cs = getComputedStyle(el);
+      if (cs.cursor !== "pointer") return false;
+      const parent = el.parentElement;
+      if (parent && getComputedStyle(parent).cursor === "pointer") return false;
+      return true;
+    })();
+
+    if ((isInteractive || cursorHit || (opts.includeHeadings && isHeading && (el.textContent || "").trim())) && isVisible(el)) {
+      const name = accName(el);
+      const value = el.value !== undefined && el.value !== null ? String(el.value) : (el.selectedOptions && el.selectedOptions[0] ? el.selectedOptions[0].textContent.trim() : "");
+      const entry = {
+        role,
+        tag,
+        name,
+        selector: buildSelector(el, opts.scope ? document.querySelector(opts.scope) : null),
+      };
+      if (value !== "") entry.value = value.slice(0, 200);
+      if (role === "checkbox" || role === "radio") entry.checked = !!el.checked;
+      if (tag === "a" && el.href) entry.href = el.href.slice(0, 500);
+      if (tag === "input" && el.type) entry.type = (el.type || "text").toLowerCase();
+      if (isHeading) entry.level = Number(tag[1]);
+      results.push(entry);
+      if (results.length >= opts.max) return true;
+    }
+    let kids = Array.from(el.children || []);
+    if (el.shadowRoot) kids = kids.concat(Array.from(el.shadowRoot.children || []));
+    for (const k of kids) {
+      if (visit(k)) return true;
+    }
+    if (el.tagName === "IFRAME") {
+      try {
+        const doc = el.contentDocument;
+        if (doc) { for (const k of Array.from(doc.body ? doc.body.children : [])) { if (visit(k)) return true; } }
+      } catch (e) {}
+    }
+    return false;
+  }
+
+  const root = opts.scope ? document.querySelector(opts.scope) : document.body;
+  if (root) { for (const k of Array.from(root.children)) { if (visit(k)) break; } }
+  return results;
+};
+
+// ---- Find page function (self-contained) ----
+
+const FIND_FN = function (opts) {
+  function accName(el) {
+    if (!el) return "";
+    try {
+      const labelledby = el.getAttribute("aria-labelledby");
+      if (labelledby) {
+        const parts = labelledby.split(/\s+/).map(function (id) {
+          const ref = document.getElementById(id);
+          return ref ? (ref.textContent || "").trim() : "";
+        }).filter(Boolean);
+        if (parts.length) return parts.join(" ").slice(0, 120);
+      }
+      const ariaLabel = el.getAttribute("aria-label");
+      if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim().slice(0, 120);
+      const tag = el.tagName.toLowerCase();
+      if (tag === "select") return ""; // select name must come from a label/aria, not its options
+      if (tag === "input" || tag === "textarea") {
+        const id = el.id;
+        if (id) {
+          const lab = document.querySelector('label[for="' + CSS.escape(id) + '"]');
+          if (lab && (lab.textContent || "").trim()) return lab.textContent.trim().slice(0, 120);
+        }
+        const wrapLabel = el.closest("label");
+        if (wrapLabel && (wrapLabel.textContent || "").trim()) {
+          return wrapLabel.textContent.trim().replace(el.value || "", "").trim().slice(0, 120);
+        }
+        if (tag === "input" || tag === "textarea") {
+          const ph = el.getAttribute("placeholder");
+          if (ph && ph.trim()) return ph.trim().slice(0, 120);
+        }
+      }
+      if (tag === "img" && el.alt) return el.alt.slice(0, 120);
+      const title = el.getAttribute("title");
+      if (title && title.trim()) return title.trim().slice(0, 120);
+      const txt = (el.textContent || "").trim();
+      if (txt) return txt.replace(/\s+/g, " ").slice(0, 120);
+      return "";
+    } catch (e) { return ""; }
+  }
+
+  function buildSelector(el) {
+    const testId = el.getAttribute && el.getAttribute("data-testid");
+    if (testId) return '[data-testid="' + testId.replace(/"/g, '\\"') + '"]';
+    if (el.id) return "#" + CSS.escape(el.id);
+    const path = [];
+    let cur = el;
+    while (cur && cur !== document.body && path.length < 10) {
+      let sel = cur.tagName.toLowerCase();
+      const cls = Array.from(cur.classList || []).filter(function (c) { return c && c.trim(); });
+      if (cls.length) sel += "." + CSS.escape(cls[0]);
+      const parent = cur.parentElement;
+      if (parent) {
+        const kids = Array.from(parent.children);
+        const same = kids.filter(function (s) {
+          if (s.tagName !== cur.tagName) return false;
+          if (cls.length && !s.classList.contains(cls[0])) return false;
+          return true;
+        });
+        if (same.length > 1) sel += ":nth-of-type(" + (same.indexOf(cur) + 1) + ")";
+      }
+      path.unshift(sel);
+      if (path.length >= 1) {
+        try {
+          if (document.querySelectorAll(path.join(" > ")).length === 1) break;
+        } catch (e) {}
+      }
+      cur = parent;
+    }
+    return path.join(" > ");
+  }
+
+  const out = [];
+  const exact = opts.exact === true; // substring by default; exact only when requested
+  function m(s) { if (s == null) return true; return exact ? s === opts[opts.kind] : String(s).toLowerCase().includes(String(opts[opts.kind]).toLowerCase()); }
+  const all = document.querySelectorAll("*");
+  const cap = Math.min(opts.max || 50, 100);
+  for (const el of all) {
+    if (out.length >= cap) break;
+    if (el.tagName === "SCRIPT" || el.tagName === "STYLE") continue;
+    let hit = false;
+    if (opts.kind === "selector" && opts.selector) {
+      try { hit = el.matches(opts.selector); } catch (e) {}
+    } else if (opts.kind === "role") {
+      const explicit = el.getAttribute("role");
+      const tagRole = { a: "link", button: "button", select: "combobox", textarea: "textbox", input: (el.type === "checkbox" ? "checkbox" : el.type === "radio" ? "radio" : el.type === "range" ? "slider" : "textbox") }[el.tagName.toLowerCase()];
+      const role = (explicit || tagRole || "").toLowerCase();
+      hit = role === String(opts.role).toLowerCase();
+      if (hit && opts.name != null) hit = accName(el) === String(opts.name);
+    } else if (opts.kind === "text") {
+      const t = (el.textContent || "").trim().replace(/\s+/g, " ");
+      hit = m(t);
+    } else if (opts.kind === "label") {
+      const id = el.id;
+      const lab = id && document.querySelector('label[for="' + CSS.escape(id) + '"]');
+      hit = lab ? m(lab.textContent) : false;
+    } else if (opts.kind === "placeholder") {
+      hit = el.getAttribute && el.getAttribute("placeholder") != null && m(el.getAttribute("placeholder"));
+    } else if (opts.kind === "title") {
+      hit = el.getAttribute && el.getAttribute("title") != null && m(el.getAttribute("title"));
+    } else if (opts.kind === "testid") {
+      hit = el.getAttribute && el.getAttribute("data-testid") != null && m(el.getAttribute("data-testid"));
+    }
+    if (hit) {
+      const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      if (rect && rect.width === 0 && rect.height === 0) continue;
+      out.push({
+        role: el.getAttribute("role") || (el.tagName.toLowerCase() === "a" ? "link" : el.tagName.toLowerCase()),
+        tag: el.tagName.toLowerCase(),
+        name: accName(el),
+        text: (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 120),
+        value: el.value !== undefined ? String(el.value).slice(0, 200) : "",
+        selector: buildSelector(el),
+        href: el.tagName === "A" && el.href ? el.href : undefined,
+      });
+    }
+  }
+  return out;
+};
+
+async function handleSnapshot({ interactive, cursor, max, includeHeadings, scope, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  const tab = await chrome.tabs.get(tid);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: SNAPSHOT_FN,
+    args: [{ interactive: interactive !== false, cursor: !!cursor, max: Math.min(max || 300, 500), includeHeadings: !!includeHeadings, scope: scope || null }],
+  });
+  return { entries: results[0]?.result || [], url: tab.url || "", title: tab.title || "" };
+}
+
+async function handleFind({ role, name, text, label, placeholder, title, testid, selector, exact, max, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  let kind = null, val = null;
+  if (role != null) { kind = "role"; val = role; }
+  else if (text != null) { kind = "text"; val = text; }
+  else if (label != null) { kind = "label"; val = label; }
+  else if (placeholder != null) { kind = "placeholder"; val = placeholder; }
+  else if (title != null) { kind = "title"; val = title; }
+  else if (testid != null) { kind = "testid"; val = testid; }
+  else if (selector != null) { kind = "selector"; val = selector; }
+  if (!kind) throw new Error("browser_find requires one of: role, name, text, label, placeholder, title, testid, selector");
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: FIND_FN,
+    args: [{ kind, [kind]: val, name: name ?? null, exact: exact === true, max: Math.min(max || 50, 100) }],
+  });
+  return { matches: results[0]?.result || [] };
+}
+
+// ---- Get element info ----
+
+const GET_FN = function (opts) {
+  const els = document.querySelectorAll(opts.selector);
+  if (opts.property === "count") return { exists: true, count: els.length };
+  const el = els[0];
+  if (!el) return { exists: false };
+  switch (opts.property) {
+    case "text": return { exists: true, text: (el.innerText || el.textContent || "").trim().slice(0, 20000) };
+    case "html": return { exists: true, html: (el.outerHTML || "").slice(0, 50000) };
+    case "value": return { exists: true, value: el.value !== undefined ? String(el.value) : (el.textContent || "").trim() };
+    case "attribute": return { exists: true, value: el.getAttribute ? el.getAttribute(opts.attr) : null };
+    case "box": {
+      const r = el.getBoundingClientRect();
+      return { exists: true, box: { x: r.x, y: r.y, width: r.width, height: r.height } };
+    }
+    case "styles": {
+      const cs = getComputedStyle(el);
+      if (opts.styleProperty) return { exists: true, value: cs.getPropertyValue(opts.styleProperty) };
+      const styles = {};
+      for (let i = 0; i < cs.length && i < 60; i++) { const p = cs[i]; styles[p] = cs.getPropertyValue(p); }
+      return { exists: true, styles };
+    }
+    default: return { exists: true, tag: el.tagName.toLowerCase(), id: el.id || null, className: typeof el.className === "string" ? el.className : "", role: el.getAttribute("role"), text: (el.innerText || "").trim().slice(0, 2000), value: el.value !== undefined ? String(el.value).slice(0, 200) : undefined };
+  }
+};
+
+async function handleGetElement({ selector, property, attr, styleProperty, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  if (!selector) throw new Error("get_element requires a selector");
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: GET_FN,
+    args: [{ selector, property: property || "info", attr: attr || null, styleProperty: styleProperty || null }],
+  });
+  const r = results[0]?.result || { exists: false };
+  if (!r.exists && property !== "count") throw new Error("Element not found: " + selector);
+  return r;
+}
+
+// ---- Is (element state) ----
+
+const IS_FN = function (opts) {
+  const el = document.querySelector(opts.selector);
+  if (!el) return { exists: false };
+  const cs = getComputedStyle(el);
+  const visible = (function () {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") return false;
+    return true;
+  })();
+  const disabled = !!el.disabled || el.getAttribute("aria-disabled") === "true";
+  const checked = !!(el.checked !== undefined && el.checked);
+  const editable = !disabled && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) && !el.readOnly;
+  const readonly = !!el.readOnly || el.getAttribute("aria-readonly") === "true";
+  const focused = document.activeElement === el;
+  const state = { exists: true, visible, hidden: !visible, enabled: !disabled, disabled, checked, unchecked: !checked, editable, readonly, focused };
+  return { exists: true, result: !!state[opts.check] };
+};
+
+async function handleIsElement({ selector, check, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  if (!selector) throw new Error("is_element requires a selector");
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: IS_FN,
+    args: [{ selector, check }],
+  });
+  const r = results[0]?.result;
+  if (!r?.exists) throw new Error("Element not found: " + selector);
+  return { check, result: r.result };
+}
+
+// ---- Fill / Check / Uncheck / Focus / Dblclick ----
+
+async function handleFill({ text, selector, tabId, pressEnter }) {
+  // fill = clear + type (agent-browser semantics)
+  return handleType({ text, selector, tabId, clearFirst: true, pressEnter });
+}
+
+async function handleCheck({ selector, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  if (!selector) throw new Error("check requires a selector");
+  const st = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return { error: `Element not found: ${sel}` };
+      if (el.tagName !== "INPUT" || !/^(checkbox|radio)$/.test(el.type || "")) {
+        return { error: `Element is not a checkbox/radio: <${el.tagName} type="${el.type || ""}">` };
+      }
+      return { checked: !!el.checked };
+    },
+    args: [selector],
+  });
+  const r = st[0]?.result;
+  if (r?.error) throw new Error(r.error);
+  if (r.checked) return { tabId: tid, checked: true, already: true };
+  await ensureDebugger(tid);
+  const coords = await getElementCenter(tid, selector);
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mousePressed", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mouseReleased", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
+  showActionCursor(tid, coords.x, coords.y);
+  return { tabId: tid, checked: true, already: false };
+}
+
+async function handleUncheck({ selector, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  if (!selector) throw new Error("uncheck requires a selector");
+  const st = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return { error: `Element not found: ${sel}` };
+      if (el.tagName !== "INPUT" || !/^(checkbox|radio)$/.test(el.type || "")) {
+        return { error: `Element is not a checkbox/radio: <${el.tagName} type="${el.type || ""}">` };
+      }
+      return { checked: !!el.checked };
+    },
+    args: [selector],
+  });
+  const r = st[0]?.result;
+  if (r?.error) throw new Error(r.error);
+  if (!r.checked) return { tabId: tid, checked: false, already: true };
+  await ensureDebugger(tid);
+  const coords = await getElementCenter(tid, selector);
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mousePressed", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mouseReleased", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
+  showActionCursor(tid, coords.x, coords.y);
+  return { tabId: tid, checked: false, already: false };
+}
+
+async function handleFocus({ selector, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  if (!selector) throw new Error("focus requires a selector");
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return { error: `Element not found: ${sel}` };
+      if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(true);
+      else el.scrollIntoView({ block: "center" });
+      el.focus();
+      const rect = el.getBoundingClientRect();
+      return { tag: el.tagName.toLowerCase(), x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    },
+    args: [selector],
+  });
+  const r = results[0]?.result;
+  if (r?.error) throw new Error(r.error);
+  if (r?.x != null) showActionCursor(tid, r.x, r.y);
+  return { tabId: tid, focused: true, element: selector };
+}
+
+async function handleDblClick(params) {
+  // double-click = click with clickCount 2
+  return handleClick({ ...params, clickCount: 2 });
+}
+
+// ---- Reload / Back / Forward / Close ----
+
+async function handleReload({ tabId, waitFor }) {
+  const tid = tabId || (await getActiveTabId());
+  await chrome.tabs.reload(tid);
+  await waitForTab(tid, waitFor || "load");
+  const tab = await chrome.tabs.get(tid);
+  return { tabId: tid, url: tab.url, title: tab.title };
+}
+
+async function handleBack(params) { return handleHistory({ ...params, action: "back" }); }
+async function handleForward(params) { return handleHistory({ ...params, action: "forward" }); }
+
+async function handleCloseTab({ tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await chrome.tabs.remove(tid);
+  return { closed: tid };
+}
+
+// ---- Wait (general conditions) ----
+
+async function handleWait({ mode, selector, text, url, timeout, state, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  const maxWait = Math.min(timeout || 10000, 30000);
+  const start = Date.now();
+  switch (mode || "timeout") {
+    case "timeout": {
+      await new Promise((r) => setTimeout(r, maxWait));
+      return { tabId: tid, waited: maxWait };
+    }
+    case "load": {
+      await waitForTab(tid, state || "load");
+      return { tabId: tid, loaded: true };
+    }
+    case "url": {
+      if (!url) throw new Error("url is required for wait mode=url");
+      const isRegex = (() => { try { new RegExp(url); return true; } catch { return false; } })();
+      while (Date.now() - start < maxWait) {
+        const tab = await chrome.tabs.get(tid);
+        const match = isRegex ? new RegExp(url).test(tab.url || "") : (tab.url || "").includes(url);
+        if (match) return { tabId: tid, url: tab.url, matched: url, elapsed: Date.now() - start };
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      throw new Error("URL did not match within " + maxWait + "ms");
+    }
+    case "text": {
+      if (!text) throw new Error("text is required for wait mode=text");
+      while (Date.now() - start < maxWait) {
+        const res = await chrome.scripting.executeScript({
+          target: { tabId: tid },
+          func: (t) => (document.body ? document.body.textContent || "" : "").includes(t),
+          args: [text],
+        });
+        if (res[0]?.result) return { tabId: tid, text, found: true, elapsed: Date.now() - start };
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      throw new Error("Text \"" + text + "\" not found within " + maxWait + "ms");
+    }
+    case "selector": {
+      if (!selector) throw new Error("selector is required for wait mode=selector");
+      return handleWaitFor({ selector, tabId: tid, timeout: maxWait });
+    }
+    default:
+      throw new Error("Unknown wait mode: " + mode);
+  }
+}
+
+// ---- Highlight ----
+
+async function handleHighlight({ selector, duration, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  if (!selector) throw new Error("highlight requires a selector");
+  await chrome.tabs.sendMessage(tid, { type: "highlight-element", selector, duration: duration || 2000 }).catch(() => {});
+  return { tabId: tid, highlighted: selector };
+}
+
+// ---- Storage (localStorage / sessionStorage) ----
+
+const STORAGE_FN = function (opts) {
+  const store = opts.type === "session" ? window.sessionStorage : window.localStorage;
+  try {
+    if (opts.action === "get") {
+      if (opts.key != null) return { exists: store.getItem(opts.key) !== null, key: opts.key, value: store.getItem(opts.key) };
+      const items = {};
+      for (let i = 0; i < store.length; i++) { const k = store.key(i); items[k] = store.getItem(k); }
+      return { items, count: store.length };
+    }
+    if (opts.action === "set") {
+      if (opts.key == null) return { error: "key is required for set" };
+      store.setItem(String(opts.key), String(opts.value ?? ""));
+      return { set: true, key: opts.key };
+    }
+    if (opts.action === "remove") {
+      if (opts.key == null) return { error: "key is required for remove" };
+      store.removeItem(String(opts.key));
+      return { removed: true, key: opts.key };
+    }
+    if (opts.action === "clear") {
+      const n = store.length;
+      store.clear();
+      return { cleared: true, count: n };
+    }
+    return { error: "unknown action: " + opts.action };
+  } catch (e) {
+    return { error: String(e && e.message ? e.message : e) };
+  }
+};
+
+async function handleStorage({ action, key, value, type, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  const t = type === "session" ? "session" : "local";
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: STORAGE_FN,
+    args: [{ action: action || "get", key: key ?? null, value: value ?? null, type: t }],
+  });
+  const r = results[0]?.result || {};
+  if (r.error) throw new Error(r.error);
+  return r;
+}
+
+// ---- PDF export (CDP Page.printToPDF) ----
+
+const PDF_FORMATS = {
+  letter: { w: 8.5, h: 11 },
+  a4: { w: 8.27, h: 11.69 },
+  a3: { w: 11.69, h: 16.54 },
+  a5: { w: 5.83, h: 8.27 },
+  legal: { w: 8.5, h: 14 },
+  tabloid: { w: 11, h: 17 },
+};
+
+async function handlePdf({ tabId, format, landscape, printBackground, displayHeaderFooter, headerTemplate, footerTemplate, scale }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+  const fmt = PDF_FORMATS[String(format || "letter").toLowerCase()] || PDF_FORMATS.letter;
+  const params = {
+    landscape: !!landscape,
+    printBackground: printBackground !== false,
+    displayHeaderFooter: !!displayHeaderFooter,
+    scale: scale || 1,
+    paperWidth: fmt.w,
+    paperHeight: fmt.h,
+    marginTop: 0.4,
+    marginBottom: 0.4,
+    marginLeft: 0.4,
+    marginRight: 0.4,
+    preferCSSPageSize: false,
+  };
+  if (headerTemplate) params.headerTemplate = headerTemplate;
+  if (footerTemplate) params.footerTemplate = footerTemplate;
+  const result = await sendDebuggerCommand(tid, "Page.printToPDF", params);
+  return { data: result.data, mimeType: "application/pdf" };
+}
+
+// ---- Set (browser settings: viewport/device/geo/offline/headers/media) ----
+
+const DEVICE_PRESETS = {
+  "desktop chrome": { width: 1280, height: 720, dsf: 1, mobile: false, touch: false, ua: null },
+  "iphone 14": { width: 390, height: 844, dsf: 3, mobile: true, touch: true, ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" },
+  "iphone 13": { width: 390, height: 844, dsf: 3, mobile: true, touch: true, ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1" },
+  "pixel 5": { width: 393, height: 851, dsf: 2.75, mobile: true, touch: true, ua: "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36" },
+  "ipad pro": { width: 1024, height: 1366, dsf: 2, mobile: true, touch: true, ua: "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" },
+  "galaxy s21": { width: 360, height: 800, dsf: 3, mobile: true, touch: true, ua: "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36" },
+};
+
+async function handleSet({ property, width, height, deviceScaleFactor, isMobile, hasTouch, userAgent, deviceName, latitude, longitude, offline, headers, colorScheme, reducedMotion, tabId }) {
+  const tid = tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+  const prop = (property || "viewport").toLowerCase();
+
+  if (prop === "viewport" || prop === "window") {
+    if (!width || !height) throw new Error("viewport requires width and height");
+    await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", {
+      width: Number(width),
+      height: Number(height),
+      deviceScaleFactor: deviceScaleFactor || 1,
+      mobile: !!isMobile,
+    });
+    if (hasTouch !== undefined) {
+      await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: !!hasTouch });
+    }
+    return { tabId: tid, viewport: { width: Number(width), height: Number(height), deviceScaleFactor: deviceScaleFactor || 1, mobile: !!isMobile, touch: !!hasTouch } };
+  }
+
+  if (prop === "device") {
+    const preset = DEVICE_PRESETS[String(deviceName || "").toLowerCase()];
+    if (!preset) throw new Error("Unknown device: " + deviceName + ". Available: " + Object.keys(DEVICE_PRESETS).join(", "));
+    await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", { width: preset.width, height: preset.height, deviceScaleFactor: preset.dsf, mobile: preset.mobile });
+    await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: preset.touch });
+    if (preset.ua) await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent: preset.ua });
+    return { tabId: tid, device: String(deviceName), viewport: { width: preset.width, height: preset.height } };
+  }
+
+  if (prop === "geo" || prop === "geolocation") {
+    if (latitude == null || longitude == null) throw new Error("geo requires latitude and longitude");
+    await sendDebuggerCommand(tid, "Emulation.setGeolocationOverride", { latitude: Number(latitude), longitude: Number(longitude), accuracy: 1 });
+    return { tabId: tid, geolocation: { latitude: Number(latitude), longitude: Number(longitude) } };
+  }
+
+  if (prop === "offline") {
+    await ensureCdpDomain(tid, "Network");
+    const off = !!offline;
+    await sendDebuggerCommand(tid, "Network.emulateNetworkConditions", {
+      offline: off,
+      latency: 0,
+      downloadThroughput: off ? 0 : -1,
+      uploadThroughput: off ? 0 : -1,
+    });
+    return { tabId: tid, offline: off };
+  }
+
+  if (prop === "headers") {
+    if (!headers || typeof headers !== "object") throw new Error("headers requires an object like {\"X-Key\": \"v\"}");
+    await ensureCdpDomain(tid, "Network");
+    await sendDebuggerCommand(tid, "Network.setExtraHTTPHeaders", { headers });
+    return { tabId: tid, headers: Object.keys(headers) };
+  }
+
+  if (prop === "media") {
+    const features = [];
+    if (colorScheme) features.push({ name: "prefers-color-scheme", value: String(colorScheme) });
+    if (reducedMotion) features.push({ name: "prefers-reduced-motion", value: String(reducedMotion) });
+    if (features.length === 0) throw new Error("media requires colorScheme and/or reducedMotion");
+    await sendDebuggerCommand(tid, "Emulation.setEmulatedMedia", { features });
+    return { tabId: tid, media: features };
+  }
+
+  throw new Error("Unknown set property: " + property + ". Use viewport, device, geo, offline, headers, or media.");
+}
+
+// ---- Window management ----
+
+async function handleWindow({ action, url, windowId }) {
+  const act = action || "list";
+  if (act === "list") {
+    const wins = await chrome.windows.getAll({ populate: true });
+    return {
+      windows: wins.map((w) => ({
+        id: w.id,
+        focused: w.focused,
+        type: w.type,
+        tabs: (w.tabs || []).map((t) => ({ id: t.id, title: t.title, url: t.url, active: t.active })),
+      })),
+    };
+  }
+  if (act === "create") {
+    const win = await chrome.windows.create({ url: url || undefined, focused: true });
+    return { windowId: win.id, tabId: win.tabs?.[0]?.id ?? null, url: url || "" };
+  }
+  if (act === "close") {
+    if (!windowId) throw new Error("windowId is required for close");
+    await chrome.windows.remove(Number(windowId));
+    return { closed: windowId };
+  }
+  throw new Error("Unknown window action: " + action + ". Use list, create, or close.");
+}
+
+// ---- Console / Errors / Network capture (CDP event ring buffers) ----
+
+const consoleLogs = new Map();
+const pageErrors = new Map();
+const networkLogs = new Map();
+const inFlightRequests = new Map();
+
+function safeArgString(val, depth) {
+  try {
+    if (val === null || val === undefined) return String(val);
+    if (typeof val === "string") return val.slice(0, 300);
+    if (typeof val === "number" || typeof val === "boolean") return String(val);
+    if (val instanceof Error) return val.message.slice(0, 300);
+    if (typeof val === "object") {
+      if (depth > 2) return "[object]";
+      const keys = Object.keys(val);
+      if (keys.length === 0) return "{}";
+      const parts = keys.slice(0, 8).map((k) => k + ": " + safeArgString(val[k], depth + 1));
+      return "{" + parts.join(", ") + (keys.length > 8 ? ", ..." : "") + "}";
+    }
+    return String(val).slice(0, 300);
+  } catch (e) { return "[unserializable]"; }
+}
+
+function summarizeConsoleArgs(args) {
+  return (args || []).slice(0, 5).map((a) => safeArgString(a && a.value !== undefined ? a.value : a, 0)).join(" ").slice(0, 600);
+}
+
+function pushCapped(map, tabId, entry, cap) {
+  let arr = map.get(tabId);
+  if (!arr) { arr = []; map.set(tabId, arr); }
+  arr.push(entry);
+  if (arr.length > cap) arr.splice(0, arr.length - cap);
+}
+
+async function handleConsole({ action, tabId, filter, types, clear }) {
+  const tid = tabId || (await getActiveTabId());
+  if (action === "clear") { consoleLogs.delete(tid); return { cleared: true }; }
+  await ensureDebugger(tid);
+  await ensureCdpDomain(tid, "Runtime");
+  let logs = consoleLogs.get(tid) || [];
+  if (Array.isArray(types) && types.length) logs = logs.filter((l) => types.includes(l.type));
+  if (filter) logs = logs.filter((l) => l.text.toLowerCase().includes(String(filter).toLowerCase()));
+  const captured = logs.length > 0;
+  if (clear) consoleLogs.delete(tid);
+  const out = logs.slice(-100);
+  return {
+    count: out.length,
+    messages: out,
+    note: captured ? "" : "Console capture starts from this call (Runtime domain just enabled) - reload the page to capture early messages.",
+  };
+}
+
+async function handleErrors({ action, tabId, filter, clear }) {
+  const tid = tabId || (await getActiveTabId());
+  if (action === "clear") { pageErrors.delete(tid); return { cleared: true }; }
+  await ensureDebugger(tid);
+  await ensureCdpDomain(tid, "Runtime");
+  let errors = pageErrors.get(tid) || [];
+  if (filter) errors = errors.filter((e) => e.text.toLowerCase().includes(String(filter).toLowerCase()));
+  if (clear) pageErrors.delete(tid);
+  return { count: errors.length, errors: errors.slice(-50) };
+}
+
+async function handleNetwork({ action, tabId, filter }) {
+  const tid = tabId || (await getActiveTabId());
+  if (action === "clear") { networkLogs.delete(tid); inFlightRequests.delete(tid); return { cleared: true }; }
+  await ensureDebugger(tid);
+  await ensureCdpDomain(tid, "Network");
+  let logs = networkLogs.get(tid) || [];
+  if (filter) logs = logs.filter((l) => (l.url || "").toLowerCase().includes(String(filter).toLowerCase()));
+  return { count: logs.length, requests: logs.slice(-200) };
+}
+
+// CDP event hooks for console/errors/network (called from chrome.debugger.onEvent)
+function handleCaptureEvent(tabId, method, params) {
+  if (method === "Runtime.consoleAPICalled") {
+    pushCapped(consoleLogs, tabId, { type: params.type || "log", text: summarizeConsoleArgs(params.args), ts: Date.now() }, 100);
+    return;
+  }
+  if (method === "Runtime.exceptionThrown") {
+    const d = params.exceptionDetails || {};
+    const ex = d.exception && d.exception.description ? d.exception.description : (d.text || "Unknown error");
+    pushCapped(pageErrors, tabId, { text: String(ex).slice(0, 500), url: d.url || "", line: d.lineNumber != null ? d.lineNumber : null, column: d.columnNumber != null ? d.columnNumber : null, ts: Date.now() }, 50);
+    return;
+  }
+  if (method === "Network.requestWillBeSent") {
+    let m = inFlightRequests.get(tabId);
+    if (!m) { m = new Map(); inFlightRequests.set(tabId, m); }
+    m.set(params.requestId, { url: params.request ? params.request.url || "" : "", method: params.request ? params.request.method || "" : "", resourceType: params.type || "", startedAt: Date.now(), ts: Date.now() });
+    if (m.size > 400) { const first = m.keys().next().value; m.delete(first); }
+    return;
+  }
+  if (method === "Network.responseReceived") {
+    const m = inFlightRequests.get(tabId);
+    const rec = m && m.get(params.requestId);
+    if (rec) {
+      rec.status = params.response && params.response.status != null ? params.response.status : null;
+      rec.mimeType = params.response ? params.response.mimeType || "" : "";
+      rec.statusText = params.response ? params.response.statusText || "" : "";
+    }
+    return;
+  }
+  if (method === "Network.loadingFinished") {
+    const m = inFlightRequests.get(tabId);
+    const rec = m && m.get(params.requestId);
+    if (rec) {
+      rec.size = params.encodedDataLength != null ? params.encodedDataLength : null;
+      rec.duration = Date.now() - rec.startedAt;
+      pushCapped(networkLogs, tabId, rec, 200);
+      m.delete(params.requestId);
+    }
+    return;
+  }
+  if (method === "Network.loadingFailed") {
+    const m = inFlightRequests.get(tabId);
+    const rec = m && m.get(params.requestId);
+    if (rec) {
+      rec.errorText = params.errorText || "failed";
+      rec.duration = Date.now() - rec.startedAt;
+      pushCapped(networkLogs, tabId, rec, 200);
+      m.delete(params.requestId);
+    }
+    return;
+  }
+}
+
 // ============================================================================
 // Stealth Mode — CDP-free handlers using chrome.scripting
 // ============================================================================
@@ -2847,4 +3810,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   for (let i = recentDownloads.length - 1; i >= 0; i--) {
     if (recentDownloads[i].tabId === tabId) recentDownloads.splice(i, 1);
   }
+  // Clear console/errors/network capture buffers
+  consoleLogs.delete(tabId);
+  pageErrors.delete(tabId);
+  networkLogs.delete(tabId);
+  inFlightRequests.delete(tabId);
 });

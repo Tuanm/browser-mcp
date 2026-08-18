@@ -99,15 +99,34 @@ return inline via `browser_file_read`, or upload files inline to
 `browser_upload_file` with base64 `content`. Huge files stay on the local machine
 and are fetched via `GET /files/<file_id>`.
 
-## Tools (27)
+## Tools (47)
 
-`browser_status`, `browser_navigate`, `browser_screenshot` (returns an MCP image
-content block), `browser_click`, `browser_type`, `browser_extract`, `browser_tabs`,
-`browser_execute`, `browser_scroll`, `browser_hover`, `browser_mouse_move`,
-`browser_drag`, `browser_keypress`, `browser_wait_for`, `browser_select`,
-`browser_handle_dialog`, `browser_history`, `browser_upload_file`, `browser_frames`,
-`browser_touch`, `browser_emulate`, `browser_download`, `browser_auth`,
-`browser_permissions`, `browser_store`, `browser_cookies`, `browser_file_read`.
+Core + agent-browser parity (element discovery with the **@ref system**):
+
+- **Element discovery** — `browser_snapshot` (interactive element tree with `[ref=eN]`
+  markers), `browser_find` (semantic search by role/name/text/label/placeholder/
+  title/testid/selector), `browser_get` (text/html/value/attribute/count/box/styles),
+  `browser_is` (visible/enabled/checked/editable/focused).
+- **Interaction** — `browser_click`, `browser_dblclick`, `browser_type`, `browser_fill`
+  (clear+type), `browser_check` / `browser_uncheck`, `browser_select`, `browser_hover`,
+  `browser_focus`, `browser_press`, `browser_drag`, `browser_scroll`, `browser_upload`.
+  Every interaction tool accepts a `ref` (from `browser_snapshot`) **or** a CSS
+  `selector` — refs are cached server-side and resolve to selectors automatically.
+- **Navigation** — `browser_navigate`, `browser_reload`, `browser_back`,
+  `browser_forward`, `browser_close`, `browser_tabs`, `browser_window`.
+- **Page reads** — `browser_extract`, `browser_execute`, `browser_screenshot`
+  (MCP image block), `browser_pdf` (→ `file_id`), `browser_wait`
+  (timeout/load/url/text/selector), `browser_highlight`.
+- **State & debugging** — `browser_store`, `browser_cookies`, `browser_storage`
+  (local/sessionStorage), `browser_console`, `browser_errors`, `browser_network`
+  (CDP ring buffers), `browser_status`, `browser_file_read`.
+- **Emulation & control** — `browser_emulate`, `browser_set` (viewport/device/geo/
+  offline/headers/media), `browser_perms`, `browser_auth`, `browser_dialog`,
+  `browser_frames`, `browser_touch`, `browser_download`.
+
+Console/errors/network capture is lazy: it starts on the first call, so reload or
+navigate after enabling to capture traffic. Back/forward use CDP navigation
+history (more reliable than `chrome.tabs.goBack`).
 
 Run `curl -s -X POST http://127.0.0.1:7777/mcp -H 'Content-Type: application/json'
 -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` for full schemas.

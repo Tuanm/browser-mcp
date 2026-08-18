@@ -11,7 +11,7 @@
  *   POST /mcp                  MCP JSON-RPC (initialize / tools/list / tools/call / ping)
  *   GET  /browser/ws           WebSocket bridge for the Chrome extension
  *   POST /browser/files/upload Extension uploads a downloaded file (multipart)
- *   GET  /browser/files/:id    Extension fetches a file for browser_upload_file
+ *   GET  /browser/files/:id    Extension fetches a file for browser_upload
  *   POST /files/upload         Agent uploads a file (multipart) -> { file_id }
  *   GET  /files/:id            Agent downloads a stored file
  *   GET  /extension            Extension zip for easy install
@@ -232,6 +232,86 @@ function corsHeadersFor(req: Request): Record<string, string> {
   return CORS_HEADERS;
 }
 
+
+// ============================================================================
+// Element ref cache (agent-browser @ref system)
+// ============================================================================
+
+interface RefEntry {
+  selector: string;
+  role: string;
+  name: string;
+  ts: number;
+}
+
+const refCache = new Map<string, RefEntry>();
+let refCounter = 0;
+
+function resetRefs(): void {
+  refCache.clear();
+  refCounter = 0;
+}
+
+/**
+ * Resolve a ref argument ("e3" or "@e3") to a cached CSS selector.
+ * Returns undefined when no ref is given; throws a helpful error for
+ * invalid/unknown/stale refs so agents know to re-snapshot.
+ */
+function resolveRefArg(args: Record<string, any>): string | undefined {
+  const ref = args?.ref;
+  if (ref == null) return undefined;
+  const m = String(ref).match(/^@?(e\d+)$/);
+  if (!m) throw new Error("Invalid ref format: \"" + ref + "\". Refs look like \"e3\" or \"@e3\" (from browser_snapshot).");
+  const entry = refCache.get(m[1]);
+  if (!entry) throw new Error("Ref \"" + ref + "\" not found or stale (page changed). Run browser_snapshot again to refresh refs.");
+  return entry.selector;
+}
+
+/** Tools whose handlers accept a ref-or-selector target (dispatcher injects the resolved selector). */
+const REF_SUPPORTING = new Set([
+  "browser_click", "browser_type", "browser_fill", "browser_hover", "browser_select",
+  "browser_screenshot", "browser_check", "browser_uncheck",
+  "browser_focus", "browser_dblclick", "browser_highlight", "browser_get", "browser_is",
+  "browser_upload",
+]);
+
+const REF_PARAM = {
+  type: "string",
+  description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+};
+
+/** Resolve refs in a tool-call's arguments before dispatch (mutates args when needed). */
+function resolveArgsRefs(name: string, args: Record<string, any>): Record<string, any> {
+  if (!args) return args;
+  if (REF_SUPPORTING.has(name) && args.ref != null) {
+    const sel = resolveRefArg(args);
+    return { ...args, ref: undefined, selector: sel };
+  }
+  if (name === "browser_drag") {
+    let next = args;
+    if (args.from_ref != null) next = { ...next, from_ref: undefined, from_selector: resolveRefArg({ ref: args.from_ref }) };
+    if (args.to_ref != null) next = { ...next, to_ref: undefined, to_selector: resolveRefArg({ ref: args.to_ref }) };
+    return next;
+  }
+  if (name === "browser_wait" && args.mode === "selector" && args.ref != null) {
+    return { ...args, ref: undefined, selector: resolveRefArg(args) };
+  }
+  return args;
+}
+
+/** Resolve a tab id from the server's own status (for get url/title without a bridge round-trip). */
+async function activeTabIdFallback(): Promise<number> {
+  throw new Error("browser_get url/title requires the extension (use browser_tabs to list tabs first)");
+}
+
+/** Fetch a tab from the extension (used by browser_get url/title). */
+async function fetchTab(tabId: number): Promise<{ url: string; title: string }> {
+  const res = await sendBrowserCommand("tabs", { action: "list" });
+  const tab = (res?.tabs || []).find((t: any) => t.id === tabId) || (res?.tabs || [])[0];
+  if (!tab) throw new Error("No tab found");
+  return { url: tab.url || "", title: tab.title || "" };
+}
+
 // ============================================================================
 // Browser bridge (WebSocket server side)
 // ============================================================================
@@ -262,6 +342,8 @@ const COMMAND_TIMEOUTS: Record<string, number> = {
   wait_for: 60_000,
   download: 120_000,
   file_upload: 120_000,
+  back: 60_000,
+  forward: 60_000,
 };
 /**
  * Hard cap on bridge command duration. In gateway mode the gateway aborts its
@@ -529,7 +611,7 @@ const tools: Record<string, ToolDef> = {
       pierce: { type: "boolean", description: "Pierce shadow DOM and iframes to find the element (default: false)" },
       intercept_file_chooser: {
         type: "boolean",
-        description: "Set true when clicking a file upload button. Intercepts the file chooser dialog so you can provide a file via browser_upload_file. Do NOT set for download buttons.",
+        description: "Set true when clicking a file upload button. Intercepts the file chooser dialog so you can provide a file via browser_upload. Do NOT set for download buttons.",
       },
       stealth: {
         type: "boolean",
@@ -749,7 +831,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_keypress: {
+  browser_press: {
     description:
       "Send keyboard key presses with optional modifiers. Use for shortcuts, navigation keys, and special keys like Enter, Tab, Escape, Arrow keys, F1-F12, etc.",
     parameters: {
@@ -766,26 +848,6 @@ const tools: Record<string, ToolDef> = {
       try {
         const result = await sendBrowserCommand("keypress", { key: args.key, modifiers: args.modifiers, tabId: args.tab_id, stealth: args.stealth });
         return outJson({ pressed: true, key: result.key, modifiers: result.modifiers, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
-    },
-  },
-
-  browser_wait_for: {
-    description:
-      "Wait for an element to appear on the page. Polls until the element matching the selector exists and is visible. Use before interacting with dynamically loaded content.",
-    parameters: {
-      selector: { type: "string", description: "CSS selector to wait for" },
-      timeout: { type: "number", description: "Maximum wait time in milliseconds (default: 5000, max: 30000)" },
-      visible: { type: "boolean", description: "Require element to be visible, not just in DOM (default: true)" },
-      pierce: { type: "boolean", description: "Pierce shadow DOM and iframes to find the element (default: false)" },
-      tab_id: { type: "number", description: "Target tab ID (optional)" },
-      bridge_timeout: { type: "number", description: "Override server-side timeout in seconds (default: 60, max: 120). Should be >= timeout/1000." },
-    },
-    required: ["selector"],
-    handler: async (args) => {
-      try {
-        const result = await sendBrowserCommand("wait_for", { selector: args.selector, tabId: args.tab_id, timeout: args.timeout, visible: args.visible, pierce: args.pierce }, { timeoutMs: bridgeTimeoutMs(args) });
-        return outJson({ found: true, element: result.element, elapsed_ms: result.elapsed, tab_id: result.tabId });
       } catch (e) { return outError(e); }
     },
   },
@@ -811,7 +873,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_handle_dialog: {
+  browser_dialog: {
     description:
       'Handle a JavaScript dialog (alert, confirm, or prompt). Must be called after a dialog appears. Use action "accept" to click OK or "dismiss" to click Cancel.',
     parameters: {
@@ -828,22 +890,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_history: {
-    description: "Navigate back or forward in browser history. Equivalent to clicking the browser's back/forward buttons.",
-    parameters: {
-      action: { type: "string", description: '"back" or "forward"', enum: ["back", "forward"] },
-      tab_id: { type: "number", description: "Target tab ID (optional)" },
-    },
-    required: ["action"],
-    handler: async (args) => {
-      try {
-        const result = await sendBrowserCommand("history", { action: args.action, tabId: args.tab_id });
-        return outJson({ navigated: true, action: result.action, url: result.url, title: result.title, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
-    },
-  },
-
-  browser_upload_file: {
+  browser_upload: {
     description:
       "Upload a file to a web page. Two modes: (1) After clicking an upload button that opens a file chooser dialog (file_chooser_opened in response), just provide file_id - no selector needed. " +
       '(2) Direct mode: provide both file_id and a CSS selector for the <input type="file"> element. ' +
@@ -971,7 +1018,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_permissions: {
+  browser_perms: {
     description:
       'Grant, deny, or reset browser permissions for a site. Controls access to camera, microphone, geolocation, notifications, clipboard, MIDI, and other web APIs. Grant permissions before interacting with features that need them (e.g., grant "geolocation" before testing a map app).',
     parameters: {
@@ -1089,9 +1136,474 @@ const tools: Record<string, ToolDef> = {
       });
     },
   },
-};
 
-// ============================================================================
+
+  // ===========================================================================
+  // agent-browser port: element discovery + interaction extras
+  // ===========================================================================
+
+  browser_snapshot: {
+    description:
+      "Capture the page's interactive element tree with refs (agent-browser style @ref system). " +
+      "Returns compact lines like 'button \"Submit\" [ref=e4]'. Use the ref (e.g. \"e4\" or \"@e4\") as the 'ref' argument of any interaction tool (click/type/fill/hover/select/check/uncheck/focus/dblclick/highlight/get/is/wait_for) instead of writing CSS selectors. " +
+      "Refs are valid until the next snapshot or page navigation. Elements: buttons, links, inputs, selects, textareas, checkboxes, radios, sliders, focusables, and cursor:pointer elements (when cursor=true).",
+    parameters: {
+      interactive: { type: "boolean", description: "Only interactive elements (default: true)" },
+      cursor: { type: "boolean", description: "Also include cursor:pointer elements without ARIA roles (default: false)" },
+      include_headings: { type: "boolean", description: "Also include headings h1-h6 (default: false)" },
+      max: { type: "number", description: "Max elements to capture (default: 300, cap 500)" },
+      scope: { type: "string", description: "CSS selector to scope the snapshot (optional)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("snapshot", { interactive: args.interactive, cursor: args.cursor, max: args.max, includeHeadings: args.include_headings, scope: args.scope, tabId: args.tab_id });
+        const entries = result.entries || [];
+        resetRefs();
+        const lines = [];
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          const ref = "e" + (i + 1);
+          refCache.set(ref, { selector: e.selector || "", role: e.role || "", name: e.name || "", ts: Date.now() });
+          let line = e.role || e.tag;
+          if (e.name) line += " \"" + String(e.name).slice(0, 80) + "\"";
+          line += " [ref=" + ref + "]";
+          if (e.value !== undefined) line += " [value=\"" + String(e.value).slice(0, 60) + "\"]";
+          if (e.checked !== undefined) line += " [checked=" + e.checked + "]";
+          if (e.href) line += " -> " + String(e.href).slice(0, 200);
+          if (e.level) line += " [level=" + e.level + "]";
+          lines.push(line);
+        }
+        const out = "page: " + (result.url || "") + " - " + entries.length + " element" + (entries.length === 1 ? "" : "s") + " (refs valid until next snapshot)\n" + lines.map((l) => "  " + l).join("\n");
+        return { blocks: textBlocks(out) };
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_find: {
+    description:
+      "Semantic element search (agent-browser style). Find elements by role, accessible name, visible text, label, placeholder, title, data-testid, or CSS selector. " +
+      "Returns matching elements with refs you can pass to interaction tools. Prefer over hand-writing CSS selectors.",
+    parameters: {
+      role: { type: "string", description: "ARIA role to match: button, link, textbox, checkbox, radio, combobox, heading, ..." },
+      name: { type: "string", description: "Accessible name to match (used together with role, exact match)" },
+      text: { type: "string", description: "Visible text substring to match" },
+      label: { type: "string", description: "<label> text to match (for form fields)" },
+      placeholder: { type: "string", description: "Placeholder text to match" },
+      title: { type: "string", description: "title attribute to match" },
+      testid: { type: "string", description: "data-testid value to match" },
+      selector: { type: "string", description: "CSS selector to match (alternative to semantic criteria)" },
+      exact: { type: "boolean", description: "Exact string match (default: true for name, false for substrings)" },
+      max: { type: "number", description: "Max results (default: 50, cap 100)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("find", { role: args.role, name: args.name, text: args.text, label: args.label, placeholder: args.placeholder, title: args.title, testid: args.testid, selector: args.selector, exact: args.exact, max: args.max, tabId: args.tab_id });
+        const matches = result.matches || [];
+        const lines = [];
+        for (const m of matches) {
+          refCounter++;
+          const ref = "e" + refCounter;
+          refCache.set(ref, { selector: m.selector || "", role: m.role || "", name: m.name || "", ts: Date.now() });
+          let line = (m.role || m.tag) + " \"" + String(m.name || m.text || "").slice(0, 60) + "\" [ref=" + ref + "]";
+          if (m.value) line += " [value=\"" + String(m.value).slice(0, 40) + "\"]";
+          if (m.href) line += " -> " + String(m.href).slice(0, 150);
+          lines.push(line);
+        }
+        return { blocks: textBlocks("found " + matches.length + " match" + (matches.length === 1 ? "" : "es") + (lines.length ? "\n" + lines.map((l) => "  " + l).join("\n") : "")) };
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_get: {
+    description:
+      "Get information from the page or an element (agent-browser browser_get). Properties: text, html, value, attribute (needs attr), url, title, count, box, styles (needs style_property). Target with ref (from browser_snapshot) or selector.",
+    parameters: {
+      property: { type: "string", description: "What to get: text, html, value, attribute, url, title, count, box, styles", enum: ["text", "html", "value", "attribute", "url", "title", "count", "box", "styles"] },
+      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      attr: { type: "string", description: "Attribute name (required when property=attribute)" },
+      style_property: { type: "string", description: "Computed style property (optional for property=styles)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: ["property"],
+    handler: async (args) => {
+      try {
+        const sel = args.ref ? resolveRefArg(args) : args.selector;
+        if (args.property === "url" || args.property === "title") {
+          const tid = args.tab_id || (await activeTabIdFallback());
+          const tab = await fetchTab(tid);
+          return { blocks: textBlocks(args.property === "url" ? tab.url : tab.title) };
+        }
+        if (!sel) return outError(new Error("browser_get requires ref or selector for property=" + args.property));
+        const result = await sendBrowserCommand("get_element", { selector: sel, property: args.property, attr: args.attr || null, styleProperty: args.style_property || null, tabId: args.tab_id });
+        if (result && typeof result === "object" && "exists" in result && !result.exists) return outError(new Error("Element not found: " + sel));
+        const keys = ["exists", "tag", "id", "className", "role", "text", "value", "count", "box", "styles", "html"];
+        const compact: Record<string, any> = {};
+        for (const k of keys) if (result && result[k] !== undefined) compact[k] = result[k];
+        return outJson(compact);
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_is: {
+    description:
+      "Check an element's state (agent-browser browser_is). Checks: visible, hidden, enabled, disabled, checked, unchecked, editable, readonly, focused. Returns true/false. Target with ref or selector.",
+    parameters: {
+      check: { type: "string", description: "State to check", enum: ["visible", "hidden", "enabled", "disabled", "checked", "unchecked", "editable", "readonly", "focused"] },
+      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: ["check"],
+    handler: async (args) => {
+      try {
+        const sel = args.ref ? resolveRefArg(args) : args.selector;
+        if (!sel) return outError(new Error("browser_is requires ref or selector"));
+        const result = await sendBrowserCommand("is_element", { selector: sel, check: args.check, tabId: args.tab_id });
+        return { blocks: textBlocks(String(result.result)) };
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_fill: {
+    description:
+      "Fill an input field: clear it, then type the text (agent-browser browser_fill). For fields where you want to APPEND text, use browser_type. Target with ref or selector.",
+    parameters: {
+      text: { type: "string", description: "Text to fill" },
+      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      press_enter: { type: "boolean", description: "Press Enter after filling (default: false)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: ["text"],
+    handler: async (args) => {
+      try {
+        const sel = args.ref ? resolveRefArg(args) : args.selector;
+        const result = await sendBrowserCommand("fill", { text: args.text, selector: sel, tabId: args.tab_id, pressEnter: args.press_enter });
+        return outJson({ filled: true, text_length: String(args.text).length, element: sel || "(focused)", tab_id: result.tabId });
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_check: {
+    description: "Check a checkbox or radio button (agent-browser browser_check). No-op if already checked. Target with ref or selector.",
+    parameters: {
+      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const sel = args.ref ? resolveRefArg(args) : args.selector;
+        if (!sel) return outError(new Error("browser_check requires ref or selector"));
+        const result = await sendBrowserCommand("check", { selector: sel, tabId: args.tab_id });
+        return outJson({ checked: true, already: !!result.already, tab_id: result.tabId });
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_uncheck: {
+    description: "Uncheck a checkbox or radio button (agent-browser browser_uncheck). No-op if already unchecked. Target with ref or selector.",
+    parameters: {
+      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const sel = args.ref ? resolveRefArg(args) : args.selector;
+        if (!sel) return outError(new Error("browser_uncheck requires ref or selector"));
+        const result = await sendBrowserCommand("uncheck", { selector: sel, tabId: args.tab_id });
+        return outJson({ checked: false, already: !!result.already, tab_id: result.tabId });
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_focus: {
+    description: "Focus an element (agent-browser browser_focus). Scrolls it into view first. Target with ref or selector.",
+    parameters: {
+      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const sel = args.ref ? resolveRefArg(args) : args.selector;
+        if (!sel) return outError(new Error("browser_focus requires ref or selector"));
+        const result = await sendBrowserCommand("focus", { selector: sel, tabId: args.tab_id });
+        return outJson({ focused: true, element: sel, tab_id: result.tabId });
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_dblclick: {
+    description: "Double-click an element (agent-browser browser_dblclick). Equivalent to browser_click with click_count=2. Target with ref, selector, or coordinates.",
+    parameters: {
+      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      x: { type: "number", description: "X coordinate (if no selector/ref)" },
+      y: { type: "number", description: "Y coordinate (if no selector/ref)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+      stealth: { type: "boolean", description: "Use stealth mode on anti-bot protected sites" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const sel = args.ref ? resolveRefArg(args) : args.selector;
+        const result = await sendBrowserCommand("dblclick", { selector: sel, x: args.x, y: args.y, tabId: args.tab_id, stealth: args.stealth });
+        return outJson({ double_clicked: true, element: result.element || sel || "(" + args.x + "," + args.y + ")", tab_id: result.tabId });
+      } catch (e) { return outError(e); }
+    },
+  },
+  browser_reload: {
+    description: "Reload the current page (agent-browser browser_reload).",
+    parameters: {
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+      wait_for: { type: "string", description: "Wait for load (default) after reload", enum: ["load", "domcontentloaded"] },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("reload", { tabId: args.tab_id, waitFor: args.wait_for });
+        return outJson({ reloaded: true, url: result.url, title: result.title, tab_id: result.tabId });
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_back: {
+    description: "Go back in history (agent-browser browser_back).",
+    parameters: { tab_id: { type: "number", description: "Target tab ID (optional)" } },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("back", { tabId: args.tab_id });
+        return outJson({ navigated: "back", url: result.url, title: result.title, tab_id: result.tabId });
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_forward: {
+    description: "Go forward in history (agent-browser browser_forward).",
+    parameters: { tab_id: { type: "number", description: "Target tab ID (optional)" } },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("forward", { tabId: args.tab_id });
+        return outJson({ navigated: "forward", url: result.url, title: result.title, tab_id: result.tabId });
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_close: {
+    description: "Close a browser tab (agent-browser browser_close). Defaults to the active tab.",
+    parameters: { tab_id: { type: "number", description: "Tab ID to close (optional - active tab)" } },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("close", { tabId: args.tab_id });
+        return outJson({ closed: result.closed });
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_storage: {
+    description:
+      "Read, write, or clear localStorage/sessionStorage of the current page (agent-browser browser_storage). " +
+      "Use type='local' (default) or 'session'. Actions: get (all or one key), set, remove, clear.",
+    parameters: {
+      action: { type: "string", description: "get (default), set, remove, or clear", enum: ["get", "set", "remove", "clear"] },
+      type: { type: "string", description: "local (localStorage, default) or session (sessionStorage)", enum: ["local", "session"] },
+      key: { type: "string", description: "Storage key (required for set/remove; optional for get - returns all if omitted)" },
+      value: { type: "string", description: "Value to store (required for set)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: ["action"],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("storage", { action: args.action || "get", type: args.type || "local", key: args.key, value: args.value, tabId: args.tab_id });
+        if (result && typeof result === "object" && result.error) return outError(new Error(String(result.error)));
+        return outJson(result);
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_pdf: {
+    description:
+      "Export the current page as a PDF (agent-browser browser_pdf). The PDF is stored on the Browser MCP server and returned as file_id - fetch it via GET /files/<file_id> (local) or read it with browser_file_read.",
+    parameters: {
+      format: { type: "string", description: "Paper format: letter (default), a4, a3, a5, legal, tabloid", enum: ["letter", "a4", "a3", "a5", "legal", "tabloid"] },
+      landscape: { type: "boolean", description: "Landscape orientation (default: false)" },
+      print_background: { type: "boolean", description: "Print background graphics (default: true)" },
+      display_header_footer: { type: "boolean", description: "Display header/footer (default: false)" },
+      scale: { type: "number", description: "Scale factor (default: 1)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("pdf", { tabId: args.tab_id, format: args.format, landscape: args.landscape, printBackground: args.print_background, displayHeaderFooter: args.display_header_footer, scale: args.scale });
+        if (!result?.data) return outError(new Error("No PDF data returned"));
+        const buf = Buffer.from(result.data, "base64");
+        const file = saveFile("page-" + Date.now() + ".pdf", buf, "application/pdf");
+        return outJson({
+          file_id: file.id,
+          filename: file.name,
+          size: file.size,
+          tab_id: result.tabId,
+          message: "PDF exported. Fetch via GET http://localhost:" + port + "/files/" + file.id + " or browser_file_read.",
+        });
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_set: {
+    description:
+      "Configure browser behavior (agent-browser browser_set). Properties: viewport (width/height), device (preset name), geo (latitude/longitude), offline (true/false), headers (object of extra HTTP headers), media (color_scheme/reduced_motion). Emulation persists until cleared via browser_emulate action=clear or tab close.",
+    parameters: {
+      property: { type: "string", description: "What to set: viewport, device, geo, offline, headers, media", enum: ["viewport", "device", "geo", "offline", "headers", "media"] },
+      width: { type: "number", description: "Viewport width (property=viewport)" },
+      height: { type: "number", description: "Viewport height (property=viewport)" },
+      device_scale_factor: { type: "number", description: "Device pixel ratio (property=viewport)" },
+      is_mobile: { type: "boolean", description: "Mobile mode (property=viewport)" },
+      has_touch: { type: "boolean", description: "Touch support (property=viewport)" },
+      device_name: { type: "string", description: "Device preset: 'Desktop Chrome', 'iPhone 14', 'iPhone 13', 'Pixel 5', 'iPad Pro', 'Galaxy S21' (property=device)" },
+      latitude: { type: "number", description: "Latitude (property=geo)" },
+      longitude: { type: "number", description: "Longitude (property=geo)" },
+      offline: { type: "boolean", description: "Go offline (property=offline)" },
+      headers: { type: "object", description: "Extra HTTP headers, e.g. {\"X-Custom\": \"v\"} (property=headers)" },
+      color_scheme: { type: "string", description: "prefers-color-scheme: light or dark (property=media)" },
+      reduced_motion: { type: "string", description: "prefers-reduced-motion: reduce or no-preference (property=media)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: ["property"],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("set", { property: args.property, width: args.width, height: args.height, deviceScaleFactor: args.device_scale_factor, isMobile: args.is_mobile, hasTouch: args.has_touch, deviceName: args.device_name, latitude: args.latitude, longitude: args.longitude, offline: args.offline, headers: args.headers, colorScheme: args.color_scheme, reducedMotion: args.reduced_motion, tabId: args.tab_id });
+        return outJson(result);
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_highlight: {
+    description: "Flash a highlight box around an element so the user can see what the agent is targeting (debug helper). Target with ref or selector.",
+    parameters: {
+      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      duration: { type: "number", description: "Highlight duration in ms (default: 2000)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const sel = args.ref ? resolveRefArg(args) : args.selector;
+        if (!sel) return outError(new Error("browser_highlight requires ref or selector"));
+        const result = await sendBrowserCommand("highlight", { selector: sel, duration: args.duration, tabId: args.tab_id });
+        return outJson({ highlighted: sel, tab_id: result.tabId });
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_window: {
+    description:
+      "Manage browser windows (agent-browser browser_window). Actions: list (all windows + tabs), create (new window, optionally with url), close (by window_id).",
+    parameters: {
+      action: { type: "string", description: "list (default), create, or close", enum: ["list", "create", "close"] },
+      url: { type: "string", description: "URL to open in the new window (action=create)" },
+      window_id: { type: "number", description: "Window ID to close (action=close)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("window", { action: args.action || "list", url: args.url, windowId: args.window_id });
+        return outJson(result);
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_console: {
+    description:
+      "View or clear browser console messages (agent-browser browser_console). action=view returns console.log/error/warn/info etc. captured for this tab; supports filter (substring) and types (array). action=clear empties the buffer. Capture starts from the first call (Runtime domain enabled lazily) - reload the page to capture early messages.",
+    parameters: {
+      action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
+      filter: { type: "string", description: "Case-insensitive substring filter on messages" },
+      types: { type: "array", items: { type: "string" }, description: "Message types to include: log, error, warn, info, debug, ..." },
+      clear: { type: "boolean", description: "Clear messages after viewing" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("console", { action: args.action || "view", filter: args.filter, types: args.types, clear: args.clear, tabId: args.tab_id });
+        return outJson(result);
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_errors: {
+    description:
+      "View or clear uncaught JavaScript errors on the page (agent-browser browser_errors). action=view returns captured runtime exceptions; supports filter. action=clear empties the buffer. Capture starts from the first call - reload to capture early errors.",
+    parameters: {
+      action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
+      filter: { type: "string", description: "Case-insensitive substring filter on error messages" },
+      clear: { type: "boolean", description: "Clear errors after viewing" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("errors", { action: args.action || "view", filter: args.filter, clear: args.clear, tabId: args.tab_id });
+        return outJson(result);
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_network: {
+    description:
+      "View or clear captured network requests for the tab (agent-browser browser_network). action=view returns {url, method, status, mimeType, resourceType, size, duration}; supports filter (URL substring). action=clear empties the log. Capture starts from the first call - reload/navigate to capture requests.",
+    parameters: {
+      action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
+      filter: { type: "string", description: "Case-insensitive substring filter on request URLs" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("network", { action: args.action || "view", filter: args.filter, tabId: args.tab_id });
+        return outJson(result);
+      } catch (e) { return outError(e); }
+    },
+  },
+
+  browser_wait: {
+    description:
+      "Wait for a condition (agent-browser browser_wait). Modes: timeout (sleep), load (page load), url (substring or regex match), text (page contains text), selector (element appears, use ref or selector). Returns once the condition is met or after timeout (default 10s, max 30s).",
+    parameters: {
+      mode: { type: "string", description: "timeout, load, url, text, or selector", enum: ["timeout", "load", "url", "text", "selector"] },
+      timeout: { type: "number", description: "Max wait in ms (default 10000, max 30000)" },
+      url: { type: "string", description: "URL substring or regex (mode=url)" },
+      text: { type: "string", description: "Text to wait for (mode=text)" },
+      ref: { type: "string", description: "Element ref from browser_snapshot (mode=selector, alternative to selector)" },
+      selector: { type: "string", description: "CSS selector (mode=selector)" },
+      state: { type: "string", description: "Load state for mode=load: load (default) or domcontentloaded", enum: ["load", "domcontentloaded"] },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const sel = args.mode === "selector" && args.ref ? resolveRefArg(args) : args.selector;
+        const result = await sendBrowserCommand("wait", { mode: args.mode || "timeout", selector: sel, text: args.text, url: args.url, timeout: args.timeout, state: args.state, tabId: args.tab_id });
+        return outJson(result);
+      } catch (e) { return outError(e); }
+    },
+  },
+};// ============================================================================
 // JSON-RPC dispatch (MCP Streamable-HTTP style, same as code-mcp)
 // ============================================================================
 
@@ -1117,18 +1629,27 @@ async function handle(msg: Json): Promise<Json | null> {
     if (method === "ping") return ok({});
     if (method === "tools/list") {
       return ok({
-        tools: Object.entries(tools).map(([name, t]) => ({
-          name,
-          description: t.description,
-          inputSchema: { type: "object", properties: t.parameters, required: t.required },
-        })),
+        tools: Object.entries(tools).map(([name, t]) => {
+          const props = { ...t.parameters };
+          if (REF_SUPPORTING.has(name) && !props.ref) props.ref = REF_PARAM;
+          if (name === "browser_drag") {
+            if (!props.from_ref) props.from_ref = { ...REF_PARAM, description: "Element ref for drag source (alternative to from_selector)" };
+            if (!props.to_ref) props.to_ref = { ...REF_PARAM, description: "Element ref for drag target (alternative to to_selector)" };
+          }
+          return {
+            name,
+            description: t.description,
+            inputSchema: { type: "object", properties: props, required: t.required },
+          };
+        }),
       });
     }
     if (method === "tools/call") {
       const { name, arguments: args } = params ?? {};
       const t = tools[name];
       if (!t) return err(-32601, "unknown tool: " + name);
-      const result = await t.handler(args ?? {});
+      const resolvedArgs = resolveArgsRefs(name, args ?? {});
+      const result = await t.handler(resolvedArgs);
       if (result && typeof result === "object" && "blocks" in result) {
         return ok({ content: result.blocks, ...(result.isError ? { isError: true } : {}) });
       }
