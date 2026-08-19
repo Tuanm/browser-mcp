@@ -19,6 +19,7 @@
     }
     .head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
     .head img { width: 20px; height: 20px; }
+    .ver { font-size: 10px; color: #999; }
     .dot { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; }
     .dot.on { background: #16a34a; }
     .dot.off { background: #fff; border: 1.5px solid #111; }
@@ -56,6 +57,7 @@
 <body>
   <div class="head">
     <img id="headerIcon" src="../icons/app-icon-128.png" alt="Browser MCP" />
+    <span class="ver" id="versionTag"></span>
     <span class="dot off" id="dot"></span>
   </div>
 

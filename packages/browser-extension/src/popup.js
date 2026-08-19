@@ -16,6 +16,11 @@ const deviceIdInput = document.getElementById("deviceId");
 const tokenInput = document.getElementById("authToken");
 const connectBtn = document.getElementById("connectBtn");
 
+// Show the build version (git hash injected as version_name at zip time).
+const manifest = chrome.runtime.getManifest();
+const versionTag = document.getElementById("versionTag");
+if (versionTag) versionTag.textContent = manifest.version_name || manifest.version;
+
 /** Mask a token: never reveal more than ~50% of chars. */
 function maskToken(token) {
   if (!token) return "";

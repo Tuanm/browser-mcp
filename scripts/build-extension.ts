@@ -6,6 +6,17 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
+/** Short git hash of the current commit (used as version_name in the manifest). */
+function gitHash(): string {
+  try {
+    const out = Bun.spawnSync(["git", "rev-parse", "--short=7", "HEAD"], { stdout: "pipe" });
+    const h = (out.stdout || "").toString().trim();
+    return /^[0-9a-f]{4,}$/.test(h) ? h : "dev";
+  } catch {
+    return "dev";
+  }
+}
+
 const EXT_DIR = join(import.meta.dir, "..", "packages", "browser-extension");
 const OUT = join(import.meta.dir, "..", "dist", "browser-extension.zip");
 const EXCLUDE = new Set(["README.md", ".DS_Store"]);
@@ -67,7 +78,14 @@ function main() {
       } else {
         if (EXCLUDE.has(entry.name)) continue;
         const rel = relative(EXT_DIR, full).split("\\").join("/"); // PKZIP requires forward slashes
-        files.push({ name: rel, data: readFileSync(full) });
+        let data: Uint8Array = readFileSync(full);
+        if (rel === "manifest.json") {
+          // Tag the build with the git hash so the popup can show it.
+          const manifest = JSON.parse(new TextDecoder().decode(data));
+          manifest.version_name = gitHash();
+          data = new TextEncoder().encode(JSON.stringify(manifest, null, 2) + "\n");
+        }
+        files.push({ name: rel, data });
       }
     }
   }

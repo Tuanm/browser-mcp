@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Syntax check
+        run: bun run check
+
+      - name: Tests
+        run: bun run test
+
+      - name: Build extension zip
+        run: bun run build
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-mcp-extension
+          path: dist/browser-extension.zip
+          if-no-files-found: error
