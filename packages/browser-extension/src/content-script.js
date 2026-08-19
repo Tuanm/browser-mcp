@@ -91,100 +91,75 @@ if (!window[Symbol.for("_x7cs")]) {
 </svg>`;
   }
 
+  // One persistent mouse pointer. It is shown while the agent works, moves to
+  // each action point (tip at the action position), and stays there until the
+  // agent session ends - it does not auto-remove after each action.
   let cursorStyleEl = null;
-  const MAX_CURSORS = 5;
-  let activeCursors = 0;
+  let persistentCursorEl = null;
 
   function ensureCursorStyles() {
     if (cursorStyleEl && cursorStyleEl.isConnected) return;
     cursorStyleEl = document.createElement("style");
     cursorStyleEl.id = `${_pfx}-cursor-style`;
-    cursorStyleEl.textContent = `
-      @keyframes ${_pfx}-cursor-pop {
-        0% { transform: scale(0); opacity: 1; }
-        15% { transform: scale(1.25); opacity: 1; }
-        30% { transform: scale(1); opacity: 1; }
-        85% { transform: scale(1); opacity: 0.9; }
-        100% { transform: scale(0.55); opacity: 0; }
-      }
-      .${_pfx}-action-cursor {
-        position: fixed;
-        z-index: 2147483647;
-        pointer-events: none;
-        animation: ${_pfx}-cursor-pop 0.7s ease-out forwards;
-        transform-origin: 6px 2px; /* arrow tip */
-        filter: drop-shadow(0 2px 3px rgba(0,0,0,0.35));
-      }
-      .${_pfx}-action-cursor svg {
-        display: block;
-      }
-    `;
+    cursorStyleEl.textContent = [
+      `@keyframes ${_pfx}-cursor-pop {`,
+      `  0% { transform: scale(0); opacity: 1; }`,
+      `  15% { transform: scale(1.25); opacity: 1; }`,
+      `  30% { transform: scale(1); opacity: 1; }`,
+      `  100% { transform: scale(1); opacity: 1; }`,
+      `}`,
+      `.` + `${_pfx}-action-cursor {`,
+      `  position: fixed;`,
+      `  z-index: 2147483647;`,
+      `  pointer-events: none;`,
+      `  transform-origin: 6px 2px; /* arrow tip */`,
+      `  filter: drop-shadow(0 2px 3px rgba(0,0,0,0.35));`,
+      `}`,
+      `.` + `${_pfx}-action-cursor svg { display: block; }`,
+    ].join("\n");
     (document.head || document.documentElement).appendChild(cursorStyleEl);
   }
 
+  function ensurePersistentCursor() {
+    if (persistentCursorEl && persistentCursorEl.isConnected) return persistentCursorEl;
+    ensureCursorStyles();
+    persistentCursorEl = document.createElement("div");
+    persistentCursorEl.id = `${_pfx}-action-cursor`;
+    persistentCursorEl.className = `${_pfx}-action-cursor`;
+    persistentCursorEl.innerHTML = cursorSvg(24);
+    (document.body || document.documentElement).appendChild(persistentCursorEl);
+    return persistentCursorEl;
+  }
+
+  /** Move the persistent mouse pointer to the action point. */
   function showActionCursor(x, y) {
-    if (activeCursors >= MAX_CURSORS) return;
     try {
-      ensureCursorStyles();
-      const cursor = document.createElement("div");
-      cursor.className = `${_pfx}-action-cursor`;
-      cursor.innerHTML = cursorSvg(24);
+      const cursor = ensurePersistentCursor();
       // Place the arrow tip at the action point (tip at 6,2 in the 24px svg).
       cursor.style.left = `${x - 6}px`;
       cursor.style.top = `${y - 2}px`;
-      (document.body || document.documentElement).appendChild(cursor);
-      activeCursors++;
-      setTimeout(() => { cursor.remove(); activeCursors--; }, 750);
-    } catch {
-      // Ignore errors on restricted pages
-    }
+      cursor.style.display = "block";
+      // Restart the pop animation; it settles at scale(1) so the pointer stays.
+      cursor.style.animation = "none";
+      void cursor.offsetWidth; // reflow to restart animation
+      cursor.style.animation = `${_pfx}-cursor-pop 0.35s ease-out forwards`;
+    } catch {}
   }
 
-  // ========================================================================
-  // Persistent Activity Cursor - mouse pointer that stays during long operations
-  // ========================================================================
-
-  let activityCursorEl = null;
-
+  /** Show the persistent pointer (keeps its last position). */
   function showActivityCursor() {
-    if (activityCursorEl) return;
     try {
-      ensureCursorStyles();
-      activityCursorEl = document.createElement("div");
-      activityCursorEl.id = `${_pfx}-activity-cursor`;
-      activityCursorEl.innerHTML = cursorSvg(32);
-      Object.assign(activityCursorEl.style, {
-        position: "fixed", bottom: "24px", right: "24px",
-        zIndex: "2147483647", pointerEvents: "none",
-        filter: "drop-shadow(0 3px 4px rgba(0,0,0,0.35))",
-        animation: `${_pfx}-cursor-bounce 1s ease-in-out infinite`,
-        transition: "opacity 0.3s ease-out",
-      });
-      let bounceStyle = document.getElementById(`${_pfx}-bounce-style`);
-      if (!bounceStyle) {
-        bounceStyle = document.createElement("style");
-        bounceStyle.id = `${_pfx}-bounce-style`;
-        bounceStyle.textContent = `
-          @keyframes ${_pfx}-cursor-bounce {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-6px); }
-          }
-          #${_pfx}-activity-cursor svg { display: block; width: 32px; height: 32px; }
-        `;
-        (document.head || document.documentElement).appendChild(bounceStyle);
-      }
-      (document.body || document.documentElement).appendChild(activityCursorEl);
-    } catch {
-      // Ignore errors on restricted pages
-    }
+      const cursor = ensurePersistentCursor();
+      cursor.style.display = "block";
+      cursor.style.animation = "none";
+    } catch {}
   }
 
+  /** Hide the persistent pointer when the agent session ends. */
   function hideActivityCursor() {
-    if (!activityCursorEl) return;
-    activityCursorEl.style.opacity = "0";
-    const el = activityCursorEl;
-    activityCursorEl = null;
-    setTimeout(() => { if (el) el.remove(); }, 300);
+    try {
+      if (persistentCursorEl) persistentCursorEl.style.display = "none";
+    } catch {}
   }
 
   // ========================================================================
@@ -196,15 +171,15 @@ if (!window[Symbol.for("_x7cs")]) {
       const oldPfx = _pfx;
       _pfx = message.prefix;
       if (oldPfx !== _pfx) {
-        for (const id of [`${oldPfx}-overlay-style`, `${oldPfx}-agent-overlay`, `${oldPfx}-cursor-style`, `${oldPfx}-bounce-style`, `${oldPfx}-activity-cursor`]) {
+        for (const id of [`${oldPfx}-overlay-style`, `${oldPfx}-agent-overlay`, `${oldPfx}-cursor-style`, `${oldPfx}-action-cursor`]) {
           const el = document.getElementById(id);
           if (el) el.remove();
         }
-        overlayEl = null; styleEl = null; cursorStyleEl = null; activityCursorEl = null;
+        overlayEl = null; styleEl = null; cursorStyleEl = null; persistentCursorEl = null;
         if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
         if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null; }
         if (autoHideTimer) { clearTimeout(autoHideTimer); autoHideTimer = null; }
-        overlayCount = 0; activeCursors = 0;
+        overlayCount = 0;
       }
       sendResponse({ ok: true });
     } else if (message.type === "show-agent-overlay") {

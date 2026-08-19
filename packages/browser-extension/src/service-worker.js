@@ -281,13 +281,11 @@ async function handleCommand(id, method, params) {
     } catch {}
   }
   if (indicatorTab) await showAgentIndicator(indicatorTab);
-  // Show persistent Browser MCP icon during long-running download/upload operations
-  const showActivity = method === "download" || method === "file_upload";
-  if (showActivity && indicatorTab) showActivityCursor(indicatorTab);
+  // The persistent mouse pointer follows the agent on every command.
+  if (indicatorTab) showActivityCursor(indicatorTab);
   try {
     return await dispatchCommand(method, params);
   } finally {
-    if (showActivity && indicatorTab) hideActivityCursor(indicatorTab);
     if (indicatorTab) hideAgentIndicator(indicatorTab);
   }
 }
@@ -3846,6 +3844,7 @@ async function showAgentIndicator(tabId) {
     // Send session-random prefix for DOM identifier stealth, then show overlay
     await chrome.tabs.sendMessage(tabId, { type: "set-prefix", prefix: SESSION_PREFIX }).catch(() => {});
     chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay" }).catch(() => {});
+    chrome.tabs.sendMessage(tabId, { type: "show-activity-cursor" }).catch(() => {});
   }
 }
 
@@ -3855,6 +3854,7 @@ function hideAgentIndicator(tabId) {
   if (count === 0) {
     activeTabCommands.delete(tabId);
     chrome.tabs.sendMessage(tabId, { type: "hide-agent-overlay" }).catch(() => {});
+    chrome.tabs.sendMessage(tabId, { type: "hide-activity-cursor" }).catch(() => {});
   }
 }
 
