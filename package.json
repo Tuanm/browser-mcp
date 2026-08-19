@@ -1,14 +1,13 @@
 {
   "name": "browser-mcp",
   "version": "0.1.0",
-  "description": "Chrome extension + local MCP server exposing browser operations via code-mcp-gateway",
+  "description": "Expose Chrome/Edge as MCP tools \u2014 the extension serves MCP directly through code-mcp-gateway (no local server needed).",
   "type": "module",
   "scripts": {
     "start": "bun browser-mcp.ts",
-    "check": "bun --check browser-mcp.ts",
-    "build": "bun build-extension.ts",
-    "extension:zip": "bun build-extension.ts",
+    "check": "bun build browser-mcp.ts --no-bundle > /dev/null && bun build scripts/build-extension.ts --no-bundle > /dev/null && for f in packages/browser-extension/src/*.js; do node --check \"$f\" || exit 1; done",
     "test": "bun scripts/test-integration.ts",
+    "build": "bun scripts/build-extension.ts",
     "icons": "cd packages/browser-extension/icons && for s in 16 48 128; do rsvg-convert -w $s -h $s -o app-icon-$s.png mcp-gray.svg; rsvg-convert -w $s -h $s -o connected-$s.png mcp-green.svg; done"
   },
   "devDependencies": {

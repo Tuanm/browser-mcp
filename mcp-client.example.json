@@ -3,8 +3,6 @@
     "browser": {
       "type": "http",
       "url": "http://127.0.0.1:7777/mcp"
-      // if you run the server with --token, add:
-      // "headers": { "Authorization": "Bearer <token>" }
     }
   }
 }

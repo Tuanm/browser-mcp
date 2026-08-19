@@ -1,8 +1,10 @@
 /**
  * Browser MCP Offscreen Document — Persistent WebSocket bridge.
  *
- * Maintains a WebSocket connection to the local Browser MCP server
- * and relays commands to/from the service worker.
+ * Connects either to the local Browser MCP server (ws://localhost:7777/browser/ws)
+ * or, when a device ID is configured, directly to the code-mcp gateway
+ * (wss://code-mcp.tuanm.dev/ws/<id>) and relays MCP requests to the service
+ * worker, which answers them in place (extension = MCP server).
  */
 
 console.log("[bmcp-offscreen] Script loaded");

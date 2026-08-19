@@ -1,19 +1,21 @@
 # Browser MCP
 
-Expose your Chrome/Edge browser as **MCP tools** for any AI agent — locally via
-Streamable HTTP, or remotely through a [code-mcp-gateway](https://github.com/Tuanm/code-mcp-gateway)
-so agents anywhere can drive the connected browser.
+Expose your Chrome/Edge browser as **MCP tools** for any AI agent. A tiny
+Chrome extension (Manifest V3) turns the browser itself into an MCP server that
+connects straight to a [code-mcp-gateway](https://github.com/Tuanm/code-mcp-gateway)
+— so agents anywhere can drive the connected browser, **with no local server
+running**.
 
-A tiny Chrome extension (Manifest V3) bridges the browser to a local MCP server;
-the server speaks the same MCP JSON-RPC protocol as [code-mcp](https://github.com/Tuanm/code-mcp)
+It speaks the same MCP JSON-RPC protocol as [code-mcp](https://github.com/Tuanm/code-mcp)
 and the same gateway WebSocket protocol, so it drops into existing agent setups.
 
-## Architecture
+## How it works
 
 ```
 ┌────────────────────────────────────────────┐
 │ Chrome/Edge Extension (Manifest V3)        │
-│  ├─ Service Worker (command dispatch)      │
+│  ├─ Service Worker (command dispatch +     │
+│  │    in-extension MCP server)             │
 │  ├─ Offscreen Doc (WebSocket bridge)       │
 │  ├─ Content Script (DOM utilities)         │
 │  ├─ Shield (anti-bot CDP detection)        │
@@ -27,57 +29,44 @@ and the same gateway WebSocket protocol, so it drops into existing agent setups.
 └────────────────────────────────────────────┘
 ```
 
+An optional local server (`browser-mcp.ts`) adds a file store
+(`browser_file_read`, large downloads/uploads) and a plain local MCP HTTP
+endpoint — see [Optional: local server](#optional-local-server).
+
 ## Quick start
 
 Requires Chrome or Edge (>= 111). [Bun](https://bun.sh) (>= 1.1) is only needed
-for the **optional** local server (file store, big uploads, local MCP HTTP) or
-to run the dev tooling — **the extension works standalone with no local process**.
+for the optional local server or the dev tooling — **the extension works
+standalone**.
 
 ### 1. Install the extension
 
-Two options — both produce the same zip:
+Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**,
+and select the `packages/browser-extension` directory. (Or run
+`bun browser-mcp.ts` and download the zip from `http://127.0.0.1:7777/extension`.)
 
-- **From the server**: open `http://127.0.0.1:7777/extension` and download
-  `browser-mcp-extension.zip`, then unzip it.
-- **From the repo**: the extension source lives in `packages/browser-extension/`.
+### 2. Connect
 
-Then in Chrome/Edge:
+1. Click the toolbar icon — the MCP mark is **gray** when disconnected, **green**
+   when connected.
+2. In the popup enter your gateway **Device ID** (e.g. `my-browser`) and the
+   **Token** configured for that device on the gateway, then click **Connect**.
+3. The extension connects straight to `wss://code-mcp.tuanm.dev/ws/<id>`
+   (register, keepalive every 25s, 75s watchdog, jittered backoff reconnect) and
+   answers MCP `initialize` / `tools/list` / `tools/call` in place. The popup
+   shows **Connected (gateway)**.
 
-1. Go to `chrome://extensions` and enable **Developer mode**.
-2. Click **Load unpacked** and select the `packages/browser-extension` directory.
-3. The toolbar icon shows the MCP mark — **black** (disconnected) or **green** (connected).
-4. Click the icon → a minimal black/white popup with two fields:
-
-   - **ID** — your gateway device ID (e.g. `my-browser`)
-   - **Token** — the shared secret for the gateway link
-
-5. Enter both, click **Connect**. **The extension IS the MCP server**: it connects
-   straight to `wss://code-mcp.tuanm.dev/ws/<id>` (code-mcp-gateway protocol:
-   register, keepalive every 25s, 75s watchdog, jittered backoff reconnect) and
-   answers MCP `initialize` / `tools/list` / `tools/call` in place — **no local
-   server is running**. Any agent that can reach the gateway can drive the browser.
+Any agent that can reach the gateway can now drive the browser.
 
 > The token must match what you configured for this device on the gateway side —
 > the gateway forwards it with each request and the extension verifies it.
 > No token entered → anyone reaching the gateway can control the browser.
 
-### 3. Optional: run the local server
+### 3. Point an agent at it
 
-Only needed for the local file store (`browser_file_read`, downloads/upload
-larger than 512 KB) or for a plain local MCP HTTP endpoint:
-
-```bash
-bun browser-mcp.ts                  # listens on http://127.0.0.1:7777/mcp
-bun browser-mcp.ts --token <s>      # require auth on /mcp + /files
-```
-
-With the server running, the popup Connect also hands the ID + Token over for the
-server's own gateway link. Without it, the extension still works directly.
-
-### 4. Point an agent at it
-
-Local MCP clients connect to `http://127.0.0.1:7777/mcp`. Example Claude Desktop
-config (`claude_desktop_config.json` / `mcpServers`):
+For the local server only (see below), MCP clients connect to
+`http://127.0.0.1:7777/mcp`. Example Claude Desktop config
+(`claude_desktop_config.json` / `mcpServers`):
 
 ```json
 {
@@ -92,11 +81,29 @@ config (`claude_desktop_config.json` / `mcpServers`):
 
 Verify it works: `curl -s http://127.0.0.1:7777/health` → `extensionConnected: true`.
 
+> If you run the server with `--token`, add `"headers": { "Authorization": "Bearer <token>" }` to
+> the client config (see `mcp-client.example.json`).
+
+## Optional: local server
+
+Only needed for the local file store (`browser_file_read`, downloads/uploads
+larger than 512 KB) or for a plain local MCP HTTP endpoint:
+
+```bash
+bun browser-mcp.ts                  # listens on http://127.0.0.1:7777/mcp
+bun browser-mcp.ts --token <s>      # require auth on /mcp + /files
+```
+
+With the server running, the extension's popup Connect also hands the ID + Token
+over for the server's own gateway link; without it, the extension still works
+directly.
+
 ## Remote access via code-mcp-gateway
 
 **Default (popup, direct mode):** enter **ID** + **Token** in the extension popup
-and click Connect — the extension itself connects to `wss://code-mcp.tuanm.dev/ws/<id>`
-and serves MCP directly. **No local server is needed.**
+and click Connect — the extension itself connects to
+`wss://code-mcp.tuanm.dev/ws/<id>` and serves MCP directly. **No local server
+is needed.**
 
 **With the local server (server-side gateway link):** the server links to
 `wss://code-mcp.tuanm.dev/ws/<id>` and uses the Token for `/mcp` auth.
@@ -116,7 +123,7 @@ bun browser-mcp.ts --gateway <domain> --token <s> --id <device-id>
 
 Remote agents can read downloaded files and screenshots that were too large to
 return inline via `browser_file_read`, or upload files inline to
-`browser_upload_file` with base64 `content`. Huge files stay on the local machine
+`browser_upload` with base64 `content`. Huge files stay on the local machine
 and are fetched via `GET /files/<file_id>`.
 
 ## Tools (47)
@@ -131,7 +138,7 @@ Core + agent-browser parity (element discovery with the **@ref system**):
   (clear+type), `browser_check` / `browser_uncheck`, `browser_select`, `browser_hover`,
   `browser_focus`, `browser_press`, `browser_drag`, `browser_scroll`, `browser_upload`.
   Every interaction tool accepts a `ref` (from `browser_snapshot`) **or** a CSS
-  `selector` — refs are cached server-side and resolve to selectors automatically.
+  `selector` — refs are cached and resolve to selectors automatically.
 - **Navigation** — `browser_navigate`, `browser_reload`, `browser_back`,
   `browser_forward`, `browser_close`, `browser_tabs`, `browser_window`.
 - **Page reads** — `browser_extract`, `browser_execute`, `browser_screenshot`
@@ -190,7 +197,7 @@ This project ports the practical surface of [agent-browser](https://github.com/v
 including the signature **`@ref` system**: `browser_snapshot` returns an
 interactive-element tree with `[ref=eN]` markers, and every interaction tool
 accepts the ref instead of a hand-written selector (refs are cached and
-resolved server-side; stale refs produce a "run browser_snapshot again" error).
+resolved automatically; stale refs produce a "run browser_snapshot again" error).
 
 Deliberately NOT ported (dev/niche features that don't fit a real user's
 browser): `browser_record` (video), `browser_trace` (tracing), `browser_profiler`
@@ -198,6 +205,7 @@ browser): `browser_record` (video), `browser_trace` (tracing), `browser_profiler
 state dump — use `browser_store`/`browser_cookies`/`browser_storage` instead),
 `browser_tab` (we have `browser_tabs`), and `browser_mouse` (we have
 `browser_mouse_move` + coordinate interactions).
+
 ## Timeouts
 
 Bridge commands: 30s default, 60s for navigate/execute/wait_for, 120s for
@@ -209,9 +217,10 @@ server always fails first with a clean error.
 ## Development
 
 ```bash
-bun scripts/build-extension.ts   # rebuild dist/browser-extension.zip
-bun scripts/test-integration.ts  # mock-extension + mock-gateway E2E suite
-bun browser-mcp.ts               # run the server
+bun run check   # syntax-check server + scripts + extension JS
+bun run test    # mock-extension + mock-gateway E2E suite
+bun run build   # rebuild dist/browser-extension.zip
+bun browser-mcp.ts  # run the server
 ```
 
 The extension is a rebranded/adapted fork of the browser extension built for

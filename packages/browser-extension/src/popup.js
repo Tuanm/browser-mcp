@@ -2,12 +2,12 @@
  * Popup Script - minimal black/white UI.
  *
  * Two fields configure the connection:
- *   ID    - device ID used for the code-mcp-gateway registration (wss://code-mcp.tuanm.dev/ws/<id>)
- *   Token - shared secret the gateway uses to authenticate to this server (/mcp ?token=)
+ *   ID    - device ID for the code-mcp-gateway registration (wss://code-mcp.tuanm.dev/ws/<id>)
+ *   Token - shared secret the gateway sends with each request; the extension
+ *           verifies it before answering (defense in depth).
  *
- * The extension always connects to the LOCAL server (ws://localhost:7777/browser/ws);
- * the server uses the ID + Token to link up with the gateway. See code-mcp for the
- * gateway protocol (register / keepalive / watchdog).
+ * Entering an ID makes the extension the MCP server: it connects to the gateway
+ * directly and answers MCP requests in place - no local server required.
  */
 
 const dot = document.getElementById("dot");
@@ -95,7 +95,7 @@ connectBtn.addEventListener("click", () => {
   statusText.textContent = "Connecting...";
   connectBtn.disabled = true;
 
-  // Persist; the local server uses these for the gateway link
+  // Persist so the extension reconnects with the same identity.
   const data = { deviceId };
   if (token) data.authToken = token;
   else delete data.authToken;
@@ -119,12 +119,9 @@ connectBtn.addEventListener("click", () => {
   setTimeout(checkStatus, 2000);
   setTimeout(() => {
     checkStatus();
-    // If still disconnected, point the user at the missing local server.
+    // If still disconnected, guide the user toward the likely cause.
     if (connectBtn.dataset.connected !== "true") {
-      const direct = !!deviceId;
-      statusText.textContent = direct
-        ? "Disconnected - check your Device ID/Token and try again."
-        : "Disconnected - is the local server running? Start it with: bun browser-mcp.ts (ws://localhost:7777)";
+      statusText.textContent = "Disconnected - check your Device ID/Token and try again.";
     }
   }, 5000);
 });
