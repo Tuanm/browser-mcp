@@ -45,8 +45,8 @@ server or dev tooling — the extension works standalone.
 
 1. **Load the extension.** Open `chrome://extensions`, enable **Developer
    mode**, click **Load unpacked**, and select `packages/browser-extension`.
-   (Or run `bun browser-mcp.ts` and download the zip from
-   `http://127.0.0.1:7777/extension`.)
+   (Or download the ready-built zip from
+   <https://tuanm.github.io/browser-mcp/browser-mcp-extension.zip>.)
 2. **Connect.** Click the toolbar icon (the MCP mark turns green when
    connected). Enter the gateway **Device ID** and **Token**, click **Connect**.
    The popup shows **Connected (gateway)**.
