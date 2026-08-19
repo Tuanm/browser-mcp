@@ -131,27 +131,74 @@ if (!window[Symbol.for("_x7cs")]) {
     return persistentCursorEl;
   }
 
-  /** Move the persistent mouse pointer to the action point. */
+  // Last tip position of the persistent cursor, for animating the next move.
+  let cursorX = null;
+  let cursorY = null;
+  let moveEndHandler = null;
+
+  /** Pop (scale-in) animation at the cursor's current position. */
+  function popCursor(cursor) {
+    cursor.style.animation = "none";
+    void cursor.offsetWidth; // reflow to restart animation
+    cursor.style.animation = `${_pfx}-cursor-pop 0.35s ease-out forwards`;
+  }
+
+  /**
+   * Move the persistent mouse pointer to the action point. The pointer glides
+   * from its current position (human-like: ease-out, duration scales with
+   * distance, pop on arrival) instead of teleporting.
+   */
   function showActionCursor(x, y) {
     try {
       const cursor = ensurePersistentCursor();
-      // Place the arrow tip at the action point (tip at 6,2 in the 24px svg).
-      cursor.style.left = `${x - 6}px`;
-      cursor.style.top = `${y - 2}px`;
       cursor.style.display = "block";
-      // Restart the pop animation; it settles at scale(1) so the pointer stays.
       cursor.style.animation = "none";
-      void cursor.offsetWidth; // reflow to restart animation
-      cursor.style.animation = `${_pfx}-cursor-pop 0.35s ease-out forwards`;
+      // Place the arrow tip at the action point (tip at 6,2 in the 24px svg).
+      const tipX = x - 6;
+      const tipY = y - 2;
+      if (cursorX == null) {
+        // First placement: appear at the point immediately with a pop.
+        cursor.style.transition = "none";
+        cursor.style.left = tipX + "px";
+        cursor.style.top = tipY + "px";
+        popCursor(cursor);
+      } else {
+        const dist = Math.hypot(x - cursorX, y - cursorY);
+        // Human move: ~150-600ms, longer for longer distances, ease-out.
+        const dur = Math.min(Math.max(140, dist * 0.9), 600);
+        cursor.style.transition =
+          "left " + dur + "ms cubic-bezier(0.25, 0.46, 0.45, 0.94), " +
+          "top " + dur + "ms cubic-bezier(0.25, 0.46, 0.45, 0.94)";
+        cursor.style.left = tipX + "px";
+        cursor.style.top = tipY + "px";
+        // Pop when the glide arrives (handle left transition only, once).
+        if (moveEndHandler) cursor.removeEventListener("transitionend", moveEndHandler);
+        moveEndHandler = (e) => {
+          if (e.propertyName !== "left") return;
+          cursor.removeEventListener("transitionend", moveEndHandler);
+          moveEndHandler = null;
+          popCursor(cursor);
+        };
+        cursor.addEventListener("transitionend", moveEndHandler);
+      }
+      cursorX = x;
+      cursorY = y;
     } catch {}
   }
 
-  /** Show the persistent pointer (keeps its last position). */
+  /** Show the persistent pointer (keeps its last position; starts at center). */
   function showActivityCursor() {
     try {
       const cursor = ensurePersistentCursor();
       cursor.style.display = "block";
       cursor.style.animation = "none";
+      if (cursorX == null) {
+        cursor.style.transition = "none";
+        cursorX = Math.round(window.innerWidth / 2);
+        cursorY = Math.round(window.innerHeight / 2);
+        cursor.style.left = (cursorX - 6) + "px";
+        cursor.style.top = (cursorY - 2) + "px";
+      }
     } catch {}
   }
 
