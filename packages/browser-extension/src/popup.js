@@ -139,6 +139,6 @@ function setStatus(connected) {
   // MCP mark: green when connected, black when disconnected
   const headerIcon = document.getElementById("headerIcon");
   if (headerIcon) {
-    headerIcon.src = connected ? "icons/connected-128.png" : "icons/app-icon-128.png";
+    headerIcon.src = connected ? "../icons/connected-128.png" : "../icons/app-icon-128.png";
   }
 }

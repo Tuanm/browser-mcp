@@ -1,33 +1,27 @@
 /**
- * Content Script — injected into every page.
+ * Content Script - injected into every page (isolated world).
  *
  * Provides:
- * 1. Agent activity indicator (glowing border overlay using Browser MCP primary color)
- * 2. Visual feedback for element interactions (highlight)
- * 3. DOM utility helpers callable from service worker
+ * 1. Agent activity indicator (glowing border overlay while an agent command runs)
+ * 2. Black MCP-mark action cursor with box shadow at interaction positions
+ * 3. Element highlight for browser_highlight
  *
- * Stealth: All DOM element IDs, CSS animation names, and class names use a
- * session-random prefix (received from service worker) to prevent anti-bot
- * fingerprinting via known identifier patterns.
+ * Stealth: all injected DOM ids/classes/animation names use a session-random
+ * prefix (received from the service worker) to avoid detectable patterns.
  */
 
-// Avoid re-injection. Content scripts run in Chrome's isolated world, so this
-// property is invisible to page JavaScript. Key is deliberately non-descriptive.
-// NOTE: re-execution (chrome.scripting.executeScript on an already-injected tab)
-// must be a clean no-op — ALL declarations live inside the guard so nothing is
-// re-declared at top level.
+// Re-injection guard. chrome.scripting.executeScript on an already-injected tab
+// must be a clean no-op, so EVERYTHING lives inside the guard - nothing is
+// declared at top level.
 if (!window[Symbol.for("_x7cs")]) {
   window[Symbol.for("_x7cs")] = true;
 
   // Session-random prefix for all injected DOM identifiers.
-  // Generated once per service worker lifecycle and passed via message.
-  // Falls back to a random prefix if the content script is injected before
-  // the service worker sends it (shouldn't happen in practice).
   let _pfx = "_x" + Math.random().toString(36).slice(2, 8);
 
-  // ==========================================================================
-  // Agent Activity Overlay — glowing border when agent is working in this tab
-  // ==========================================================================
+  // ========================================================================
+  // Agent Activity Overlay - glowing border while the agent is working
+  // ========================================================================
 
   let overlayCount = 0;
   let overlayEl = null;
@@ -38,55 +32,28 @@ if (!window[Symbol.for("_x7cs")]) {
 
   function showAgentOverlay() {
     overlayCount++;
-    if (hideTimer) {
-      clearTimeout(hideTimer);
-      hideTimer = null;
-    }
-    if (fadeTimer) {
-      clearTimeout(fadeTimer);
-      fadeTimer = null;
-    }
-    // Auto-hide after 5s in case agent finishes without sending hide signal
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null; }
     if (autoHideTimer) clearTimeout(autoHideTimer);
-    autoHideTimer = setTimeout(() => {
-      autoHideTimer = null;
-      overlayCount = 0;
-      hideAgentOverlay();
-    }, 5000);
-    if (overlayEl) {
-      overlayEl.style.opacity = "1"; // restore if mid-fade
-      return;
-    }
+    autoHideTimer = setTimeout(() => { autoHideTimer = null; overlayCount = 0; hideAgentOverlay(); }, 5000);
+    if (overlayEl) { overlayEl.style.opacity = "1"; return; }
 
     styleEl = document.createElement("style");
     styleEl.id = `${_pfx}-overlay-style`;
     styleEl.textContent = `
       @keyframes ${_pfx}-glow {
-        0%, 100% {
-          box-shadow: inset 0 0 6px 2px rgba(217, 120, 83, 0.3);
-        }
-        50% {
-          box-shadow: inset 0 0 24px 6px rgba(217, 120, 83, 0.7);
-        }
+        0%, 100% { box-shadow: inset 0 0 6px 2px rgba(0,0,0,0.25); }
+        50% { box-shadow: inset 0 0 24px 6px rgba(0,0,0,0.45); }
       }
-      @keyframes ${_pfx}-glow-in {
-        from { opacity: 0; }
-        to { opacity: 1; }
-      }
+      @keyframes ${_pfx}-glow-in { from { opacity: 0; } to { opacity: 1; } }
     `;
     (document.head || document.documentElement).appendChild(styleEl);
 
     overlayEl = document.createElement("div");
     overlayEl.id = `${_pfx}-agent-overlay`;
     Object.assign(overlayEl.style, {
-      position: "fixed",
-      top: "0",
-      left: "0",
-      right: "0",
-      bottom: "0",
-      zIndex: "2147483647",
-      pointerEvents: "none",
-      border: "none",
+      position: "fixed", top: "0", left: "0", right: "0", bottom: "0",
+      zIndex: "2147483647", pointerEvents: "none", border: "none",
       animation: `${_pfx}-glow 2s ease-in-out infinite, ${_pfx}-glow-in 0.3s ease-out`,
       transition: "opacity 0.3s ease-out",
     });
@@ -96,47 +63,36 @@ if (!window[Symbol.for("_x7cs")]) {
   function hideAgentOverlay() {
     overlayCount = Math.max(0, overlayCount - 1);
     if (overlayCount > 0 || !overlayEl) return;
-    if (autoHideTimer) {
-      clearTimeout(autoHideTimer);
-      autoHideTimer = null;
-    }
-
-    // Brief delay before fade-out for smoother visual
+    if (autoHideTimer) { clearTimeout(autoHideTimer); autoHideTimer = null; }
     hideTimer = setTimeout(() => {
       hideTimer = null;
       if (overlayEl) {
         overlayEl.style.opacity = "0";
         fadeTimer = setTimeout(() => {
-          overlayEl?.remove();
-          overlayEl = null;
-          styleEl?.remove();
-          styleEl = null;
-          fadeTimer = null;
+          if (overlayEl) overlayEl.remove();
+          if (styleEl) styleEl.remove();
+          overlayEl = null; styleEl = null; fadeTimer = null;
         }, 300);
       }
     }, 500);
   }
 
-  // ==========================================================================
-  // Agent Action Cursor — animated Browser MCP icon at action positions
-  // ==========================================================================
+  // ========================================================================
+  // Agent Action Cursor - black MCP mark with box shadow at action positions
+  // ========================================================================
 
-  function cursorSvg() {
-    return `<svg width="24" height="24" viewBox="0 0 66 52" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect x="0" y="13" width="6" height="13" fill="#d5826a"/>
-    <rect x="60" y="13" width="6" height="13" fill="#d5826a"/>
-    <rect class="${_pfx}-leg-l1" x="6" y="39" width="6" height="13" fill="#d5826a"/>
-    <rect class="${_pfx}-leg-l2" x="18" y="39" width="6" height="13" fill="#d5826a"/>
-    <rect class="${_pfx}-leg-r1" x="42" y="39" width="6" height="13" fill="#d5826a"/>
-    <rect class="${_pfx}-leg-r2" x="54" y="39" width="6" height="13" fill="#d5826a"/>
-    <rect x="6" y="0" width="54" height="39" fill="#d5826a"/>
-    <rect x="12" y="13" width="6" height="6.5" fill="#222"/>
-    <rect x="48" y="13" width="6" height="6.5" fill="#222"/>
-  </svg>`;
+  // Official Model Context Protocol mark (modelcontextprotocol.io), black fill.
+  const MCP_MARK_PATH_1 = "M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z";
+  const MCP_MARK_PATH_2 = "M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z";
+
+  function cursorSvg(size) {
+    return `<svg width="${size || 24}" height="${size || 24}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path fill="#111" fill-rule="evenodd" d="${MCP_MARK_PATH_1}"/>
+  <path fill="#111" fill-rule="evenodd" d="${MCP_MARK_PATH_2}"/>
+</svg>`;
   }
 
   let cursorStyleEl = null;
-
   const MAX_CURSORS = 5;
   let activeCursors = 0;
 
@@ -145,14 +101,6 @@ if (!window[Symbol.for("_x7cs")]) {
     cursorStyleEl = document.createElement("style");
     cursorStyleEl.id = `${_pfx}-cursor-style`;
     cursorStyleEl.textContent = `
-      @keyframes ${_pfx}-leg-run-1 {
-        0%, 100% { transform: translateY(0); }
-        50% { transform: translateY(-3px); }
-      }
-      @keyframes ${_pfx}-leg-run-2 {
-        0%, 100% { transform: translateY(-3px); }
-        50% { transform: translateY(0); }
-      }
       @keyframes ${_pfx}-cursor-pop {
         0% { transform: translate(-50%, -50%) scale(0); opacity: 1; }
         15% { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
@@ -165,20 +113,14 @@ if (!window[Symbol.for("_x7cs")]) {
         z-index: 2147483647;
         pointer-events: none;
         animation: ${_pfx}-cursor-pop 0.7s ease-out forwards;
-        filter: drop-shadow(0 1px 3px rgba(0,0,0,0.3));
+        border-radius: 6px;
+        /* black mark + box shadow so the agent action is clearly visible */
+        box-shadow: 0 0 0 1px rgba(255,255,255,0.9), 0 2px 10px rgba(0,0,0,0.5);
       }
       .${_pfx}-action-cursor svg {
         display: block;
-      }
-      .${_pfx}-action-cursor .${_pfx}-leg-l1,
-      .${_pfx}-action-cursor .${_pfx}-leg-r2 {
-        transform-origin: center top;
-        animation: ${_pfx}-leg-run-1 0.12s ease-in-out infinite;
-      }
-      .${_pfx}-action-cursor .${_pfx}-leg-l2,
-      .${_pfx}-action-cursor .${_pfx}-leg-r1 {
-        transform-origin: center top;
-        animation: ${_pfx}-leg-run-2 0.12s ease-in-out infinite;
+        border-radius: 6px;
+        background: rgba(255,255,255,0.85);
       }
     `;
     (document.head || document.documentElement).appendChild(cursorStyleEl);
@@ -190,23 +132,20 @@ if (!window[Symbol.for("_x7cs")]) {
       ensureCursorStyles();
       const cursor = document.createElement("div");
       cursor.className = `${_pfx}-action-cursor`;
-      cursor.innerHTML = cursorSvg();
+      cursor.innerHTML = cursorSvg(24);
       cursor.style.left = `${x}px`;
       cursor.style.top = `${y}px`;
       (document.body || document.documentElement).appendChild(cursor);
       activeCursors++;
-      setTimeout(() => {
-        cursor.remove();
-        activeCursors--;
-      }, 750);
+      setTimeout(() => { cursor.remove(); activeCursors--; }, 750);
     } catch {
       // Ignore errors on restricted pages
     }
   }
 
-  // ==========================================================================
-  // Persistent Activity Cursor — Browser MCP icon that stays during long operations
-  // ==========================================================================
+  // ========================================================================
+  // Persistent Activity Cursor - MCP mark that stays during long operations
+  // ========================================================================
 
   let activityCursorEl = null;
 
@@ -216,18 +155,14 @@ if (!window[Symbol.for("_x7cs")]) {
       ensureCursorStyles();
       activityCursorEl = document.createElement("div");
       activityCursorEl.id = `${_pfx}-activity-cursor`;
-      activityCursorEl.innerHTML = cursorSvg();
+      activityCursorEl.innerHTML = cursorSvg(32);
       Object.assign(activityCursorEl.style, {
-        position: "fixed",
-        bottom: "24px",
-        right: "24px",
-        zIndex: "2147483647",
-        pointerEvents: "none",
-        filter: "drop-shadow(0 2px 6px rgba(0,0,0,0.35))",
+        position: "fixed", bottom: "24px", right: "24px",
+        zIndex: "2147483647", pointerEvents: "none", borderRadius: "8px",
+        boxShadow: "0 0 0 1px rgba(255,255,255,0.9), 0 4px 14px rgba(0,0,0,0.5)",
         animation: `${_pfx}-cursor-bounce 1s ease-in-out infinite`,
         transition: "opacity 0.3s ease-out",
       });
-      // Add bounce animation if not already present
       let bounceStyle = document.getElementById(`${_pfx}-bounce-style`);
       if (!bounceStyle) {
         bounceStyle = document.createElement("style");
@@ -237,17 +172,8 @@ if (!window[Symbol.for("_x7cs")]) {
             0%, 100% { transform: translateY(0); }
             50% { transform: translateY(-6px); }
           }
+          #${_pfx}-activity-cursor { background: rgba(255,255,255,0.85); }
           #${_pfx}-activity-cursor svg { display: block; width: 32px; height: 32px; }
-          #${_pfx}-activity-cursor .${_pfx}-leg-l1,
-          #${_pfx}-activity-cursor .${_pfx}-leg-r2 {
-            transform-origin: center top;
-            animation: ${_pfx}-leg-run-1 0.12s ease-in-out infinite;
-          }
-          #${_pfx}-activity-cursor .${_pfx}-leg-l2,
-          #${_pfx}-activity-cursor .${_pfx}-leg-r1 {
-            transform-origin: center top;
-            animation: ${_pfx}-leg-run-2 0.12s ease-in-out infinite;
-          }
         `;
         (document.head || document.documentElement).appendChild(bounceStyle);
       }
@@ -262,47 +188,27 @@ if (!window[Symbol.for("_x7cs")]) {
     activityCursorEl.style.opacity = "0";
     const el = activityCursorEl;
     activityCursorEl = null;
-    setTimeout(() => el.remove(), 300);
+    setTimeout(() => { if (el) el.remove(); }, 300);
   }
 
-  // ==========================================================================
+  // ========================================================================
   // Message Handlers
-  // ==========================================================================
+  // ========================================================================
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "set-prefix") {
-      // Receive session prefix from service worker (stealth DOM identifiers)
       const oldPfx = _pfx;
       _pfx = message.prefix;
-      // Clean up any DOM elements created with the old/fallback prefix
       if (oldPfx !== _pfx) {
-        for (const id of [
-          `${oldPfx}-overlay-style`,
-          `${oldPfx}-agent-overlay`,
-          `${oldPfx}-cursor-style`,
-          `${oldPfx}-bounce-style`,
-          `${oldPfx}-activity-cursor`,
-        ]) {
-          document.getElementById(id)?.remove();
+        for (const id of [`${oldPfx}-overlay-style`, `${oldPfx}-agent-overlay`, `${oldPfx}-cursor-style`, `${oldPfx}-bounce-style`, `${oldPfx}-activity-cursor`]) {
+          const el = document.getElementById(id);
+          if (el) el.remove();
         }
-        overlayEl = null;
-        styleEl = null;
-        cursorStyleEl = null;
-        activityCursorEl = null;
-        if (hideTimer) {
-          clearTimeout(hideTimer);
-          hideTimer = null;
-        }
-        if (fadeTimer) {
-          clearTimeout(fadeTimer);
-          fadeTimer = null;
-        }
-        if (autoHideTimer) {
-          clearTimeout(autoHideTimer);
-          autoHideTimer = null;
-        }
-        overlayCount = 0;
-        activeCursors = 0;
+        overlayEl = null; styleEl = null; cursorStyleEl = null; activityCursorEl = null;
+        if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+        if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null; }
+        if (autoHideTimer) { clearTimeout(autoHideTimer); autoHideTimer = null; }
+        overlayCount = 0; activeCursors = 0;
       }
       sendResponse({ ok: true });
     } else if (message.type === "show-agent-overlay") {
@@ -327,36 +233,30 @@ if (!window[Symbol.for("_x7cs")]) {
     return false;
   });
 
-  // ==========================================================================
+  // ========================================================================
   // Element Highlighting
-  // ==========================================================================
+  // ========================================================================
 
   function highlightElement(selector, duration) {
     try {
       const el = document.querySelector(selector);
       if (!el) return;
-
       const overlay = document.createElement("div");
       const rect = el.getBoundingClientRect();
       Object.assign(overlay.style, {
         position: "fixed",
-        left: `${rect.left - 2}px`,
-        top: `${rect.top - 2}px`,
-        width: `${rect.width + 4}px`,
-        height: `${rect.height + 4}px`,
-        border: "2px solid #D97853",
+        left: `${rect.left - 2}px`, top: `${rect.top - 2}px`,
+        width: `${rect.width + 4}px`, height: `${rect.height + 4}px`,
+        border: "2px solid #111",
         borderRadius: "3px",
-        backgroundColor: "rgba(217, 120, 83, 0.1)",
-        zIndex: "2147483647",
-        pointerEvents: "none",
+        backgroundColor: "rgba(17, 24, 39, 0.12)",
+        zIndex: "2147483647", pointerEvents: "none",
         transition: "opacity 0.3s",
       });
-
       (document.body || document.documentElement).appendChild(overlay);
-
       setTimeout(() => {
         overlay.style.opacity = "0";
-        setTimeout(() => overlay.remove(), 300);
+        setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, 300);
       }, duration);
     } catch {
       // Ignore errors

@@ -464,7 +464,13 @@ function handleBrowserWsMessage(ws: any, message: string | Buffer): void {
 
 /** Pick the browser to drive: first connected extension (single-browser model). */
 function pickBrowserWs(): any | null {
-  return connections.values().next().value ?? null;
+  // Prefer the most recently connected extension (the browser the user just
+  // connected). Stable across reconnects since a fresh connection wins.
+  let best: any = null;
+  for (const ws of connections.values()) {
+    if (!best || ws.data.connectedAt > best.data.connectedAt) best = ws;
+  }
+  return best;
 }
 
 export function isExtensionConnected(): boolean {
