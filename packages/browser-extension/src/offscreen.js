@@ -30,6 +30,26 @@ let deviceId = null; // gateway device ID (from popup) - passed to the local ser
 let connectAttempts = 0;
 let lastError = null;
 
+/**
+ * Load persistent config (server URL, gateway device ID, token) from storage.
+ * chrome.storage is available to offscreen documents, so the config survives
+ * offscreen/service-worker restarts (the SW also writes it on popup Connect).
+ */
+async function loadConfigIntoState() {
+  try {
+    const cfg = await chrome.storage.local.get(["serverUrl", "deviceId", "authToken"]);
+    if (cfg.serverUrl) serverUrl = cfg.serverUrl;
+    if (cfg.deviceId !== undefined) deviceId = cfg.deviceId || null;
+    if (cfg.authToken !== undefined) authToken = cfg.authToken || null;
+  } catch {}
+}
+
+/** Apply config from storage, then (re)connect. */
+async function loadConfigAndConnect() {
+  await loadConfigIntoState();
+  return connect();
+}
+
 // ============================================================================
 // Keep Service Worker Alive
 // ============================================================================
@@ -245,24 +265,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.extensionId) extensionId = message.extensionId;
     if (message.token !== undefined) authToken = message.token || null;
     if (message.deviceId !== undefined) deviceId = message.deviceId || null;
-    if (ws) {
-      ws.onclose = null;
-      ws.onerror = null;
-      ws.onmessage = null;
-      ws.close();
-      ws = null;
-    }
-    stopHeartbeat();
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-    connect()
-      .then(() => sendResponse({ ok: true }))
-      .catch((err) => {
-        console.error("[bmcp-offscreen] reconnect failed:", err);
-        sendResponse({ ok: true }); // still ok — reconnect will auto-retry
-      });
+    // Storage is the source of truth for persistent config (survives restarts).
+    loadConfigIntoState().then(() => {
+      if (ws) {
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        ws.close();
+        ws = null;
+      }
+      stopHeartbeat();
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      connect()
+        .then(() => sendResponse({ ok: true }))
+        .catch((err) => {
+          console.error("[bmcp-offscreen] reconnect failed:", err);
+          sendResponse({ ok: true }); // still ok — reconnect will auto-retry
+        });
+    });
     return true; // async response
   }
 
@@ -334,7 +357,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ============================================================================
 
 keepAlive();
-// Small delay to let extensionId IIFE finish
+// Small delay to let extensionId IIFE finish; read saved config first so the
+// gateway link (device ID + token) survives offscreen/SW restarts.
 setTimeout(() => {
-  connect().catch((err) => console.error("[bmcp-offscreen] Initial connect failed:", err));
+  loadConfigAndConnect().catch((err) => console.error("[bmcp-offscreen] Initial connect failed:", err));
 }, 100);

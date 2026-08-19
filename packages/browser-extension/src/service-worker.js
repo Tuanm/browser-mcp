@@ -88,17 +88,20 @@ async function ensureOffscreen() {
     reasons: ["WORKERS"],
     justification: "WebSocket connection to local Browser MCP server",
   });
-  // Send saved config to offscreen (it can't access chrome.storage)
+  // Hand saved config to the fresh offscreen doc so the gateway link
+  // (device ID + token) survives service-worker / offscreen restarts.
   try {
-    const config = await chrome.storage.local.get(["serverUrl", "extensionId", "authToken"]);
-    if (config.serverUrl || config.extensionId) {
+    const config = await chrome.storage.local.get(["serverUrl", "extensionId", "deviceId", "authToken"]);
+    if (config.serverUrl || config.extensionId || config.deviceId) {
       setTimeout(() => {
         chrome.runtime
           .sendMessage({
             type: "reconnect",
             url: config.serverUrl,
             extensionId: config.extensionId,
+            deviceId: config.deviceId || undefined,
             token: config.authToken || undefined,
+            fromSw: true,
           })
           .catch(() => {});
       }, 200);
@@ -123,6 +126,9 @@ chrome.runtime.onConnect.addListener((port) => {
 // ============================================================================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Messages the SW itself forwarded to the offscreen — never re-handle.
+  if (message.fromSw) return false;
+
   // Ensure offscreen exists on every non-offscreen message (handles SW restarts)
   if (!message.source || message.source !== "offscreen") {
     ensureOffscreen().catch(() => {});
@@ -142,19 +148,69 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  // Messages from popup meant for offscreen — don't intercept, let offscreen handle
-  if (
-    message.type === "get-status" ||
-    message.type === "set-server-url" ||
-    message.type === "reconnect" ||
-    message.type === "disconnect"
-  ) {
-    // Don't call sendResponse — offscreen document handles these
-    return false;
-  }
-
   if (message.source === "content-script" && message.type === "dom-result") {
     sendResponse({ received: true });
+  }
+
+  // ---- Popup-driven config + status --------------------------------------
+  // The offscreen document can be closed by Chrome at any time, so the SW is
+  // the robust relay: it persists config to storage (the source of truth) and
+  // forwards to the offscreen with retries until the offscreen is ready.
+
+  // Connect: save ID/Token, ensure offscreen, forward with retry.
+  if (message.type === "reconnect" && !message.source) {
+    const cfg = {};
+    if (message.deviceId !== undefined) cfg.deviceId = message.deviceId || "";
+    if (message.token !== undefined) cfg.authToken = message.token || "";
+    chrome.storage.local.set(cfg).catch(() => {});
+    ensureOffscreen()
+      .then(() => {
+        let attempts = 0;
+        const fwd = () => {
+          attempts++;
+          chrome.runtime
+            .sendMessage({ type: "reconnect", deviceId: message.deviceId, token: message.token, fromSw: true })
+            .then(() => sendResponse?.({ ok: true }))
+            .catch(() => {
+              if (attempts < 8) setTimeout(fwd, 300);
+              else sendResponse?.({ ok: false, error: "offscreen not ready" });
+            });
+        };
+        fwd();
+      })
+      .catch(() => sendResponse?.({ ok: false, error: "offscreen create failed" }));
+    return true;
+  }
+
+  // Disconnect: forward to offscreen with retry.
+  if (message.type === "disconnect" && !message.source) {
+    ensureOffscreen()
+      .then(() => {
+        let attempts = 0;
+        const fwd = () => {
+          attempts++;
+          chrome.runtime
+            .sendMessage({ type: "disconnect", fromSw: true })
+            .then(() => sendResponse?.({ ok: true }))
+            .catch(() => {
+              if (attempts < 5) setTimeout(fwd, 250);
+              else sendResponse?.({ ok: true });
+            });
+        };
+        fwd();
+      })
+      .catch(() => sendResponse?.({ ok: true }));
+    return true;
+  }
+
+  // Status: the offscreen answers when alive; the SW falls back so the popup
+  // never hangs and shows an actionable message when the local server is down.
+  if (message.type === "get-status" && !message.source) {
+    ensureOffscreen().catch(() => {});
+    setTimeout(() => {
+      sendResponse({ connected: false, lastError: "Local server unreachable. Start it with: bun browser-mcp.ts (ws://localhost:7777)" });
+    }, 1500);
+    return true;
   }
 
   return false;

@@ -64,13 +64,10 @@ chrome.storage.local.get(["deviceId", "authToken"]).then((config) => {
 function checkStatus() {
   chrome.runtime.sendMessage({ type: "get-status" }, (response) => {
     if (chrome.runtime.lastError) {
-      setStatus(false);
+      setStatus(false, "Disconnected (no response - retrying)");
       return;
     }
-    setStatus(response?.connected || false);
-    if (!response?.connected && response?.lastError) {
-      statusText.textContent = "Disconnected: " + response.lastError;
-    }
+    setStatus(response?.connected || false, response?.lastError ? "Disconnected: " + response.lastError : "");
   });
 }
 
@@ -120,19 +117,25 @@ connectBtn.addEventListener("click", () => {
   }
 
   setTimeout(checkStatus, 2000);
-  setTimeout(checkStatus, 5000);
+  setTimeout(() => {
+    checkStatus();
+    // If still disconnected, point the user at the missing local server.
+    if (connectBtn.dataset.connected !== "true") {
+      statusText.textContent = "Disconnected - is the local server running? Start it with: bun browser-mcp.ts (ws://localhost:7777)";
+    }
+  }, 5000);
 });
 
 // Listen for status updates from offscreen
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "connection-status") {
-    setStatus(message.connected);
+    setStatus(message.connected, message.connected ? "" : "Disconnected");
   }
 });
 
-function setStatus(connected) {
+function setStatus(connected, detail) {
   dot.className = connected ? "dot on" : "dot off";
-  statusText.textContent = connected ? "Connected" : "Disconnected";
+  statusText.textContent = connected ? "Connected" : (detail || "Disconnected");
   connectBtn.textContent = connected ? "Disconnect" : "Connect";
   connectBtn.classList.toggle("off", connected);
   connectBtn.dataset.connected = connected ? "true" : "false";
