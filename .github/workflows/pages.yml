@@ -1,0 +1,75 @@
+name: Deploy extension zip to Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build extension zip
+        run: bun run build
+
+      - name: Generate download page
+        run: |
+          VERSION=$(git rev-parse --short=7 HEAD)
+          mkdir -p _site
+          cat > _site/index.html <<HTML
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Browser MCP — Extension Download</title>
+            <style>
+              body { font-family: system-ui, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; color: #111; line-height: 1.6; }
+              h1 { font-size: 22px; }
+              code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; }
+              .dl { display: inline-block; margin-top: 8px; padding: 10px 18px; background: #111; color: #fff; text-decoration: none; border-radius: 6px; font-weight: 600; }
+              .dl:hover { background: #000; }
+              .meta { color: #666; font-size: 13px; }
+            </style>
+          </head>
+          <body>
+            <h1>Browser MCP — Extension</h1>
+            <p>Download the latest extension zip and load it via <code>chrome://extensions</code> → <b>Developer mode</b> → <b>Load unpacked</b>.</p>
+            <a class="dl" href="browser-mcp-extension.zip">Download browser-mcp-extension.zip</a>
+            <p class="meta">Build: ${VERSION}</p>
+            <p class="meta"><a href="https://github.com/Tuanm/browser-mcp">Source on GitHub</a></p>
+          </body>
+          </html>
+          HTML
+
+      - name: Copy zip to site
+        run: |
+          mkdir -p _site
+          cp dist/browser-extension.zip _site/browser-mcp-extension.zip
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
