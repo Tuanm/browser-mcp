@@ -1684,7 +1684,7 @@ async function handle(msg: Json): Promise<Json | null> {
       return ok({
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "browser-mcp", version: "0.1.0" },
+        serverInfo: { name: "browser-mcp", version: "0.2.0" },
       });
     }
     // Notifications have no id: the HTTP layer answers them with 204 No

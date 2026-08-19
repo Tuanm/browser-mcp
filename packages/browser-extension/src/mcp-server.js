@@ -369,7 +369,7 @@ export function createMcpHandler(dispatch) {
         return ok({
           protocolVersion: "2024-11-05",
           capabilities: { tools: {} },
-          serverInfo: { name: "browser-mcp", version: "0.1.0" },
+          serverInfo: { name: "browser-mcp", version: "0.2.0" },
         });
       }
       // Notifications have no id. The gateway always serializes the device
