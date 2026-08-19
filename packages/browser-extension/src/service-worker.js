@@ -3,7 +3,16 @@
  *
  * Handles commands from the Browser MCP server (via offscreen document WebSocket)
  * and dispatches them to browser APIs (tabs, debugger, scripting).
+ *
+ * In DIRECT gateway mode the extension itself answers MCP requests (tools/list,
+ * tools/call) - no local server required. See mcp-server.js.
  */
+
+import { createMcpHandler } from "./mcp-server.js";
+
+// MCP JSON-RPC handler for direct gateway mode: maps MCP tools onto the same
+// command dispatcher used by the local-server bridge.
+const handleMcp = createMcpHandler((method, params) => dispatchCommand(method, params));
 
 // ============================================================================
 // State
@@ -142,6 +151,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async response
   }
 
+  // Config pull: chrome.storage is NOT available in offscreen documents, so the
+  // offscreen requests the saved config from the SW (the storage authority).
+  if (message.type === "get-config" && message.fromOffscreen) {
+    chrome.storage.local
+      .get(["serverUrl", "extensionId", "deviceId", "authToken"])
+      .then((cfg) => sendResponse({ serverUrl: cfg.serverUrl, extensionId: cfg.extensionId, deviceId: cfg.deviceId, authToken: cfg.authToken }))
+      .catch(() => sendResponse({}));
+    return true;
+  }
+
+  // MCP requests from the offscreen in DIRECT gateway mode (extension = MCP server).
+  if (message.source === "offscreen" && message.type === "mcp-request") {
+    handleMcp(message.request)
+      .then((response) => sendResponse({ id: message.id, response }))
+      .catch((err) =>
+        sendResponse({
+          id: message.id,
+          response: { jsonrpc: "2.0", id: message.id, error: { code: -32000, message: String((err && err.message) || err) } },
+        }),
+      );
+    return true;
+  }
+
   // Connection status broadcast from offscreen — flip toolbar icon + let popup hear it
   if (message.source === "offscreen" && message.type === "connection-status") {
     setActionIcon(!!message.connected);
@@ -207,9 +239,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // never hangs and shows an actionable message when the local server is down.
   if (message.type === "get-status" && !message.source) {
     ensureOffscreen().catch(() => {});
-    setTimeout(() => {
-      sendResponse({ connected: false, lastError: "Local server unreachable. Start it with: bun browser-mcp.ts (ws://localhost:7777)" });
-    }, 1500);
+    // Mode-aware fallback: with a device ID the extension connects to the
+    // code-mcp gateway directly (no local server needed).
+    chrome.storage.local.get(["deviceId", "serverUrl"]).then((cfg) => {
+      const direct = !!cfg.deviceId;
+      setTimeout(() => {
+        sendResponse({
+          connected: false,
+          mode: direct ? "gateway" : "local",
+          lastError: direct
+            ? "Gateway unreachable. Check your Device ID/Token at code-mcp.tuanm.dev."
+            : "Local server unreachable. Start it with: bun browser-mcp.ts (ws://localhost:7777)",
+        });
+      }, 1500);
+    }).catch(() => {
+      setTimeout(() => {
+        sendResponse({ connected: false, mode: "local", lastError: "Local server unreachable. Start it with: bun browser-mcp.ts (ws://localhost:7777)" });
+      }, 1500);
+    });
     return true;
   }
 
@@ -1340,7 +1387,7 @@ const SET_FILE_JS = `function(base64, fileName, mimeType) {
   return fileName;
 }`;
 
-async function handleFileUpload({ selector, fileId, tabId }) {
+async function handleFileUpload({ selector, fileId, content, filename, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
   // Runtime needed for Runtime.callFunctionOn (script execution on resolved node)
@@ -1349,46 +1396,48 @@ async function handleFileUpload({ selector, fileId, tabId }) {
   // Track whether a pending file chooser exists at entry — needed for cleanup on early errors
   const hadPendingFC = pendingFileChoosers.has(tid);
   try {
-    if (!fileId) throw new Error("fileId is required");
-
-    // Fetch file binary from chat server
-    const { baseUrl, authToken } = await getServerBaseUrl();
-    const fileUrl = `${baseUrl}/browser/files/${fileId}` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
-    let resp;
-    try {
-      resp = await fetch(fileUrl);
-    } catch (err) {
-      throw new Error(`Failed to reach file server: ${err.message}`);
+    let base64 = content || null;
+    let fileName = filename || "upload.bin";
+    let mimeType = "application/octet-stream";
+    if (!base64) {
+      // File from the local server (file_id).
+      if (!fileId) throw new Error("fileId (or content) is required");
+      const { baseUrl, authToken } = await getServerBaseUrl();
+      const fileUrl = `${baseUrl}/browser/files/${fileId}` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
+      let resp;
+      try {
+        resp = await fetch(fileUrl);
+      } catch (err) {
+        throw new Error(`Failed to reach file server: ${err.message}`);
+      }
+      if (!resp.ok) throw new Error(`File server returned ${resp.status} for fileId: ${fileId}`);
+      let blob;
+      try {
+        blob = await resp.blob();
+      } catch (err) {
+        throw new Error(`Failed to download file data: ${err.message}`);
+      }
+      const contentDisposition = resp.headers.get("Content-Disposition") || "";
+      const nameMatch = contentDisposition.match(/filename="([^"]+)"/);
+      fileName = nameMatch ? nameMatch[1] : `upload_${fileId}`;
+      mimeType = blob.type || "application/octet-stream";
+      // Convert to base64 for injection into page context
+      const arrayBuffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      const parts = [];
+      const chunkSize = 32768;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize)));
+      }
+      base64 = btoa(parts.join(""));
     }
-    if (!resp.ok) throw new Error(`File server returned ${resp.status} for fileId: ${fileId}`);
-    let blob;
-    try {
-      blob = await resp.blob();
-    } catch (err) {
-      throw new Error(`Failed to download file data: ${err.message}`);
-    }
-    const contentDisposition = resp.headers.get("Content-Disposition") || "";
-    const nameMatch = contentDisposition.match(/filename="([^"]+)"/);
-    const fileName = nameMatch ? nameMatch[1] : `upload_${fileId}`;
-    const mimeType = blob.type || "application/octet-stream";
-
-    // Guard against large files that would OOM the service worker during base64 encoding
-    const MAX_INJECT_SIZE = 25 * 1024 * 1024; // 25 MiB practical limit for base64 injection
+    const blob = new Blob([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], { type: mimeType });
+    const MAX_INJECT_SIZE = 25 * 1024 * 1024;
     if (blob.size > MAX_INJECT_SIZE) {
       throw new Error(
         `File too large for browser upload (${(blob.size / 1024 / 1024).toFixed(1)} MiB). Max ${MAX_INJECT_SIZE / 1024 / 1024} MiB.`,
       );
     }
-
-    // Convert to base64 for injection into page context (avoids chrome.downloads entirely)
-    const arrayBuffer = await blob.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    const parts = [];
-    const chunkSize = 32768; // 32KB — safe for String.fromCharCode.apply (V8 limit ~65K args)
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize)));
-    }
-    const base64 = btoa(parts.join(""));
 
     // If a file chooser dialog is pending (from a click with intercept_file_chooser), resolve its element
     const pendingFC = pendingFileChoosers.get(tid);
@@ -1725,6 +1774,36 @@ async function uploadFileToChatServer(filePath, mime) {
   return result.file;
 }
 
+/**
+ * Direct gateway mode fallback: when there is no local server to upload the
+ * downloaded file to, return small files (<= 512KB) inline as base64.
+ */
+async function inlineReadDownload(downloadInfo, err) {
+  const size = downloadInfo.totalBytes != null ? downloadInfo.totalBytes : 0;
+  if (size > 0 && size <= 512 * 1024 && downloadInfo.filename) {
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: "read-file", filePath: downloadInfo.filename });
+      if (resp && resp.ok) {
+        return {
+          filename: resp.name,
+          url: downloadInfo.url,
+          mime: resp.mime || downloadInfo.mime,
+          size: resp.size,
+          content_base64: resp.base64,
+          note: "Downloaded inline (no local server). Content is in content_base64.",
+        };
+      }
+    } catch {}
+  }
+  return {
+    filename: downloadInfo.filename,
+    url: downloadInfo.url,
+    mime: downloadInfo.mime,
+    totalBytes: downloadInfo.totalBytes,
+    upload_error: err && err.message ? err.message : String(err),
+  };
+}
+
 async function handleDownload({ action, timeout }) {
   if (action === "list") {
     const items = await chrome.downloads.search({ limit: 20, orderBy: ["-startTime"] });
@@ -1882,13 +1961,7 @@ async function handleDownload({ action, timeout }) {
           source_url: downloadInfo.url,
         };
       } catch (uploadErr) {
-        return {
-          filename: downloadInfo.filename,
-          url: downloadInfo.url,
-          mime: downloadInfo.mime,
-          totalBytes: downloadInfo.totalBytes,
-          upload_error: uploadErr.message,
-        };
+        return inlineReadDownload(downloadInfo, uploadErr);
       }
     }
     return downloadInfo;
@@ -1922,13 +1995,7 @@ async function handleDownload({ action, timeout }) {
       const file = await uploadFileToChatServer(item.filename, item.mime);
       return { file_id: file.id, filename: file.name, mime: item.mime, size: file.size, source_url: item.url };
     } catch (uploadErr) {
-      return {
-        filename: item.filename,
-        url: item.url,
-        mime: item.mime,
-        totalBytes: item.totalBytes,
-        upload_error: uploadErr.message,
-      };
+      return inlineReadDownload(item, uploadErr);
     }
   }
 

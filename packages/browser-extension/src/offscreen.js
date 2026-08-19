@@ -15,6 +15,11 @@ const DEFAULT_URL = "ws://localhost:7777/browser/ws";
 const RECONNECT_DELAY_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 20000;
 const KEEPALIVE_INTERVAL_MS = 25000;
+/** Direct-gateway mode: the extension itself is the MCP server (no local server). */
+const DEFAULT_GATEWAY = "wss://code-mcp.tuanm.dev"; // host, path is /ws/<deviceId>
+const GW_BASE_DELAY_MS = 1000;
+const GW_MAX_DELAY_MS = 60000;
+const GW_WATCHDOG_MS = 75000;
 
 // ============================================================================
 // State
@@ -26,27 +31,36 @@ let reconnectTimer = null;
 let extensionId = crypto.randomUUID().slice(0, 8);
 let serverUrl = DEFAULT_URL;
 let authToken = null;
-let deviceId = null; // gateway device ID (from popup) - passed to the local server
+let deviceId = null; // gateway device ID (from popup): enables DIRECT gateway mode
 let connectAttempts = 0;
 let lastError = null;
+let mode = "local"; // "local" (browser-mcp server) | "gateway" (code-mcp gateway, no local server)
+let gatewayHost = null; // overridable (tests / self-hosted gateways)
+let gatewayWs = null;
+let gatewayKeepaliveTimer = null;
+let gatewayWatchdogTimer = null;
+let gatewayReconnectTimer = null;
+let gatewayRetries = 0;
 
 /**
- * Load persistent config (server URL, gateway device ID, token) from storage.
- * chrome.storage is available to offscreen documents, so the config survives
- * offscreen/service-worker restarts (the SW also writes it on popup Connect).
+ * Apply an explicit config object (from the service worker - the SW is the
+ * storage authority because chrome.storage is NOT available in offscreen
+ * documents).
  */
-async function loadConfigIntoState() {
-  try {
-    const cfg = await chrome.storage.local.get(["serverUrl", "deviceId", "authToken"]);
-    if (cfg.serverUrl) serverUrl = cfg.serverUrl;
-    if (cfg.deviceId !== undefined) deviceId = cfg.deviceId || null;
-    if (cfg.authToken !== undefined) authToken = cfg.authToken || null;
-  } catch {}
+function applyConfig(cfg) {
+  if (!cfg) return;
+  if (cfg.serverUrl) serverUrl = cfg.serverUrl;
+  if (cfg.deviceId !== undefined) deviceId = cfg.deviceId || null;
+  if (cfg.authToken !== undefined) authToken = cfg.authToken || null;
+  if (cfg.gatewayHost) gatewayHost = cfg.gatewayHost;
 }
 
-/** Apply config from storage, then (re)connect. */
+/** Ask the service worker for the saved config, apply it, then connect. */
 async function loadConfigAndConnect() {
-  await loadConfigIntoState();
+  try {
+    const cfg = await chrome.runtime.sendMessage({ type: "get-config", fromOffscreen: true });
+    applyConfig(cfg || {});
+  } catch {}
   return connect();
 }
 
@@ -69,7 +83,18 @@ function keepAlive() {
 // WebSocket Connection
 // ============================================================================
 
+/**
+ * Connect dispatcher: with a gateway device ID the extension talks to the
+ * code-mcp gateway directly (no local server); otherwise it uses the local
+ * browser-mcp server bridge.
+ */
 async function connect() {
+  if (deviceId) return connectGateway();
+  return connectLocal();
+}
+
+// ---- local server bridge (existing flow) ----
+async function connectLocal() {
   console.log("[bmcp-offscreen] connect() called, ws state:", ws?.readyState, "url:", serverUrl);
 
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -176,6 +201,114 @@ async function connect() {
   };
 }
 
+// ---- direct gateway mode (the extension is the MCP server) ----
+
+async function connectGateway() {
+  mode = "gateway";
+  if (gatewayWs && (gatewayWs.readyState === WebSocket.OPEN || gatewayWs.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  gatewayRetries++;
+  let host = gatewayHost || DEFAULT_GATEWAY;
+  const scheme = /^(localhost|127\.|192\.168\.|10\.|172\.16\.)/.test(host.replace(/^wss?:\/\//, "").split("/")[0]) ? "ws" : "wss";
+  const url = scheme + "://" + host.replace(/^wss?:\/\//, "").replace(/\/$/, "") + "/ws/" + encodeURIComponent(deviceId);
+  console.log("[bmcp-offscreen] Connecting to gateway " + url + " (attempt " + gatewayRetries + ")");
+  try {
+    gatewayWs = new WebSocket(url);
+  } catch (err) {
+    console.error("[bmcp-offscreen] Gateway WS create failed:", err);
+    lastError = "gateway create: " + err.message;
+    scheduleGatewayReconnect();
+    return;
+  }
+  const gen = gatewayWs;
+
+  const armWatchdog = () => {
+    if (gatewayWatchdogTimer) clearTimeout(gatewayWatchdogTimer);
+    gatewayWatchdogTimer = setTimeout(() => {
+      console.error("[bmcp-offscreen] Gateway watchdog: no inbound for " + GW_WATCHDOG_MS + "ms");
+      try { gen.close(); } catch {}
+    }, GW_WATCHDOG_MS);
+  };
+
+  gen.onopen = () => {
+    console.log("[bmcp-offscreen] Connected to gateway (device " + deviceId + ")");
+    lastError = null;
+    gatewayRetries = 0;
+    broadcastStatus(true);
+    gen.send(JSON.stringify({ type: "register", deviceId }));
+    armWatchdog();
+    if (gatewayKeepaliveTimer) clearInterval(gatewayKeepaliveTimer);
+    gatewayKeepaliveTimer = setInterval(() => {
+      if (gen && gen.readyState === WebSocket.OPEN) {
+        try { gen.send(JSON.stringify({ type: "keepalive" })); } catch {}
+      }
+    }, KEEPALIVE_INTERVAL_MS);
+  };
+
+  gen.onclose = (event) => {
+    if (gatewayWatchdogTimer) clearTimeout(gatewayWatchdogTimer);
+    if (gatewayKeepaliveTimer) clearInterval(gatewayKeepaliveTimer);
+    if (gatewayWs === gen) gatewayWs = null;
+    lastError = "gateway closed: " + event.code;
+    broadcastStatus(false);
+    scheduleGatewayReconnect();
+  };
+
+  gen.onerror = (err) => {
+    console.error("[bmcp-offscreen] Gateway WS error:", err);
+    lastError = "gateway error";
+  };
+
+  gen.onmessage = async (event) => {
+    armWatchdog();
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === "keepalive-ack") return;
+      if (data.id == null || !data.request) return;
+      // Optional token check: the gateway sends the device token; verify it
+      // matches the popup token when one is configured (defense in depth).
+      if (authToken && data.token && data.token !== authToken) {
+        gen.send(JSON.stringify({ id: data.id, response: { jsonrpc: "2.0", id: data.id, error: { code: -32001, message: "token mismatch" } } }));
+        return;
+      }
+      try {
+        const response = await chrome.runtime.sendMessage({ source: "offscreen", type: "mcp-request", id: data.id, request: data.request });
+        if (gen && gen.readyState === WebSocket.OPEN) {
+          gen.send(JSON.stringify({ id: data.id, response: response && response.response }));
+        }
+      } catch (err) {
+        if (gen && gen.readyState === WebSocket.OPEN) {
+          gen.send(JSON.stringify({ id: data.id, response: { jsonrpc: "2.0", id: data.id, error: { code: -32000, message: "extension error: " + (err.message || err) } } }));
+        }
+      }
+    } catch {}
+  };
+}
+
+function scheduleGatewayReconnect() {
+  if (gatewayReconnectTimer) return;
+  const delay = Math.min(GW_MAX_DELAY_MS, GW_BASE_DELAY_MS * Math.pow(2, Math.min(gatewayRetries, 6))) + Math.floor(Math.random() * 500);
+  console.log("[bmcp-offscreen] Scheduling gateway reconnect in " + delay + "ms");
+  gatewayReconnectTimer = setTimeout(() => {
+    gatewayReconnectTimer = null;
+    connect().catch(() => {});
+  }, delay);
+}
+
+function stopGateway() {
+  if (gatewayWatchdogTimer) { clearTimeout(gatewayWatchdogTimer); gatewayWatchdogTimer = null; }
+  if (gatewayKeepaliveTimer) { clearInterval(gatewayKeepaliveTimer); gatewayKeepaliveTimer = null; }
+  if (gatewayReconnectTimer) { clearTimeout(gatewayReconnectTimer); gatewayReconnectTimer = null; }
+  if (gatewayWs) {
+    gatewayWs.onclose = null;
+    gatewayWs.onerror = null;
+    gatewayWs.onmessage = null;
+    try { gatewayWs.close(); } catch {}
+    gatewayWs = null;
+  }
+}
+
 function scheduleReconnect() {
   if (reconnectTimer) return;
   console.log(`[bmcp-offscreen] Scheduling reconnect in ${RECONNECT_DELAY_MS}ms`);
@@ -220,12 +353,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log("[bmcp-offscreen] Received message:", message.type);
 
   if (message.type === "get-status") {
-    const connected = ws !== null && ws.readyState === WebSocket.OPEN;
+    const gwConnected = gatewayWs !== null && gatewayWs !== undefined && gatewayWs.readyState === WebSocket.OPEN;
+    const localConnected = ws !== null && ws !== undefined && ws.readyState === WebSocket.OPEN;
+    const connected = mode === "gateway" ? gwConnected : localConnected;
     const status = {
       connected,
+      mode,
       extensionId,
       deviceId,
-      wsState: ws ? ws.readyState : "no-ws",
+      wsState: mode === "gateway" ? (gatewayWs ? gatewayWs.readyState : "no-gw-ws") : (ws ? ws.readyState : "no-ws"),
       connectAttempts,
       lastError,
     };
@@ -246,6 +382,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ws = null;
     }
     stopHeartbeat();
+    stopGateway();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -265,9 +402,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.extensionId) extensionId = message.extensionId;
     if (message.token !== undefined) authToken = message.token || null;
     if (message.deviceId !== undefined) deviceId = message.deviceId || null;
-    // Storage is the source of truth for persistent config (survives restarts).
-    loadConfigIntoState().then(() => {
-      if (ws) {
+    if (ws) {
         ws.onclose = null;
         ws.onerror = null;
         ws.onmessage = null;
@@ -275,6 +410,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ws = null;
       }
       stopHeartbeat();
+      stopGateway();
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -285,7 +421,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           console.error("[bmcp-offscreen] reconnect failed:", err);
           sendResponse({ ok: true }); // still ok — reconnect will auto-retry
         });
-    });
     return true; // async response
   }
 
@@ -299,13 +434,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ws = null;
     }
     stopHeartbeat();
+    stopGateway();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    connected = false;
     chrome.runtime.sendMessage({ source: "offscreen", type: "connection-status", connected: false }).catch(() => {});
     sendResponse({ ok: true });
+    return true;
+  }
+
+  // Read a local file and return it as base64 (direct gateway mode: no server to upload to).
+  // The service worker cannot fetch file:// URLs, but the offscreen document can.
+  if (message.type === "read-file") {
+    (async () => {
+      try {
+        const { filePath, maxBytes } = message;
+        let fileUrl;
+        if (/^[A-Za-z]:/.test(filePath)) {
+          fileUrl = "file:///" + filePath.replace(/\\/g, "/");
+        } else {
+          fileUrl = "file://" + filePath;
+        }
+        const response = await fetch(fileUrl);
+        if (!response.ok) throw new Error("Cannot read file: " + filePath);
+        const blob = await response.blob();
+        const cap = maxBytes || 512 * 1024;
+        if (blob.size > cap) throw new Error("File too large for inline read (" + blob.size + " bytes, max " + cap + ")");
+        const arrayBuffer = await blob.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        const parts = [];
+        const chunkSize = 32768;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize)));
+        }
+        const name = filePath.split(/[\\/]/).pop() || "download";
+        sendResponse({ ok: true, base64: btoa(parts.join("")), mime: blob.type, size: blob.size, name });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
     return true;
   }
 

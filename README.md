@@ -17,18 +17,11 @@ and the same gateway WebSocket protocol, so it drops into existing agent setups.
 │  ├─ Offscreen Doc (WebSocket bridge)       │
 │  ├─ Content Script (DOM utilities)         │
 │  ├─ Shield (anti-bot CDP detection)        │
-│  └─ Popup (status + MCP-mark icon)         │
+│  └─ Popup (ID/Token + status, MCP-mark)    │
 └──────────────┬─────────────────────────────┘
-               │ WebSocket ws://localhost:7777/browser/ws
-┌──────────────┴─────────────────────────────┐
-│ browser-mcp.ts (Bun, single file)          │
-│  ├─ POST /mcp         MCP JSON-RPC tools   │
-│  ├─ /browser/ws       extension bridge     │
-│  ├─ /files/*          file transfer        │
-│  ├─ GET /extension    extension zip        │
-│  └─ gateway client    wss://gateway/ws     │
-└──────────────┬─────────────────────────────┘
-               │ code-mcp-gateway protocol
+               │ DIRECT: wss://code-mcp.tuanm.dev/ws/<id>
+               │ (extension is the MCP server - no local server)
+               │ code-mcp-gateway protocol (register/keepalive)
 ┌──────────────┴─────────────────────────────┐
 │ code-mcp-gateway (Cloudflare Worker)       │
 └────────────────────────────────────────────┘
@@ -36,16 +29,11 @@ and the same gateway WebSocket protocol, so it drops into existing agent setups.
 
 ## Quick start
 
-Requires [Bun](https://bun.sh) (>= 1.1) and Chrome or Edge (>= 111).
+Requires Chrome or Edge (>= 111). [Bun](https://bun.sh) (>= 1.1) is only needed
+for the **optional** local server (file store, big uploads, local MCP HTTP) or
+to run the dev tooling — **the extension works standalone with no local process**.
 
-### 1. Run the server
-
-```bash
-bun browser-mcp.ts                  # listens on http://127.0.0.1:7777/mcp
-bun browser-mcp.ts --token <s>      # require auth on /mcp + /files
-```
-
-### 2. Install the extension
+### 1. Install the extension
 
 Two options — both produce the same zip:
 
@@ -63,18 +51,30 @@ Then in Chrome/Edge:
    - **ID** — your gateway device ID (e.g. `my-browser`)
    - **Token** — the shared secret for the gateway link
 
-5. Enter both, click **Connect**. The extension connects to the local server
-   (`ws://localhost:7777/browser/ws`) and hands the ID + Token over; the server
-   then links to the gateway at `wss://code-mcp.tuanm.dev/ws/<id>` (same protocol
-   as code-mcp: register, keepalive every 25s, 75s watchdog, jittered backoff) and
-   enforces the Token on `/mcp` so the gateway's forwarded requests authenticate.
+5. Enter both, click **Connect**. **The extension IS the MCP server**: it connects
+   straight to `wss://code-mcp.tuanm.dev/ws/<id>` (code-mcp-gateway protocol:
+   register, keepalive every 25s, 75s watchdog, jittered backoff reconnect) and
+   answers MCP `initialize` / `tools/list` / `tools/call` in place — **no local
+   server is running**. Any agent that can reach the gateway can drive the browser.
 
-> The token must match what you configured for this device on the gateway side
-> (the gateway forwards `?token=…` to the local server, exactly like code-mcp).
-> No token entered → the server warns that anyone reaching the gateway can control
-> the browser.
+> The token must match what you configured for this device on the gateway side —
+> the gateway forwards it with each request and the extension verifies it.
+> No token entered → anyone reaching the gateway can control the browser.
 
-### 3. Point an agent at it
+### 3. Optional: run the local server
+
+Only needed for the local file store (`browser_file_read`, downloads/upload
+larger than 512 KB) or for a plain local MCP HTTP endpoint:
+
+```bash
+bun browser-mcp.ts                  # listens on http://127.0.0.1:7777/mcp
+bun browser-mcp.ts --token <s>      # require auth on /mcp + /files
+```
+
+With the server running, the popup Connect also hands the ID + Token over for the
+server's own gateway link. Without it, the extension still works directly.
+
+### 4. Point an agent at it
 
 Local MCP clients connect to `http://127.0.0.1:7777/mcp`. Example Claude Desktop
 config (`claude_desktop_config.json` / `mcpServers`):
@@ -94,9 +94,12 @@ Verify it works: `curl -s http://127.0.0.1:7777/health` → `extensionConnected:
 
 ## Remote access via code-mcp-gateway
 
-**Default (popup):** enter **ID** + **Token** in the extension popup and click
-Connect — the server automatically links to `wss://code-mcp.tuanm.dev/ws/<id>`
-and uses the Token for `/mcp` auth. No server flags needed.
+**Default (popup, direct mode):** enter **ID** + **Token** in the extension popup
+and click Connect — the extension itself connects to `wss://code-mcp.tuanm.dev/ws/<id>`
+and serves MCP directly. **No local server is needed.**
+
+**With the local server (server-side gateway link):** the server links to
+`wss://code-mcp.tuanm.dev/ws/<id>` and uses the Token for `/mcp` auth.
 
 **CLI (custom gateway):**
 

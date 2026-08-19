@@ -67,7 +67,7 @@ function checkStatus() {
       setStatus(false, "Disconnected (no response - retrying)");
       return;
     }
-    setStatus(response?.connected || false, response?.lastError ? "Disconnected: " + response.lastError : "");
+    setStatus(response?.connected || false, response?.lastError ? "Disconnected: " + response.lastError : "", response?.mode);
   });
 }
 
@@ -121,7 +121,10 @@ connectBtn.addEventListener("click", () => {
     checkStatus();
     // If still disconnected, point the user at the missing local server.
     if (connectBtn.dataset.connected !== "true") {
-      statusText.textContent = "Disconnected - is the local server running? Start it with: bun browser-mcp.ts (ws://localhost:7777)";
+      const direct = !!deviceId;
+      statusText.textContent = direct
+        ? "Disconnected - check your Device ID/Token and try again."
+        : "Disconnected - is the local server running? Start it with: bun browser-mcp.ts (ws://localhost:7777)";
     }
   }, 5000);
 });
@@ -133,9 +136,9 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-function setStatus(connected, detail) {
+function setStatus(connected, detail, mode) {
   dot.className = connected ? "dot on" : "dot off";
-  statusText.textContent = connected ? "Connected" : (detail || "Disconnected");
+  statusText.textContent = connected ? (mode === "gateway" ? "Connected (gateway)" : "Connected") : (detail || "Disconnected");
   connectBtn.textContent = connected ? "Disconnect" : "Connect";
   connectBtn.classList.toggle("off", connected);
   connectBtn.dataset.connected = connected ? "true" : "false";
