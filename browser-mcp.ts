@@ -1687,7 +1687,9 @@ async function handle(msg: Json): Promise<Json | null> {
         serverInfo: { name: "browser-mcp", version: "0.1.0" },
       });
     }
-    if (method === "notifications/initialized") return null;
+    // Notifications have no id. Return a parseable empty result so strict
+    // MCP clients (codex/pi) never see a literal null response body.
+    if (method === "notifications/initialized") return { jsonrpc: "2.0", id: null, result: {} };
     if (method === "ping") return ok({});
     if (method === "tools/list") {
       return ok({

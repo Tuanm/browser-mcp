@@ -372,7 +372,10 @@ export function createMcpHandler(dispatch) {
           serverInfo: { name: "browser-mcp", version: "0.1.0" },
         });
       }
-      if (method === "notifications/initialized") return null;
+      // Notifications have no id. The gateway always serializes the device
+      // response as JSON, so return a parseable empty result (codex/pi reject
+      // a literal null body).
+      if (method === "notifications/initialized") return { jsonrpc: "2.0", id: null, result: {} };
       if (method === "ping") return ok({});
       if (method === "tools/list") {
         return ok({
@@ -393,8 +396,7 @@ export function createMcpHandler(dispatch) {
       }
       return err(-32601, "unknown method: " + method);
     } catch (e) {
-      if (id == null) return null;
-      return ok({ content: errBlocks(e), isError: true });
+      return { jsonrpc: "2.0", id: id ?? null, error: { code: -32603, message: String((e && e.message) || e) } };
     }
   }
 
