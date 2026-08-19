@@ -2,7 +2,7 @@
 /**
  * test-integration.ts — End-to-end tests for browser-mcp without a real browser:
  *   - MCP JSON-RPC (initialize / tools/list / tools/call)
- *   - file upload/download / browser_file_read
+ *   - file upload/download / file_read
  *   - extension WS bridge (mock extension, incl. Origin + token checks)
  *   - gateway mode (mock code-mcp-gateway)
  */
@@ -48,22 +48,22 @@ ok("ping", r.json?.result && typeof r.json.result === "object", JSON.stringify(r
 r = await mcpCall(A, { jsonrpc: "2.0", id: 3, method: "tools/list" });
 ok("tools/list 47 tools", r.json?.result?.tools?.length === 47, "got " + (r.json?.result?.tools?.length ?? "?") + " tools");
 const names = (r.json?.result?.tools ?? []).map((t: any) => t.name);
-ok("has browser_navigate", names.includes("browser_navigate"));
-ok("has browser_file_read", names.includes("browser_file_read"));
-const navSchema = (r.json?.result?.tools ?? []).find((t: any) => t.name === "browser_navigate");
+ok("has navigate", names.includes("navigate"));
+ok("has file_read", names.includes("file_read"));
+const navSchema = (r.json?.result?.tools ?? []).find((t: any) => t.name === "navigate");
 ok("navigate inputSchema", navSchema?.inputSchema?.type === "object" && navSchema.inputSchema.required?.includes("url"));
 
-r = await mcpCall(A, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "browser_status", arguments: {} } });
-ok("browser_status disconnected (status query, not error)", r.json?.result?.isError !== true && (r.json?.result?.content?.[0]?.text ?? "").includes('"connected": false'), JSON.stringify(r.json?.result));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "status", arguments: {} } });
+ok("status disconnected (status query, not error)", r.json?.result?.isError !== true && (r.json?.result?.content?.[0]?.text ?? "").includes('"connected": false'), JSON.stringify(r.json?.result));
 
-r = await mcpCall(A, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "browser_tabs", arguments: {} } });
-ok("browser_tabs no extension -> error", r.json?.result?.isError === true, JSON.stringify(r.json?.result));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "tabs", arguments: {} } });
+ok("tabs no extension -> error", r.json?.result?.isError === true, JSON.stringify(r.json?.result));
 
 r = await mcpCall(A, { jsonrpc: "2.0", id: 6, method: "unknown_method" });
 ok("unknown method -> -32601", r.json?.error?.code === -32601, JSON.stringify(r.json));
 
 console.log("\n== CSRF origin gate on /mcp ==");
-r = await fetch(A + "/mcp", { method: "POST", headers: { "Content-Type": "application/json", origin: "https://evil.example" }, body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "browser_execute", arguments: { code: "1" } } }) });
+r = await fetch(A + "/mcp", { method: "POST", headers: { "Content-Type": "application/json", origin: "https://evil.example" }, body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "execute", arguments: { code: "1" } } }) });
 ok("evil web origin -> 403 (blocked)", r.status === 403, "status=" + r.status);
 r = await fetch(A + "/mcp", { method: "POST", headers: { "Content-Type": "application/json", origin: "http://localhost:3000" }, body: JSON.stringify({ jsonrpc: "2.0", id: 8, method: "ping" }) });
 ok("localhost origin -> allowed", r.status === 200, "status=" + r.status);
@@ -82,8 +82,8 @@ r = await fetch(A + "/files/" + fileId);
 ok("download roundtrip", r.status === 200 && (await r.text()) === "hello browser-mcp", "status=" + r.status);
 ok("download disposition", (r.headers.get("content-disposition") ?? "").includes("greeting.txt"));
 
-r = await mcpCall(A, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "browser_file_read", arguments: { file_id: fileId } } });
-ok("browser_file_read inline text", /hello browser-mcp/.test(r.json?.result?.content?.[0]?.text ?? ""), JSON.stringify(r.json?.result?.content?.[0]?.text));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "file_read", arguments: { file_id: fileId } } });
+ok("file_read inline text", /hello browser-mcp/.test(r.json?.result?.content?.[0]?.text ?? ""), JSON.stringify(r.json?.result?.content?.[0]?.text));
 
 r = await fetch(A + "/files/../../etc/passwd");
 ok("path traversal rejected", r.status === 400 || r.status === 404, "status=" + r.status);
@@ -146,98 +146,98 @@ const health = await r.json();
 ok("health extensionConnected", health.extensionConnected === true, JSON.stringify(health));
 
 // navigate through the bridge
-r = await mcpCall(A, { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "browser_navigate", arguments: { url: "https://example.com" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "navigate", arguments: { url: "https://example.com" } } });
 ok("navigate via bridge", r.json?.result?.content?.[0]?.text?.includes('"tab_id": 7') && r.json?.result?.content?.[0]?.text?.includes("Example"), JSON.stringify(r.json?.result?.content?.[0]?.text));
 ok("bridge received navigate command", commands.some((c) => c.method === "navigate" && c.params.url === "https://example.com"));
 
 // tabs through the bridge
-r = await mcpCall(A, { jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "browser_tabs", arguments: { action: "list" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "tabs", arguments: { action: "list" } } });
 ok("tabs via bridge", r.json?.result?.content?.[0]?.text?.includes("Mock Tab"), JSON.stringify(r.json?.result?.content?.[0]?.text));
 
 // screenshot returns image content block
-r = await mcpCall(A, { jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "browser_screenshot", arguments: {} } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "screenshot", arguments: {} } });
 const blocks = r.json?.result?.content ?? [];
 ok("screenshot image block", blocks.some((b: any) => b.type === "image" && b.mimeType === "image/jpeg"), JSON.stringify(blocks.map((b: any) => b.type)));
 
 // store roundtrip
-r = await mcpCall(A, { jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "browser_store", arguments: { action: "set", key: "k1", value: "v1" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "store", arguments: { action: "set", key: "k1", value: "v1" } } });
 ok("store via bridge", (r.json?.result?.content?.[0]?.text ?? "").includes("stored"), JSON.stringify(r.json?.result?.content?.[0]?.text));
 
 // agent-browser port: snapshot + @ref system
-r = await mcpCall(A, { jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "browser_snapshot", arguments: {} } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "snapshot", arguments: {} } });
 const snapText = r.json?.result?.content?.[0]?.text ?? "";
 ok("snapshot assigns refs", snapText.includes("[ref=e1]") && snapText.includes("[ref=e2]") && snapText.includes("[ref=e3]"), snapText.slice(0, 200));
 ok("snapshot shows roles", snapText.includes("button \"Submit\"") && snapText.includes("textbox \"Name\""), snapText.slice(0, 200));
 
 // click by ref (dispatcher resolves e2 -> #name)
-r = await mcpCall(A, { jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "browser_click", arguments: { ref: "e2" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "click", arguments: { ref: "e2" } } });
 ok("click via ref", (r.json?.result?.content?.[0]?.text ?? "").includes("clicked"), JSON.stringify(r.json?.result?.content?.[0]?.text));
 ok("ref resolved to selector", commands.some((c) => c.method === "click" && c.params.selector === "#name"), JSON.stringify(commands.filter((c) => c.method === "click").map((c) => c.params)));
 
 // stale ref error
-r = await mcpCall(A, { jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "browser_click", arguments: { ref: "e99" } } });
-ok("stale ref -> helpful error", r.json?.result?.isError === true && /Run browser_snapshot again/.test(r.json?.result?.content?.[0]?.text ?? ""), JSON.stringify(r.json?.result?.content?.[0]?.text));
+r = await mcpCall(A, { jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "click", arguments: { ref: "e99" } } });
+ok("stale ref -> helpful error", r.json?.result?.isError === true && /Run snapshot again/.test(r.json?.result?.content?.[0]?.text ?? ""), JSON.stringify(r.json?.result?.content?.[0]?.text));
 
 // find
-r = await mcpCall(A, { jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "browser_find", arguments: { role: "button", name: "Submit" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "find", arguments: { role: "button", name: "Submit" } } });
 ok("find returns ref", (r.json?.result?.content?.[0]?.text ?? "").includes("[ref="), JSON.stringify(r.json?.result?.content?.[0]?.text));
 
 // get / is
-r = await mcpCall(A, { jsonrpc: "2.0", id: 24, method: "tools/call", params: { name: "browser_get", arguments: { property: "value", selector: "#name" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 24, method: "tools/call", params: { name: "get", arguments: { property: "value", selector: "#name" } } });
 ok("get value", (r.json?.result?.content?.[0]?.text ?? "").includes("hello"), JSON.stringify(r.json?.result?.content?.[0]?.text));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 25, method: "tools/call", params: { name: "browser_is", arguments: { check: "visible", selector: "#name" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 25, method: "tools/call", params: { name: "is", arguments: { check: "visible", selector: "#name" } } });
 ok("is visible -> true", (r.json?.result?.content?.[0]?.text ?? "").trim() === "true", JSON.stringify(r.json?.result?.content?.[0]?.text));
 
 // fill / check / uncheck / focus / dblclick
-r = await mcpCall(A, { jsonrpc: "2.0", id: 26, method: "tools/call", params: { name: "browser_fill", arguments: { text: "abc", selector: "#name" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 26, method: "tools/call", params: { name: "fill", arguments: { text: "abc", selector: "#name" } } });
 ok("fill sends clear-first type", commands.some((c) => c.method === "fill" && c.params.selector === "#name"), JSON.stringify(commands.filter((c) => c.method === "fill")));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 27, method: "tools/call", params: { name: "browser_check", arguments: { selector: "#sub" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 27, method: "tools/call", params: { name: "check", arguments: { selector: "#sub" } } });
 ok("check", (r.json?.result?.content?.[0]?.text ?? "").includes("checked"), JSON.stringify(r.json?.result?.content?.[0]?.text));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 28, method: "tools/call", params: { name: "browser_uncheck", arguments: { ref: "e3" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 28, method: "tools/call", params: { name: "uncheck", arguments: { ref: "e3" } } });
 ok("uncheck via ref", (r.json?.result?.content?.[0]?.text ?? "").includes("false"), JSON.stringify(r.json?.result?.content?.[0]?.text));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 29, method: "tools/call", params: { name: "browser_focus", arguments: { ref: "e2" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 29, method: "tools/call", params: { name: "focus", arguments: { ref: "e2" } } });
 ok("focus via ref", (r.json?.result?.content?.[0]?.text ?? "").includes("focused"), JSON.stringify(r.json?.result?.content?.[0]?.text));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 30, method: "tools/call", params: { name: "browser_dblclick", arguments: { selector: "#name" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 30, method: "tools/call", params: { name: "dblclick", arguments: { selector: "#name" } } });
 ok("dblclick", commands.some((c) => c.method === "dblclick"), "ok");
 
 // reload / back / forward / close / wait / highlight
-r = await mcpCall(A, { jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "browser_reload", arguments: {} } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "reload", arguments: {} } });
 ok("reload", (r.json?.result?.content?.[0]?.text ?? "").includes("reloaded"));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 32, method: "tools/call", params: { name: "browser_back", arguments: {} } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 32, method: "tools/call", params: { name: "back", arguments: {} } });
 ok("back", (r.json?.result?.content?.[0]?.text ?? "").includes("back"));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 33, method: "tools/call", params: { name: "browser_forward", arguments: {} } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 33, method: "tools/call", params: { name: "forward", arguments: {} } });
 ok("forward", (r.json?.result?.content?.[0]?.text ?? "").includes("forward"));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 34, method: "tools/call", params: { name: "browser_wait", arguments: { mode: "text", text: "hello" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 34, method: "tools/call", params: { name: "wait", arguments: { mode: "text", text: "hello" } } });
 ok("wait text", (r.json?.result?.content?.[0]?.text ?? "").includes("found"), JSON.stringify(r.json?.result?.content?.[0]?.text));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 35, method: "tools/call", params: { name: "browser_highlight", arguments: { ref: "e1" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 35, method: "tools/call", params: { name: "highlight", arguments: { ref: "e1" } } });
 ok("highlight", (r.json?.result?.content?.[0]?.text ?? "").includes("highlighted"));
 
 // storage / pdf / set / window
-r = await mcpCall(A, { jsonrpc: "2.0", id: 36, method: "tools/call", params: { name: "browser_storage", arguments: { action: "get", type: "local" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 36, method: "tools/call", params: { name: "storage", arguments: { action: "get", type: "local" } } });
 ok("storage get", (r.json?.result?.content?.[0]?.text ?? "").includes("k1"), JSON.stringify(r.json?.result?.content?.[0]?.text));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 37, method: "tools/call", params: { name: "browser_pdf", arguments: { format: "a4" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 37, method: "tools/call", params: { name: "pdf", arguments: { format: "a4" } } });
 ok("pdf -> file_id", /file_id/.test(r.json?.result?.content?.[0]?.text ?? ""), JSON.stringify(r.json?.result?.content?.[0]?.text));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 38, method: "tools/call", params: { name: "browser_set", arguments: { property: "viewport", width: 1920, height: 1080 } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 38, method: "tools/call", params: { name: "set", arguments: { property: "viewport", width: 1920, height: 1080 } } });
 ok("set viewport", (r.json?.result?.content?.[0]?.text ?? "").includes("1920"), JSON.stringify(r.json?.result?.content?.[0]?.text));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 39, method: "tools/call", params: { name: "browser_window", arguments: { action: "list" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 39, method: "tools/call", params: { name: "window", arguments: { action: "list" } } });
 ok("window list", (r.json?.result?.content?.[0]?.text ?? "").includes("Mock Tab"));
 
 // console / errors / network
-r = await mcpCall(A, { jsonrpc: "2.0", id: 40, method: "tools/call", params: { name: "browser_console", arguments: { action: "view" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 40, method: "tools/call", params: { name: "console", arguments: { action: "view" } } });
 ok("console", (r.json?.result?.content?.[0]?.text ?? "").includes("hello from page"));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 41, method: "tools/call", params: { name: "browser_errors", arguments: { action: "view" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 41, method: "tools/call", params: { name: "errors", arguments: { action: "view" } } });
 ok("errors", (r.json?.result?.content?.[0]?.text ?? "").includes("TypeError"));
-r = await mcpCall(A, { jsonrpc: "2.0", id: 42, method: "tools/call", params: { name: "browser_network", arguments: { action: "view" } } });
+r = await mcpCall(A, { jsonrpc: "2.0", id: 42, method: "tools/call", params: { name: "network", arguments: { action: "view" } } });
 ok("network", (r.json?.result?.content?.[0]?.text ?? "").includes("example.com/api"));
 
 // new tool names are shortened
 r = await mcpCall(A, { jsonrpc: "2.0", id: 43, method: "tools/list" });
 const allNames = (r.json?.result?.tools ?? []).map((x: any) => x.name);
-ok("renamed tools (press/dialog/upload/perms)", allNames.includes("browser_press") && allNames.includes("browser_dialog") && allNames.includes("browser_upload") && allNames.includes("browser_perms"));
-ok("removed redundant tools", !allNames.includes("browser_wait_for") && !allNames.includes("browser_history") && !allNames.includes("browser_keypress") && !allNames.includes("browser_upload_file"));
+ok("renamed tools (press/dialog/upload/perms)", allNames.includes("press") && allNames.includes("dialog") && allNames.includes("upload") && allNames.includes("perms"));
+ok("no tool keeps a browser_ prefix", allNames.every((n: string) => !n.startsWith("browser_")));
 // ref param injected into click schema
 const clickTool = allNames.length ? null : null;
-const schemaTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "browser_click");
+const schemaTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "click");
 ok("click schema has ref", !!schemaTool?.inputSchema?.properties?.ref);
 
 // extension disconnect -> pending cleanup

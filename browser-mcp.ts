@@ -11,7 +11,7 @@
  *   POST /mcp                  MCP JSON-RPC (initialize / tools/list / tools/call / ping)
  *   GET  /browser/ws           WebSocket bridge for the Chrome extension
  *   POST /browser/files/upload Extension uploads a downloaded file (multipart)
- *   GET  /browser/files/:id    Extension fetches a file for browser_upload
+ *   GET  /browser/files/:id    Extension fetches a file for upload
  *   POST /files/upload         Agent uploads a file (multipart) -> { file_id }
  *   GET  /files/:id            Agent downloads a stored file
  *   GET  /extension            Extension zip for easy install
@@ -275,23 +275,23 @@ function resolveRefArg(args: Record<string, any>): string | undefined {
   const ref = args?.ref;
   if (ref == null) return undefined;
   const m = String(ref).match(/^@?(e\d+)$/);
-  if (!m) throw new Error("Invalid ref format: \"" + ref + "\". Refs look like \"e3\" or \"@e3\" (from browser_snapshot).");
+  if (!m) throw new Error("Invalid ref format: \"" + ref + "\". Refs look like \"e3\" or \"@e3\" (from snapshot).");
   const entry = refCache.get(m[1]);
-  if (!entry) throw new Error("Ref \"" + ref + "\" not found or stale (page changed). Run browser_snapshot again to refresh refs.");
+  if (!entry) throw new Error("Ref \"" + ref + "\" not found or stale (page changed). Run snapshot again to refresh refs.");
   return entry.selector;
 }
 
 /** Tools whose handlers accept a ref-or-selector target (dispatcher injects the resolved selector). */
 const REF_SUPPORTING = new Set([
-  "browser_click", "browser_type", "browser_fill", "browser_hover", "browser_select",
-  "browser_screenshot", "browser_check", "browser_uncheck",
-  "browser_focus", "browser_dblclick", "browser_highlight", "browser_get", "browser_is",
-  "browser_upload",
+  "click", "type", "fill", "hover", "select",
+  "screenshot", "check", "uncheck",
+  "focus", "dblclick", "highlight", "get", "is",
+  "upload",
 ]);
 
 const REF_PARAM = {
   type: "string",
-  description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+  description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
 };
 
 /** Resolve refs in a tool-call's arguments before dispatch (mutates args when needed). */
@@ -301,13 +301,13 @@ function resolveArgsRefs(name: string, args: Record<string, any>): Record<string
     const sel = resolveRefArg(args);
     return { ...args, ref: undefined, selector: sel };
   }
-  if (name === "browser_drag") {
+  if (name === "drag") {
     let next = args;
     if (args.from_ref != null) next = { ...next, from_ref: undefined, from_selector: resolveRefArg({ ref: args.from_ref }) };
     if (args.to_ref != null) next = { ...next, to_ref: undefined, to_selector: resolveRefArg({ ref: args.to_ref }) };
     return next;
   }
-  if (name === "browser_wait" && args.mode === "selector" && args.ref != null) {
+  if (name === "wait" && args.mode === "selector" && args.ref != null) {
     return { ...args, ref: undefined, selector: resolveRefArg(args) };
   }
   return args;
@@ -315,10 +315,10 @@ function resolveArgsRefs(name: string, args: Record<string, any>): Record<string
 
 /** Resolve a tab id from the server's own status (for get url/title without a bridge round-trip). */
 async function activeTabIdFallback(): Promise<number> {
-  throw new Error("browser_get url/title requires the extension (use browser_tabs to list tabs first)");
+  throw new Error("get url/title requires the extension (use tabs to list tabs first)");
 }
 
-/** Fetch a tab from the extension (used by browser_get url/title). */
+/** Fetch a tab from the extension (used by get url/title). */
 async function fetchTab(tabId: number): Promise<{ url: string; title: string }> {
   const res = await sendBrowserCommand("tabs", { action: "list" });
   const tab = (res?.tabs || []).find((t: any) => t.id === tabId) || (res?.tabs || [])[0];
@@ -362,7 +362,7 @@ const COMMAND_TIMEOUTS: Record<string, number> = {
   file_upload: 120_000,
   back: 60_000,
   forward: 60_000,
-  wait: 60_000, // must exceed browser_wait's max 30s so the bridge never races the wait
+  wait: 60_000, // must exceed wait's max 30s so the bridge never races the wait
 };
 /**
  * Hard cap on bridge command duration. In gateway mode the gateway aborts its
@@ -513,8 +513,8 @@ function sendBrowserCommand(
 
 const MAX_SCREENSHOT_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MiB decoded -> image content block
 const MAX_TEXT_OUTPUT = 50_000; // truncate huge text results
-const MAX_FILE_READ_TEXT = 512 * 1024; // browser_file_read text cap
-const MAX_FILE_READ_IMAGE = 4 * 1024 * 1024; // browser_file_read image cap
+const MAX_FILE_READ_TEXT = 512 * 1024; // file_read text cap
+const MAX_FILE_READ_IMAGE = 4 * 1024 * 1024; // file_read image cap
 
 interface ToolDef {
   description: string;
@@ -552,7 +552,7 @@ function outJson(v: any): { blocks: any[] } {
 }
 
 const tools: Record<string, ToolDef> = {
-  browser_status: {
+  status: {
     description:
       "Check browser extension connection status. Returns whether the Browser MCP Chrome/Edge extension is connected and available for browser automation.",
     parameters: {},
@@ -569,9 +569,9 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_navigate: {
+  navigate: {
     description:
-      "Navigate a browser tab to a URL. If a tab with the target URL is already open (check via browser_tabs list first), reuse it by passing its tab_id instead of opening a new tab. Creates a new tab if no tab_id is specified. Close tabs you no longer need via browser_tabs action=close.",
+      "Navigate a browser tab to a URL. If a tab with the target URL is already open (check via tabs list first), reuse it by passing its tab_id instead of opening a new tab. Creates a new tab if no tab_id is specified. Close tabs you no longer need via tabs action=close.",
     parameters: {
       url: { type: "string", description: "URL to navigate to" },
       tab_id: { type: "number", description: "Target tab ID (optional - creates new tab if omitted)" },
@@ -594,10 +594,10 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_screenshot: {
+  screenshot: {
     description:
       "Take a screenshot of the current browser tab. Returns a JPEG image content block (max 8 MiB). " +
-      "PREFER browser_extract or browser_execute to read page content - they return structured data, are faster, and use less context. " +
+      "PREFER extract or execute to read page content - they return structured data, are faster, and use less context. " +
       "Only use screenshots when you need visual layout information that cannot be obtained from DOM/text extraction (e.g., charts, images, visual styling, spatial layout). " +
       "On anti-bot protected sites, use stealth=true (viewport-only, no selector/fullPage).",
     parameters: {
@@ -635,13 +635,13 @@ const tools: Record<string, ToolDef> = {
           width: result.width,
           height: result.height,
           size: file.size,
-          message: `Screenshot too large for an inline image block (${(bytes / 1024 / 1024).toFixed(1)} MiB). Stored as file_id="${file.id}". Use browser_file_read or fetch /files/${file.id} locally.`,
+          message: `Screenshot too large for an inline image block (${(bytes / 1024 / 1024).toFixed(1)} MiB). Stored as file_id="${file.id}". Use file_read or fetch /files/${file.id} locally.`,
         });
       } catch (e) { return outError(e); }
     },
   },
 
-  browser_click: {
+  click: {
     description:
       'Click an element on the page. Supports single-click, double-click (click_count=2 to select words or open items), and right-click (button="right" for context menus). For dynamic pages, prefer selectors over coordinates. Set intercept_file_chooser=true when clicking upload/file buttons. ' +
       "WARNING: On anti-bot protected sites, use stealth=true to avoid CDP debugger detection that causes immediate logout/redirect.",
@@ -655,7 +655,7 @@ const tools: Record<string, ToolDef> = {
       pierce: { type: "boolean", description: "Pierce shadow DOM and iframes to find the element (default: false)" },
       intercept_file_chooser: {
         type: "boolean",
-        description: "Set true when clicking a file upload button. Intercepts the file chooser dialog so you can provide a file via browser_upload. Do NOT set for download buttons.",
+        description: "Set true when clicking a file upload button. Intercepts the file chooser dialog so you can provide a file via upload. Do NOT set for download buttons.",
       },
       stealth: {
         type: "boolean",
@@ -676,7 +676,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_type: {
+  type: {
     description:
       "Type text into a focused element or a specific element by selector. Can also send special keys like Enter, Tab, Escape. " +
       "On anti-bot protected sites, use stealth=true to avoid CDP debugger detection.",
@@ -701,10 +701,10 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_extract: {
+  extract: {
     description:
       "Extract structured content from the current page. Can extract text, links, form data, tables, or the accessibility tree. " +
-      "PREFERRED over browser_screenshot for reading page content - returns structured text data that is faster, cheaper, and more accurate than OCR from screenshots.",
+      "PREFERRED over screenshot for reading page content - returns structured text data that is faster, cheaper, and more accurate than OCR from screenshots.",
     parameters: {
       mode: {
         type: "string",
@@ -713,7 +713,7 @@ const tools: Record<string, ToolDef> = {
       },
       selector: { type: "string", description: "CSS selector to scope extraction (optional - uses whole page)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      frame_id: { type: "string", description: "Frame ID to extract from (use browser_frames to list frames)" },
+      frame_id: { type: "string", description: "Frame ID to extract from (use frames to list frames)" },
       bridge_timeout: { type: "number", description: "Override server-side timeout in seconds (default: 30, max: 120). Use for heavy pages." },
     },
     required: ["mode"],
@@ -725,7 +725,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_tabs: {
+  tabs: {
     description:
       "List, close, or activate browser tabs. IMPORTANT: Before opening new tabs, check if a suitable tab is already open. Close tabs you no longer need to keep the browser tidy and reduce resource usage.",
     parameters: {
@@ -744,22 +744,22 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_execute: {
+  execute: {
     description:
-      "Execute JavaScript in the browser tab. Supports running inline code OR a stored script by ID (saved via browser_store). " +
+      "Execute JavaScript in the browser tab. Supports running inline code OR a stored script by ID (saved via store). " +
       "When reusing a stored script, pass script_id (and optional script_args) instead of code - this avoids re-sending large scripts and enables reuse across sessions. " +
       "If both code and script_id are provided, script_id takes priority. " +
-      "TIP: If you find yourself running similar code more than once, save it as a reusable script via browser_store (with a description) and call it by script_id going forward. " +
+      "TIP: If you find yourself running similar code more than once, save it as a reusable script via store (with a description) and call it by script_id going forward. " +
       "WARNING: On anti-bot protected sites, use stealth=true to avoid CDP debugger detection that causes immediate logout/redirect.",
     parameters: {
       code: { type: "string", description: "JavaScript code to execute in the page context (omit if using script_id)" },
       script_id: {
         type: "string",
-        description: "Key of a stored script (saved via browser_store with action=set). The script is loaded and wrapped in an async function - use 'return <expr>' to return values (unlike inline code, the last expression is NOT implicitly returned). Prefer this over re-sending code.",
+        description: "Key of a stored script (saved via store with action=set). The script is loaded and wrapped in an async function - use 'return <expr>' to return values (unlike inline code, the last expression is NOT implicitly returned). Prefer this over re-sending code.",
       },
       script_args: { type: "object", description: "Arguments object passed to the stored script as __args. Access via __args.key inside the script. Only used with script_id." },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      frame_id: { type: "string", description: "Frame ID for frame-targeted execution (use browser_frames to list frames)" },
+      frame_id: { type: "string", description: "Frame ID for frame-targeted execution (use frames to list frames)" },
       stealth: {
         type: "boolean",
         description: "Use stealth mode to avoid CDP debugger detection. Runs code via chrome.scripting in MAIN world instead of CDP Runtime.evaluate. Frame targeting not supported in stealth mode.",
@@ -773,7 +773,7 @@ const tools: Record<string, ToolDef> = {
         if (args.script_id) {
           const storeResult = await sendBrowserCommand("store", { action: "get", key: args.script_id, tabId: args.tab_id });
           const storedScript = storeResult?.value;
-          if (!storeResult?.found) return outError(new Error(`Stored script '${String(args.script_id).slice(0, 100)}' not found. Use browser_store action=set to save it first, or browser_store action=list to see available scripts.`));
+          if (!storeResult?.found) return outError(new Error(`Stored script '${String(args.script_id).slice(0, 100)}' not found. Use store action=set to save it first, or store action=list to see available scripts.`));
           if (typeof storedScript !== "string" || storedScript.length === 0) return outError(new Error(`Stored item '${String(args.script_id).slice(0, 100)}' is not a valid script (type: ${typeof storedScript}). Store a non-empty JS code string.`));
           let argsJson: string;
           try { argsJson = JSON.stringify(args.script_args ?? {}); } catch { return outError(new Error("script_args is not JSON-serializable (check for BigInt, circular references, or other non-serializable values)")); }
@@ -788,7 +788,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_scroll: {
+  scroll: {
     description:
       "Scroll the page or a specific scrollable area (sidebar, panel, chat list, etc.). When selector is given, the scroll event targets that element - the browser automatically scrolls the nearest scrollable ancestor. Use this to scroll within nested containers, not just the main page.",
     parameters: {
@@ -809,7 +809,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_hover: {
+  hover: {
     description:
       "Hover over an element to reveal hidden UI: tooltips, dropdown menus, action buttons, preview popups, and hover-only content. Essential for inspecting elements that only appear on mouse-over. After hovering, take a screenshot or extract to see the revealed content.",
     parameters: {
@@ -831,9 +831,9 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_mouse_move: {
+  mouse_move: {
     description:
-      "Move the mouse cursor to specific coordinates. Use sparingly - most interactions should use browser_click or browser_hover instead. Useful when you need to position the cursor at a precise location (e.g., to dismiss a popup, move away from an element, or prepare for a manual sequence).",
+      "Move the mouse cursor to specific coordinates. Use sparingly - most interactions should use click or hover instead. Useful when you need to position the cursor at a precise location (e.g., to dismiss a popup, move away from an element, or prepare for a manual sequence).",
     parameters: {
       x: { type: "number", description: "Target X coordinate" },
       y: { type: "number", description: "Target Y coordinate" },
@@ -849,7 +849,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_drag: {
+  drag: {
     description:
       "Drag and drop from one position to another. Use selectors or coordinates for source and target. Works for sliders, sortable lists, and drag-and-drop UIs.",
     parameters: {
@@ -875,7 +875,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_press: {
+  press: {
     description:
       "Send keyboard key presses with optional modifiers. Use for shortcuts, navigation keys, and special keys like Enter, Tab, Escape, Arrow keys, F1-F12, etc.",
     parameters: {
@@ -896,7 +896,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_select: {
+  select: {
     description:
       'Select an option from a <select> dropdown element. Can select by value, visible text, or index. Dispatches "input" and "change" events.',
     parameters: {
@@ -917,7 +917,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_dialog: {
+  dialog: {
     description:
       'Handle a JavaScript dialog (alert, confirm, or prompt). Must be called after a dialog appears. Use action "accept" to click OK or "dismiss" to click Cancel.',
     parameters: {
@@ -934,7 +934,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_upload: {
+  upload: {
     description:
       "Upload a file to a web page. Two modes: (1) After clicking an upload button that opens a file chooser dialog (file_chooser_opened in response), just provide file_id - no selector needed. " +
       '(2) Direct mode: provide both file_id and a CSS selector for the <input type="file"> element. ' +
@@ -944,7 +944,7 @@ const tools: Record<string, ToolDef> = {
         type: "string",
         description: 'CSS selector of the <input type="file"> element. Optional if a file chooser dialog is pending from a previous click.',
       },
-      file_id: { type: "string", description: "File ID from a previous upload (POST /files/upload) or from browser_file_read/browser_download" },
+      file_id: { type: "string", description: "File ID from a previous upload (POST /files/upload) or from file_read/download" },
       content: { type: "string", description: "Base64-encoded file content (alternative to file_id for remote agents). Max ~20 MiB decoded." },
       filename: { type: "string", description: "Filename used when content is provided (e.g. 'report.pdf')" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
@@ -966,9 +966,9 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_frames: {
+  frames: {
     description:
-      "List all frames (iframes) in the current page. Returns frame IDs, URLs, names, and hierarchy. Use frame IDs with browser_execute and browser_extract for frame-targeted commands.",
+      "List all frames (iframes) in the current page. Returns frame IDs, URLs, names, and hierarchy. Use frame IDs with execute and extract for frame-targeted commands.",
     parameters: {
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -981,7 +981,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_touch: {
+  touch: {
     description: "Dispatch touch events for mobile interaction testing. Supports tap, swipe, long-press, and pinch gestures.",
     parameters: {
       action: { type: "string", description: '"tap", "swipe", "long-press", or "pinch"', enum: ["tap", "swipe", "long-press", "pinch"] },
@@ -1005,7 +1005,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_emulate: {
+  emulate: {
     description:
       'Emulate a mobile device or custom viewport. Set screen dimensions, device scale factor, touch capability, and user agent. Use action "clear" to reset.',
     parameters: {
@@ -1027,9 +1027,9 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_download: {
+  download: {
     description:
-      'Track and capture file downloads. Use "list" to see recent downloads, "wait" to wait for a download to complete, or "latest" to get the most recent completed download. Completed downloads are automatically uploaded to the Browser MCP server and returned as file_id (max 500 MiB). Use browser_file_read or fetch /files/<file_id> to read the content.',
+      'Track and capture file downloads. Use "list" to see recent downloads, "wait" to wait for a download to complete, or "latest" to get the most recent completed download. Completed downloads are automatically uploaded to the Browser MCP server and returned as file_id (max 500 MiB). Use file_read or fetch /files/<file_id> to read the content.',
     parameters: {
       action: { type: "string", description: '"list" (recent downloads), "wait" (wait for next download), or "latest" (most recent completed)', enum: ["list", "wait", "latest"] },
       timeout: { type: "number", description: "Max wait time in ms for 'wait' action (default: 30000, max: 120000)" },
@@ -1044,7 +1044,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_auth: {
+  auth: {
     description:
       'Handle HTTP Basic/Digest authentication popups (e.g., staging servers, enterprise proxies). Use "status" to check if a page requires auth, "provide" to supply credentials, or "cancel" to dismiss.',
     parameters: {
@@ -1062,7 +1062,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_perms: {
+  perms: {
     description:
       'Grant, deny, or reset browser permissions for a site. Controls access to camera, microphone, geolocation, notifications, clipboard, MIDI, and other web APIs. Grant permissions before interacting with features that need them (e.g., grant "geolocation" before testing a map app).',
     parameters: {
@@ -1085,10 +1085,10 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_store: {
+  store: {
     description:
       "Store and retrieve data/scripts per-website using the browser's extension storage. " +
-      "IMPORTANT: For any script you plan to run more than once, save it here first (action=set with a description), then run it via browser_execute with script_id instead of resending the code. " +
+      "IMPORTANT: For any script you plan to run more than once, save it here first (action=set with a description), then run it via execute with script_id instead of resending the code. " +
       "Use action=list to see all stored items with their descriptions. " +
       "Data is scoped to the page origin and stored securely in extension storage (invisible to page JavaScript). " +
       "Use descriptive keys like 'scroll-to-bottom', 'extract-table', 'login-form' so scripts are easy to find and reuse.",
@@ -1112,10 +1112,10 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_cookies: {
+  cookies: {
     description:
       "Read, set, or remove cookies for the current site (HttpOnly-safe via the chrome.cookies API - no CDP, no page-visible JavaScript). " +
-      "Use browser_cookies action=getAll to inspect what the browser has for the current origin before deciding what to change.",
+      "Use cookies action=getAll to inspect what the browser has for the current origin before deciding what to change.",
     parameters: {
       action: {
         type: "string",
@@ -1145,9 +1145,9 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_file_read: {
+  file_read: {
     description:
-      "Read a file previously stored on the Browser MCP server (from browser_download, a screenshot that was too large, or POST /files/upload). " +
+      "Read a file previously stored on the Browser MCP server (from download, a screenshot that was too large, or POST /files/upload). " +
       "Returns small text files inline as text and images up to 4 MiB as an image block. Larger files return base64 text up to 2 MiB; anything bigger must be fetched locally via GET http://localhost:<port>/files/<file_id>.",
     parameters: {
       file_id: { type: "string", description: "File ID (12 hex chars)" },
@@ -1199,7 +1199,7 @@ const tools: Record<string, ToolDef> = {
   // agent-browser port: element discovery + interaction extras
   // ===========================================================================
 
-  browser_snapshot: {
+  snapshot: {
     description:
       "Capture the page's interactive element tree with refs (agent-browser style @ref system). " +
       "Returns compact lines like 'button \"Submit\" [ref=e4]'. Use the ref (e.g. \"e4\" or \"@e4\") as the 'ref' argument of any interaction tool (click/type/fill/hover/select/check/uncheck/focus/dblclick/highlight/get/is/wait_for) instead of writing CSS selectors. " +
@@ -1241,7 +1241,7 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_find: {
+  find: {
     description:
       "Semantic element search (agent-browser style). Find elements by role, accessible name, visible text, label, placeholder, title, data-testid, or CSS selector. " +
       "Returns matching elements with refs you can pass to interaction tools. Prefer over hand-writing CSS selectors.",
@@ -1280,12 +1280,12 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_get: {
+  get: {
     description:
-      "Get information from the page or an element (agent-browser browser_get). Properties: text, html, value, attribute (needs attr), url, title, count, box, styles (needs style_property). Target with ref (from browser_snapshot) or selector.",
+      "Get information from the page or an element. Properties: text, html, value, attribute (needs attr), url, title, count, box, styles (needs style_property). Target with ref (from snapshot) or selector.",
     parameters: {
       property: { type: "string", description: "What to get: text, html, value, attribute, url, title, count, box, styles", enum: ["text", "html", "value", "attribute", "url", "title", "count", "box", "styles"] },
-      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
       selector: { type: "string", description: "CSS selector (alternative to ref)" },
       attr: { type: "string", description: "Attribute name (required when property=attribute)" },
       style_property: { type: "string", description: "Computed style property (optional for property=styles)" },
@@ -1300,7 +1300,7 @@ const tools: Record<string, ToolDef> = {
           const tab = await fetchTab(tid);
           return { blocks: textBlocks(args.property === "url" ? tab.url : tab.title) };
         }
-        if (!sel) return outError(new Error("browser_get requires ref or selector for property=" + args.property));
+        if (!sel) return outError(new Error("get requires ref or selector for property=" + args.property));
         const result = await sendBrowserCommand("get_element", { selector: sel, property: args.property, attr: args.attr || null, styleProperty: args.style_property || null, tabId: args.tab_id });
         if (result && typeof result === "object" && "exists" in result && !result.exists) return outError(new Error("Element not found: " + sel));
         const keys = ["exists", "tag", "id", "className", "role", "text", "value", "count", "box", "styles", "html"];
@@ -1311,12 +1311,12 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_is: {
+  is: {
     description:
-      "Check an element's state (agent-browser browser_is). Checks: visible, hidden, enabled, disabled, checked, unchecked, editable, readonly, focused. Returns true/false. Target with ref or selector.",
+      "Check an element's state. Checks: visible, hidden, enabled, disabled, checked, unchecked, editable, readonly, focused. Returns true/false. Target with ref or selector.",
     parameters: {
       check: { type: "string", description: "State to check", enum: ["visible", "hidden", "enabled", "disabled", "checked", "unchecked", "editable", "readonly", "focused"] },
-      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
       selector: { type: "string", description: "CSS selector (alternative to ref)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -1324,19 +1324,19 @@ const tools: Record<string, ToolDef> = {
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        if (!sel) return outError(new Error("browser_is requires ref or selector"));
+        if (!sel) return outError(new Error("is requires ref or selector"));
         const result = await sendBrowserCommand("is_element", { selector: sel, check: args.check, tabId: args.tab_id });
         return { blocks: textBlocks(String(result.result)) };
       } catch (e) { return outError(e); }
     },
   },
 
-  browser_fill: {
+  fill: {
     description:
-      "Fill an input field: clear it, then type the text (agent-browser browser_fill). For fields where you want to APPEND text, use browser_type. Target with ref or selector.",
+      "Fill an input field: clear it, then type the text. For fields where you want to APPEND text, use type. Target with ref or selector.",
     parameters: {
       text: { type: "string", description: "Text to fill" },
-      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
       selector: { type: "string", description: "CSS selector (alternative to ref)" },
       press_enter: { type: "boolean", description: "Press Enter after filling (default: false)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
@@ -1351,10 +1351,10 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_check: {
-    description: "Check a checkbox or radio button (agent-browser browser_check). No-op if already checked. Target with ref or selector.",
+  check: {
+    description: "Check a checkbox or radio button. No-op if already checked. Target with ref or selector.",
     parameters: {
-      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
       selector: { type: "string", description: "CSS selector (alternative to ref)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -1362,17 +1362,17 @@ const tools: Record<string, ToolDef> = {
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        if (!sel) return outError(new Error("browser_check requires ref or selector"));
+        if (!sel) return outError(new Error("check requires ref or selector"));
         const result = await sendBrowserCommand("check", { selector: sel, tabId: args.tab_id });
         return outJson({ checked: true, already: !!result.already, tab_id: result.tabId });
       } catch (e) { return outError(e); }
     },
   },
 
-  browser_uncheck: {
-    description: "Uncheck a checkbox or radio button (agent-browser browser_uncheck). No-op if already unchecked. Target with ref or selector.",
+  uncheck: {
+    description: "Uncheck a checkbox or radio button. No-op if already unchecked. Target with ref or selector.",
     parameters: {
-      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
       selector: { type: "string", description: "CSS selector (alternative to ref)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -1380,17 +1380,17 @@ const tools: Record<string, ToolDef> = {
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        if (!sel) return outError(new Error("browser_uncheck requires ref or selector"));
+        if (!sel) return outError(new Error("uncheck requires ref or selector"));
         const result = await sendBrowserCommand("uncheck", { selector: sel, tabId: args.tab_id });
         return outJson({ checked: false, already: !!result.already, tab_id: result.tabId });
       } catch (e) { return outError(e); }
     },
   },
 
-  browser_focus: {
-    description: "Focus an element (agent-browser browser_focus). Scrolls it into view first. Target with ref or selector.",
+  focus: {
+    description: "Focus an element. Scrolls it into view first. Target with ref or selector.",
     parameters: {
-      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
       selector: { type: "string", description: "CSS selector (alternative to ref)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -1398,17 +1398,17 @@ const tools: Record<string, ToolDef> = {
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        if (!sel) return outError(new Error("browser_focus requires ref or selector"));
+        if (!sel) return outError(new Error("focus requires ref or selector"));
         const result = await sendBrowserCommand("focus", { selector: sel, tabId: args.tab_id });
         return outJson({ focused: true, element: sel, tab_id: result.tabId });
       } catch (e) { return outError(e); }
     },
   },
 
-  browser_dblclick: {
-    description: "Double-click an element (agent-browser browser_dblclick). Equivalent to browser_click with click_count=2. Target with ref, selector, or coordinates.",
+  dblclick: {
+    description: "Double-click an element. Equivalent to click with click_count=2. Target with ref, selector, or coordinates.",
     parameters: {
-      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
       selector: { type: "string", description: "CSS selector (alternative to ref)" },
       x: { type: "number", description: "X coordinate (if no selector/ref)" },
       y: { type: "number", description: "Y coordinate (if no selector/ref)" },
@@ -1424,8 +1424,8 @@ const tools: Record<string, ToolDef> = {
       } catch (e) { return outError(e); }
     },
   },
-  browser_reload: {
-    description: "Reload the current page (agent-browser browser_reload).",
+  reload: {
+    description: "Reload the current page.",
     parameters: {
       tab_id: { type: "number", description: "Target tab ID (optional)" },
       wait_for: { type: "string", description: "Wait for load (default) after reload", enum: ["load", "domcontentloaded"] },
@@ -1439,8 +1439,8 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_back: {
-    description: "Go back in history (agent-browser browser_back).",
+  back: {
+    description: "Go back in history.",
     parameters: { tab_id: { type: "number", description: "Target tab ID (optional)" } },
     required: [],
     handler: async (args) => {
@@ -1451,8 +1451,8 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_forward: {
-    description: "Go forward in history (agent-browser browser_forward).",
+  forward: {
+    description: "Go forward in history.",
     parameters: { tab_id: { type: "number", description: "Target tab ID (optional)" } },
     required: [],
     handler: async (args) => {
@@ -1463,8 +1463,8 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_close: {
-    description: "Close a browser tab (agent-browser browser_close). Defaults to the active tab.",
+  close: {
+    description: "Close a browser tab. Defaults to the active tab.",
     parameters: { tab_id: { type: "number", description: "Tab ID to close (optional - active tab)" } },
     required: [],
     handler: async (args) => {
@@ -1475,9 +1475,9 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_storage: {
+  storage: {
     description:
-      "Read, write, or clear localStorage/sessionStorage of the current page (agent-browser browser_storage). " +
+      "Read, write, or clear localStorage/sessionStorage of the current page. " +
       "Use type='local' (default) or 'session'. Actions: get (all or one key), set, remove, clear.",
     parameters: {
       action: { type: "string", description: "get (default), set, remove, or clear", enum: ["get", "set", "remove", "clear"] },
@@ -1496,9 +1496,9 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_pdf: {
+  pdf: {
     description:
-      "Export the current page as a PDF (agent-browser browser_pdf). The PDF is stored on the Browser MCP server and returned as file_id - fetch it via GET /files/<file_id> (local) or read it with browser_file_read.",
+      "Export the current page as a PDF. The PDF is stored on the Browser MCP server and returned as file_id - fetch it via GET /files/<file_id> (local) or read it with file_read.",
     parameters: {
       format: { type: "string", description: "Paper format: letter (default), a4, a3, a5, legal, tabloid", enum: ["letter", "a4", "a3", "a5", "legal", "tabloid"] },
       landscape: { type: "boolean", description: "Landscape orientation (default: false)" },
@@ -1519,15 +1519,15 @@ const tools: Record<string, ToolDef> = {
           filename: file.name,
           size: file.size,
           tab_id: result.tabId,
-          message: "PDF exported. Fetch via GET http://localhost:" + port + "/files/" + file.id + " or browser_file_read.",
+          message: "PDF exported. Fetch via GET http://localhost:" + port + "/files/" + file.id + " or file_read.",
         });
       } catch (e) { return outError(e); }
     },
   },
 
-  browser_set: {
+  set: {
     description:
-      "Configure browser behavior (agent-browser browser_set). Properties: viewport (width/height), device (preset name), geo (latitude/longitude), offline (true/false), headers (object of extra HTTP headers), media (color_scheme/reduced_motion). Emulation persists until cleared via browser_emulate action=clear or tab close.",
+      "Configure browser behavior. Properties: viewport (width/height), device (preset name), geo (latitude/longitude), offline (true/false), headers (object of extra HTTP headers), media (color_scheme/reduced_motion). Emulation persists until cleared via emulate action=clear or tab close.",
     parameters: {
       property: { type: "string", description: "What to set: viewport, device, geo, offline, headers, media", enum: ["viewport", "device", "geo", "offline", "headers", "media"] },
       width: { type: "number", description: "Viewport width (property=viewport)" },
@@ -1553,10 +1553,10 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_highlight: {
+  highlight: {
     description: "Flash a highlight box around an element so the user can see what the agent is targeting (debug helper). Target with ref or selector.",
     parameters: {
-      ref: { type: "string", description: "Element ref from browser_snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
+      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
       selector: { type: "string", description: "CSS selector (alternative to ref)" },
       duration: { type: "number", description: "Highlight duration in ms (default: 2000)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
@@ -1565,16 +1565,16 @@ const tools: Record<string, ToolDef> = {
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        if (!sel) return outError(new Error("browser_highlight requires ref or selector"));
+        if (!sel) return outError(new Error("highlight requires ref or selector"));
         const result = await sendBrowserCommand("highlight", { selector: sel, duration: args.duration, tabId: args.tab_id });
         return outJson({ highlighted: sel, tab_id: result.tabId });
       } catch (e) { return outError(e); }
     },
   },
 
-  browser_window: {
+  window: {
     description:
-      "Manage browser windows (agent-browser browser_window). Actions: list (all windows + tabs), create (new window, optionally with url), close (by window_id).",
+      "Manage browser windows. Actions: list (all windows + tabs), create (new window, optionally with url), close (by window_id).",
     parameters: {
       action: { type: "string", description: "list (default), create, or close", enum: ["list", "create", "close"] },
       url: { type: "string", description: "URL to open in the new window (action=create)" },
@@ -1589,9 +1589,9 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_console: {
+  console: {
     description:
-      "View or clear browser console messages (agent-browser browser_console). action=view returns console.log/error/warn/info etc. captured for this tab; supports filter (substring) and types (array). action=clear empties the buffer. Capture starts from the first call (Runtime domain enabled lazily) - reload the page to capture early messages.",
+      "View or clear browser console messages. action=view returns console.log/error/warn/info etc. captured for this tab; supports filter (substring) and types (array). action=clear empties the buffer. Capture starts from the first call (Runtime domain enabled lazily) - reload the page to capture early messages.",
     parameters: {
       action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
       filter: { type: "string", description: "Case-insensitive substring filter on messages" },
@@ -1608,9 +1608,9 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_errors: {
+  errors: {
     description:
-      "View or clear uncaught JavaScript errors on the page (agent-browser browser_errors). action=view returns captured runtime exceptions; supports filter. action=clear empties the buffer. Capture starts from the first call - reload to capture early errors.",
+      "View or clear uncaught JavaScript errors on the page. action=view returns captured runtime exceptions; supports filter. action=clear empties the buffer. Capture starts from the first call - reload to capture early errors.",
     parameters: {
       action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
       filter: { type: "string", description: "Case-insensitive substring filter on error messages" },
@@ -1626,9 +1626,9 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_network: {
+  network: {
     description:
-      "View or clear captured network requests for the tab (agent-browser browser_network). action=view returns {url, method, status, mimeType, resourceType, size, duration}; supports filter (URL substring). action=clear empties the log. Capture starts from the first call - reload/navigate to capture requests.",
+      "View or clear captured network requests for the tab. action=view returns {url, method, status, mimeType, resourceType, size, duration}; supports filter (URL substring). action=clear empties the log. Capture starts from the first call - reload/navigate to capture requests.",
     parameters: {
       action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
       filter: { type: "string", description: "Case-insensitive substring filter on request URLs" },
@@ -1643,15 +1643,15 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
-  browser_wait: {
+  wait: {
     description:
-      "Wait for a condition (agent-browser browser_wait). Modes: timeout (sleep), load (page load), url (substring or regex match), text (page contains text), selector (element appears, use ref or selector). Returns once the condition is met or after timeout (default 10s, max 30s).",
+      "Wait for a condition. Modes: timeout (sleep), load (page load), url (substring or regex match), text (page contains text), selector (element appears, use ref or selector). Returns once the condition is met or after timeout (default 10s, max 30s).",
     parameters: {
       mode: { type: "string", description: "timeout, load, url, text, or selector", enum: ["timeout", "load", "url", "text", "selector"] },
       timeout: { type: "number", description: "Max wait in ms (default 10000, max 30000)" },
       url: { type: "string", description: "URL substring or regex (mode=url)" },
       text: { type: "string", description: "Text to wait for (mode=text)" },
-      ref: { type: "string", description: "Element ref from browser_snapshot (mode=selector, alternative to selector)" },
+      ref: { type: "string", description: "Element ref from snapshot (mode=selector, alternative to selector)" },
       selector: { type: "string", description: "CSS selector (mode=selector)" },
       state: { type: "string", description: "Load state for mode=load: load (default) or domcontentloaded", enum: ["load", "domcontentloaded"] },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
@@ -1694,7 +1694,7 @@ async function handle(msg: Json): Promise<Json | null> {
         tools: Object.entries(tools).map(([name, t]) => {
           const props = { ...t.parameters };
           if (REF_SUPPORTING.has(name) && !props.ref) props.ref = REF_PARAM;
-          if (name === "browser_drag") {
+          if (name === "drag") {
             if (!props.from_ref) props.from_ref = { ...REF_PARAM, description: "Element ref for drag source (alternative to from_selector)" };
             if (!props.to_ref) props.to_ref = { ...REF_PARAM, description: "Element ref for drag target (alternative to to_selector)" };
           }

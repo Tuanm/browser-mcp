@@ -1,59 +1,59 @@
 # Browser MCP Extension
 
-Chrome/Edge extension (Manifest V3) that exposes your browser as **MCP tools** for
-any AI agent. It works two ways:
+Chrome/Edge extension (Manifest V3) that turns the browser into an MCP server
+for AI agents.
 
-- **Direct (default)** — enter a **Device ID** (+ optional **Token**) in the popup
-  and the extension connects straight to the code-mcp gateway
-  (`wss://code-mcp.tuanm.dev/ws/<id>`) and **serves MCP itself**. No local server
-  is needed.
-- **Local bridge** — with the optional `browser-mcp.ts` server running, the
-  extension connects over `ws://localhost:7777/browser/ws` and the server answers
-  MCP over Streamable HTTP (`http://127.0.0.1:7777/mcp`). Use this for the file
-  store (`browser_file_read`, large downloads/uploads) or a plain local HTTP
-  endpoint.
+Two modes:
 
-The toolbar icon shows the MCP mark — **gray** when disconnected, **green** when
+- **Direct (default).** Enter a **Device ID** (+ optional **Token**) in the
+  popup; the extension connects to the code-mcp gateway
+  (`wss://code-mcp.tuanm.dev/ws/<id>`) and serves MCP itself. No local server.
+- **Local bridge.** With `browser-mcp.ts` running, the extension connects over
+  `ws://localhost:7777/browser/ws` and the server answers MCP over HTTP
+  (`http://127.0.0.1:7777/mcp`). Use this for the file store
+  (`file_read`, large downloads/uploads) or a plain local HTTP endpoint.
+
+The toolbar icon shows the MCP mark — **gray** disconnected, **green**
 connected.
 
-## Features
-
-- **Navigate** — open URLs, manage tabs and windows
-- **Screenshot** — viewport, full page, or elements (returned as MCP image blocks)
-- **Click / Type / Hover / Drag** — interact via CSS selectors, coordinates, or
-  `@ref` markers from `browser_snapshot`
-- **Extract** — text, links, forms, tables, or the accessibility tree
-- **Execute JS** — run scripts in the page (with a stealth mode that avoids CDP
-  detection on anti-bot sites)
-- **Downloads** — capture files (returned inline as base64 when small)
-- **Uploads** — set files on `<input type=file>` or intercepted file choosers
-- **Auth** — HTTP Basic/Digest prompts, browser permissions, cookies, storage
-- **Emulation** — mobile viewports, touch gestures, geolocation, offline mode
+```mermaid
+flowchart LR
+  A["AI agent"] -->|"MCP over gateway"| G["code-mcp-gateway"]
+  G -->|"wss /ws/<id>"| E["Extension (this)"]
+  E -->|"CDP / tabs"| P["Pages"]
+```
 
 ## Install
 
-1. Load the extension:
-   - **From the repo** — open `chrome://extensions`, enable **Developer mode**,
-     click **Load unpacked**, and select this `packages/browser-extension`
-     directory. Or
-   - **From the server** — run `bun browser-mcp.ts`, open
-     `http://127.0.0.1:7777/extension`, download and unzip the zip, then load it
-     the same way.
-2. Click the toolbar icon — the popup shows two fields:
-   - **ID** — your gateway device ID (e.g. `my-browser`)
-   - **Token** — the shared secret configured for that device on the gateway
-3. Enter both and click **Connect**. The popup shows **Connected (gateway)** and
-   the icon turns green. Any agent that can reach the gateway can now drive the
-   browser — the extension answers MCP `initialize` / `tools/list` /
-   `tools/call` in place.
+1. Open `chrome://extensions`, enable **Developer mode**, click **Load
+   unpacked**, select this directory. (Or run `bun browser-mcp.ts` and download
+   the zip from `http://127.0.0.1:7777/extension`.)
+2. Click the toolbar icon; enter the gateway **Device ID** and **Token**, click
+   **Connect**. The popup shows **Connected (gateway)** once the gateway accepts
+   the registration.
 
-> Without an ID, the extension falls back to the local server bridge
-> (`ws://localhost:7777/browser/ws`).
+## Tools
+
+47 MCP tools, including:
+
+- **Discovery** — `snapshot` (interactive tree with `[ref=eN]` markers),
+  `find`, `get`, `is`
+- **Interaction** — `click`, `type`, `fill`, `hover`, `drag`,
+  `select`, `check`, `press`, `upload`, and more — each accepts a ref
+  from `snapshot` or a CSS selector
+- **Navigation** — `navigate`, `tabs`, `window`, `reload`, `back`,
+  `forward`
+- **Page reads** — `extract`, `execute`, `screenshot` (image block),
+  `pdf`, `wait`
+- **State** — `store`, `cookies`, `storage`, `console`, `errors`,
+  `network`, `status`
+- **Emulation** — `emulate`, `set` (viewport/device/geo/offline/headers),
+  `perms`, `auth`, `frames`, `touch`, `download`
 
 ## Security
 
 - In direct mode the gateway forwards the device **Token** with each request and
-  the extension verifies it before answering. Leave the Token empty only if you
-  accept that anyone reaching the gateway can control the browser.
-- `chrome.debugger` shows the yellow infobar as a consent signal while attached.
-- All commands run inside your browser profile — nothing is stored remotely.
+  the extension verifies it before answering. Leave it empty only if you accept
+  that anyone reaching the gateway can control the browser.
+- `chrome.debugger` shows the yellow infobar as a consent signal.
+- All commands run inside your browser profile; nothing is stored remotely.

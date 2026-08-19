@@ -47,7 +47,7 @@ async function setActionIcon(connected) {
 const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)
 const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
 const tabEmulation = new Map(); // tabId -> {metrics, hasTouch, userAgent} for screenshot restore
-const tabSetOverrides = new Map(); // tabId -> {geo?, offline?, media?} from browser_set (cleared by emulate action=clear)
+const tabSetOverrides = new Map(); // tabId -> {geo?, offline?, media?} from set (cleared by emulate action=clear)
 const pendingAuth = new Map(); // requestId -> { tabId, url, scheme, realm }
 const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status lookup)
 const recentDownloads = []; // Recent download events (from CDP Browser.downloadWillBegin), max 20
@@ -412,7 +412,7 @@ async function handleNavigate({ url, tabId, waitFor }) {
     result.download_triggered = {
       url: dl.url,
       filename: dl.suggestedFilename,
-      hint: "A file download was triggered. Use browser_download action=wait to capture it.",
+      hint: "A file download was triggered. Use download action=wait to capture it.",
     };
   return result;
 }
@@ -572,14 +572,14 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
       result.download_triggered = {
         url: dl.url,
         filename: dl.suggestedFilename,
-        hint: "A file download was triggered. Use browser_download action=wait to capture it.",
+        hint: "A file download was triggered. Use download action=wait to capture it.",
       };
     // Check if a file chooser dialog was intercepted (only possible when intercept_file_chooser was set)
     if (intercept_file_chooser && pendingFileChoosers.has(tid)) {
       const fc = pendingFileChoosers.get(tid);
       result.file_chooser_opened = {
         mode: fc.mode,
-        hint: "A file chooser dialog was intercepted. Use browser_upload_file with file_id to provide the file. No selector needed.",
+        hint: "A file chooser dialog was intercepted. Use upload with file_id to provide the file. No selector needed.",
       };
     } else if (intercept_file_chooser) {
       // No file chooser was triggered — disable interception to avoid interfering with future dialogs
@@ -787,7 +787,7 @@ async function handleExecute({ code, tabId, frameId }) {
   };
   if (frameId) {
     const contextId = frameContexts.get(`${tid}:${frameId}`);
-    if (!contextId) throw new Error(`No execution context for frame ${frameId}. Call browser_frames first.`);
+    if (!contextId) throw new Error(`No execution context for frame ${frameId}. Call frames first.`);
     evalParams.contextId = contextId;
   }
 
@@ -1491,7 +1491,7 @@ async function handleFileUpload({ selector, fileId, content, filename, tabId }) 
       }
     } else {
       throw new Error(
-        "No pending file chooser and no selector provided. Click the upload button with intercept_file_chooser=true first, then call browser_upload_file.",
+        "No pending file chooser and no selector provided. Click the upload button with intercept_file_chooser=true first, then call upload.",
       );
     }
 
@@ -1666,7 +1666,7 @@ async function handleEmulate({ action, width, height, deviceScaleFactor, isMobil
     await sendDebuggerCommand(tid, "Emulation.clearDeviceMetricsOverride").catch(() => {});
     await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
     await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent: "" }).catch(() => {});
-    // Also reset browser_set overrides (geo/offline/media) so the browser is never left in a stuck state
+    // Also reset set overrides (geo/offline/media) so the browser is never left in a stuck state
     const ov = tabSetOverrides.get(tid);
     if (ov) {
       if (ov.geo) await sendDebuggerCommand(tid, "Emulation.clearGeolocationOverride").catch(() => {});
@@ -2597,7 +2597,7 @@ async function handleFind({ role, name, text, label, placeholder, title, testid,
   else if (title != null) { kind = "title"; val = title; }
   else if (testid != null) { kind = "testid"; val = testid; }
   else if (selector != null) { kind = "selector"; val = selector; }
-  if (!kind) throw new Error("browser_find requires one of: role, name, text, label, placeholder, title, testid, selector");
+  if (!kind) throw new Error("find requires one of: role, name, text, label, placeholder, title, testid, selector");
   const results = await chrome.scripting.executeScript({
     target: { tabId: tid },
     world: "MAIN",

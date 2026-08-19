@@ -4,7 +4,7 @@
  * Provides:
  * 1. Agent activity indicator (glowing border overlay while an agent command runs)
  * 2. Black MCP-mark action cursor with box shadow at interaction positions
- * 3. Element highlight for browser_highlight
+ * 3. Element highlight for highlight
  *
  * Stealth: all injected DOM ids/classes/animation names use a session-random
  * prefix (received from the service worker) to avoid detectable patterns.
