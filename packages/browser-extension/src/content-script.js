@@ -78,17 +78,16 @@ if (!window[Symbol.for("_x7cs")]) {
   }
 
   // ========================================================================
-  // Agent Action Cursor - black MCP mark with box shadow at action positions
+  // Agent Action Cursor - mouse pointer shown at the interaction position
   // ========================================================================
 
-  // Official Model Context Protocol mark (modelcontextprotocol.io), black fill.
-  const MCP_MARK_PATH_1 = "M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z";
-  const MCP_MARK_PATH_2 = "M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z";
+  // Real mouse pointer (black arrow, white outline, drop shadow) so the agent's
+  // interaction looks like an actual mouse cursor, not a logo.
+  const MOUSE_POINTER_PATH = "M6.2 1.9a1 1 0 01.8.26L22.6 15.5a1 1 0 01-.55 1.76l-6.6.36-3.2 7.2a1 1 0 01-1.9-.2l-3.2-9.6-4.4 4.9a1 1 0 01-1.7-.66V2.9a1 1 0 011-1z";
 
   function cursorSvg(size) {
     return `<svg width="${size || 24}" height="${size || 24}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path fill="#111" fill-rule="evenodd" d="${MCP_MARK_PATH_1}"/>
-  <path fill="#111" fill-rule="evenodd" d="${MCP_MARK_PATH_2}"/>
+  <path fill="#111" stroke="#fff" stroke-width="1.4" stroke-linejoin="round" d="${MOUSE_POINTER_PATH}"/>
 </svg>`;
   }
 
@@ -102,25 +101,22 @@ if (!window[Symbol.for("_x7cs")]) {
     cursorStyleEl.id = `${_pfx}-cursor-style`;
     cursorStyleEl.textContent = `
       @keyframes ${_pfx}-cursor-pop {
-        0% { transform: translate(-50%, -50%) scale(0); opacity: 1; }
-        15% { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
-        30% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
-        85% { transform: translate(-50%, -50%) scale(1); opacity: 0.9; }
-        100% { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
+        0% { transform: scale(0); opacity: 1; }
+        15% { transform: scale(1.25); opacity: 1; }
+        30% { transform: scale(1); opacity: 1; }
+        85% { transform: scale(1); opacity: 0.9; }
+        100% { transform: scale(0.55); opacity: 0; }
       }
       .${_pfx}-action-cursor {
         position: fixed;
         z-index: 2147483647;
         pointer-events: none;
         animation: ${_pfx}-cursor-pop 0.7s ease-out forwards;
-        border-radius: 6px;
-        /* black mark + box shadow so the agent action is clearly visible */
-        box-shadow: 0 0 0 1px rgba(255,255,255,0.9), 0 2px 10px rgba(0,0,0,0.5);
+        transform-origin: 6px 2px; /* arrow tip */
+        filter: drop-shadow(0 2px 3px rgba(0,0,0,0.35));
       }
       .${_pfx}-action-cursor svg {
         display: block;
-        border-radius: 6px;
-        background: rgba(255,255,255,0.85);
       }
     `;
     (document.head || document.documentElement).appendChild(cursorStyleEl);
@@ -133,8 +129,9 @@ if (!window[Symbol.for("_x7cs")]) {
       const cursor = document.createElement("div");
       cursor.className = `${_pfx}-action-cursor`;
       cursor.innerHTML = cursorSvg(24);
-      cursor.style.left = `${x}px`;
-      cursor.style.top = `${y}px`;
+      // Place the arrow tip at the action point (tip at 6,2 in the 24px svg).
+      cursor.style.left = `${x - 6}px`;
+      cursor.style.top = `${y - 2}px`;
       (document.body || document.documentElement).appendChild(cursor);
       activeCursors++;
       setTimeout(() => { cursor.remove(); activeCursors--; }, 750);
@@ -144,7 +141,7 @@ if (!window[Symbol.for("_x7cs")]) {
   }
 
   // ========================================================================
-  // Persistent Activity Cursor - MCP mark that stays during long operations
+  // Persistent Activity Cursor - mouse pointer that stays during long operations
   // ========================================================================
 
   let activityCursorEl = null;
@@ -158,8 +155,8 @@ if (!window[Symbol.for("_x7cs")]) {
       activityCursorEl.innerHTML = cursorSvg(32);
       Object.assign(activityCursorEl.style, {
         position: "fixed", bottom: "24px", right: "24px",
-        zIndex: "2147483647", pointerEvents: "none", borderRadius: "8px",
-        boxShadow: "0 0 0 1px rgba(255,255,255,0.9), 0 4px 14px rgba(0,0,0,0.5)",
+        zIndex: "2147483647", pointerEvents: "none",
+        filter: "drop-shadow(0 3px 4px rgba(0,0,0,0.35))",
         animation: `${_pfx}-cursor-bounce 1s ease-in-out infinite`,
         transition: "opacity 0.3s ease-out",
       });
@@ -172,7 +169,6 @@ if (!window[Symbol.for("_x7cs")]) {
             0%, 100% { transform: translateY(0); }
             50% { transform: translateY(-6px); }
           }
-          #${_pfx}-activity-cursor { background: rgba(255,255,255,0.85); }
           #${_pfx}-activity-cursor svg { display: block; width: 32px; height: 32px; }
         `;
         (document.head || document.documentElement).appendChild(bounceStyle);
