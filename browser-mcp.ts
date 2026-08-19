@@ -1687,9 +1687,9 @@ async function handle(msg: Json): Promise<Json | null> {
         serverInfo: { name: "browser-mcp", version: "0.1.0" },
       });
     }
-    // Notifications have no id. Return a parseable empty result so strict
-    // MCP clients (codex/pi) never see a literal null response body.
-    if (method === "notifications/initialized") return { jsonrpc: "2.0", id: null, result: {} };
+    // Notifications have no id: the HTTP layer answers them with 204 No
+    // Content (spec-correct; strict clients like codex/pi reject a body).
+    if (method === "notifications/initialized") return null;
     if (method === "ping") return ok({});
     if (method === "tools/list") {
       return ok({

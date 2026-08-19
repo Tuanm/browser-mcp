@@ -276,8 +276,14 @@ async function connectGateway() {
       }
       try {
         const response = await chrome.runtime.sendMessage({ source: "offscreen", type: "mcp-request", id: data.id, request: data.request });
+        let inner = response && response.response;
+        if (inner && inner.id == null) {
+          // Notifications have no request id. Strict clients (codex/pi) reject a
+          // response with id:null, so echo the gateway's tunnel id instead.
+          inner = Object.assign({}, inner, { id: data.id });
+        }
         if (gen && gen.readyState === WebSocket.OPEN) {
-          gen.send(JSON.stringify({ id: data.id, response: response && response.response }));
+          gen.send(JSON.stringify({ id: data.id, response: inner }));
         }
       } catch (err) {
         if (gen && gen.readyState === WebSocket.OPEN) {

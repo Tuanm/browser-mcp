@@ -45,10 +45,10 @@ ok("initialize", r.status === 200 && r.json?.result?.serverInfo?.name === "brows
 r = await mcpCall(A, { jsonrpc: "2.0", id: 2, method: "ping" });
 ok("ping", r.json?.result && typeof r.json.result === "object", JSON.stringify(r.json));
 
-// Notifications (no id) must return a parseable JSON-RPC body, not literal
-// null - strict clients (codex/pi) reject a null response body.
+// Notifications (no id): the local server answers with 204 No Content
+// (spec-correct) - strict clients like codex/pi reject a response body.
 r = await mcpCall(A, { jsonrpc: "2.0", method: "notifications/initialized" });
-ok("notification parseable", r.status === 200 && r.json && r.json.jsonrpc === "2.0", JSON.stringify(r.json));
+ok("notification 204 no content", r.status === 204, "status " + r.status + " body " + JSON.stringify(r.json));
 
 r = await mcpCall(A, { jsonrpc: "2.0", id: 3, method: "tools/list" });
 ok("tools/list 47 tools", r.json?.result?.tools?.length === 47, "got " + (r.json?.result?.tools?.length ?? "?") + " tools");
