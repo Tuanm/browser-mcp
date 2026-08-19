@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html { overflow: hidden; }
     body {
       width: 280px;
       padding: 16px;
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 13px;
       color: #111;
       background: #fff;
@@ -19,7 +19,6 @@
     }
     .head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
     .head img { width: 20px; height: 20px; }
-    .head .title { font-size: 14px; font-weight: 700; letter-spacing: 0.2px; }
     .dot { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; }
     .dot.on { background: #16a34a; }
     .dot.off { background: #fff; border: 1.5px solid #111; }
@@ -28,7 +27,6 @@
       width: 100%;
       padding: 7px 10px;
       border: 1px solid #111;
-      border-radius: 4px;
       background: #fff;
       color: #111;
       font-size: 13px;
@@ -41,11 +39,11 @@
       width: 100%;
       padding: 8px;
       border: 1px solid #111;
-      border-radius: 4px;
       background: #111;
       color: #fff;
       font-size: 13px;
       font-weight: 600;
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
       cursor: pointer;
     }
     button:hover { background: #000; }
@@ -57,8 +55,7 @@
 </head>
 <body>
   <div class="head">
-    <img id="headerIcon" src="../icons/app-icon-128.png" alt="" />
-    <span class="title">Browser MCP</span>
+    <img id="headerIcon" src="../icons/app-icon-128.png" alt="Browser MCP" />
     <span class="dot off" id="dot"></span>
   </div>
 

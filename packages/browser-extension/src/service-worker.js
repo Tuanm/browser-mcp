@@ -41,7 +41,12 @@ const ICON_CONNECTED = {
 
 async function setActionIcon(connected) {
   try {
-    await chrome.action.setIcon({ path: connected ? ICON_CONNECTED : ICON_DISCONNECTED });
+    // setIcon needs absolute extension URLs; relative paths fail with
+    // "Failed to fetch" in Manifest V3.
+    const icons = connected ? ICON_CONNECTED : ICON_DISCONNECTED;
+    const resolved = {};
+    for (const size of Object.keys(icons)) resolved[size] = chrome.runtime.getURL(icons[size]);
+    await chrome.action.setIcon({ path: resolved });
   } catch {}
 } // "__bmcp-*" style prefix
 const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)

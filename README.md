@@ -160,8 +160,3 @@ bun run test    # mock-extension + mock-gateway E2E suite
 bun run build   # rebuild dist/browser-extension.zip
 bun browser-mcp.ts  # run the server
 ```
-
-The extension is adapted from the browser bridge built for
-[clawd](https://github.com/Tuanm/clawd) (command surface, stealth shield, and
-offscreen WebSocket bridge preserved; branding and defaults updated for
-standalone MCP use).
