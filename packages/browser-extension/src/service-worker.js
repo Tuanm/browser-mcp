@@ -11,8 +11,11 @@
 import { createMcpHandler } from "./mcp-server.js";
 
 // MCP JSON-RPC handler for direct gateway mode: maps MCP tools onto the same
-// command dispatcher used by the local-server bridge.
-const handleMcp = createMcpHandler((method, params) => dispatchCommand(method, params));
+// command dispatcher used by the local-server bridge. Route through
+// handleCommand so the agent indicator + persistent cursor are set up for
+// EVERY tool call (not just local-server commands) - otherwise the first
+// action after a page load has no cursor element and cannot animate.
+const handleMcp = createMcpHandler((method, params) => handleCommand(null, method, params));
 
 // ============================================================================
 // State
