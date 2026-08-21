@@ -20,7 +20,12 @@
     "sessions",
     "browsingData"
   ],
-  "host_permissions": ["<all_urls>", "http://localhost/*", "http://127.0.0.1/*", "http://[::1]/*"],
+  "host_permissions": [
+    "<all_urls>",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "http://[::1]/*"
+  ],
   "background": {
     "service_worker": "src/service-worker.js",
     "type": "module"
@@ -32,14 +37,24 @@
   "minimum_chrome_version": "111",
   "content_scripts": [
     {
-      "matches": ["<all_urls>", "http://localhost/*", "http://127.0.0.1/*", "http://[::1]/*"],
+      "matches": [
+        "<all_urls>",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "http://[::1]/*"
+      ],
       "js": ["src/shield.js"],
       "run_at": "document_start",
       "world": "MAIN",
       "all_frames": true
     },
     {
-      "matches": ["<all_urls>", "http://localhost/*", "http://127.0.0.1/*", "http://[::1]/*"],
+      "matches": [
+        "<all_urls>",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "http://[::1]/*"
+      ],
       "js": ["src/content-script.js"],
       "run_at": "document_idle"
     }

@@ -32,11 +32,24 @@ if (!window[Symbol.for("_x7cs")]) {
 
   function showAgentOverlay() {
     overlayCount++;
-    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-    if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null; }
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+    if (fadeTimer) {
+      clearTimeout(fadeTimer);
+      fadeTimer = null;
+    }
     if (autoHideTimer) clearTimeout(autoHideTimer);
-    autoHideTimer = setTimeout(() => { autoHideTimer = null; overlayCount = 0; hideAgentOverlay(); }, 5000);
-    if (overlayEl) { overlayEl.style.opacity = "1"; return; }
+    autoHideTimer = setTimeout(() => {
+      autoHideTimer = null;
+      overlayCount = 0;
+      hideAgentOverlay();
+    }, 5000);
+    if (overlayEl) {
+      overlayEl.style.opacity = "1";
+      return;
+    }
 
     styleEl = document.createElement("style");
     styleEl.id = `${_pfx}-overlay-style`;
@@ -52,8 +65,14 @@ if (!window[Symbol.for("_x7cs")]) {
     overlayEl = document.createElement("div");
     overlayEl.id = `${_pfx}-agent-overlay`;
     Object.assign(overlayEl.style, {
-      position: "fixed", top: "0", left: "0", right: "0", bottom: "0",
-      zIndex: "2147483647", pointerEvents: "none", border: "none",
+      position: "fixed",
+      top: "0",
+      left: "0",
+      right: "0",
+      bottom: "0",
+      zIndex: "2147483647",
+      pointerEvents: "none",
+      border: "none",
       animation: `${_pfx}-glow 2s ease-in-out infinite, ${_pfx}-glow-in 0.3s ease-out`,
       transition: "opacity 0.3s ease-out",
     });
@@ -63,7 +82,10 @@ if (!window[Symbol.for("_x7cs")]) {
   function hideAgentOverlay() {
     overlayCount = Math.max(0, overlayCount - 1);
     if (overlayCount > 0 || !overlayEl) return;
-    if (autoHideTimer) { clearTimeout(autoHideTimer); autoHideTimer = null; }
+    if (autoHideTimer) {
+      clearTimeout(autoHideTimer);
+      autoHideTimer = null;
+    }
     hideTimer = setTimeout(() => {
       hideTimer = null;
       if (overlayEl) {
@@ -71,7 +93,9 @@ if (!window[Symbol.for("_x7cs")]) {
         fadeTimer = setTimeout(() => {
           if (overlayEl) overlayEl.remove();
           if (styleEl) styleEl.remove();
-          overlayEl = null; styleEl = null; fadeTimer = null;
+          overlayEl = null;
+          styleEl = null;
+          fadeTimer = null;
         }, 300);
       }
     }, 500);
@@ -153,7 +177,10 @@ if (!window[Symbol.for("_x7cs")]) {
    */
   function animateCursorAlongCurve(cursor, fx, fy, tx, ty, onDone) {
     const dist = Math.hypot(tx - fx, ty - fy);
-    if (dist < 1) { onDone && onDone(); return; }
+    if (dist < 1) {
+      onDone && onDone();
+      return;
+    }
     const dur = Math.min(Math.max(160, dist * 0.85), 650);
     // Perpendicular control-point offset: arc scales with distance (~8-60px).
     const arc = Math.min(Math.max(dist * 0.12, 8), 60) * (Math.round(fx + fy) % 2 === 0 ? 1 : -1);
@@ -170,8 +197,8 @@ if (!window[Symbol.for("_x7cs")]) {
       const it = 1 - eased;
       const px = it * it * fx + 2 * it * eased * cx + eased * eased * tx;
       const py = it * it * fy + 2 * it * eased * cy + eased * eased * ty;
-      cursor.style.left = (px - 4) + "px";
-      cursor.style.top = (py - 2) + "px";
+      cursor.style.left = px - 4 + "px";
+      cursor.style.top = py - 2 + "px";
       if (t < 1) {
         cursorAnimId = requestAnimationFrame(step);
       } else {
@@ -198,12 +225,15 @@ if (!window[Symbol.for("_x7cs")]) {
       const cursor = ensurePersistentCursor();
       cursor.style.display = "block";
       cursor.style.animation = "none";
-      if (cursorAnimId) { cancelAnimationFrame(cursorAnimId); cursorAnimId = null; }
+      if (cursorAnimId) {
+        cancelAnimationFrame(cursorAnimId);
+        cursorAnimId = null;
+      }
       if (cursorX == null) {
         // First placement: appear at the point immediately with a pop.
         cursor.style.transition = "none";
-        cursor.style.left = (x - 4) + "px";
-        cursor.style.top = (y - 2) + "px";
+        cursor.style.left = x - 4 + "px";
+        cursor.style.top = y - 2 + "px";
         cursorX = x;
         cursorY = y;
         popCursor(cursor);
@@ -211,7 +241,9 @@ if (!window[Symbol.for("_x7cs")]) {
       } else {
         animateCursorAlongCurve(cursor, cursorX, cursorY, x, y, onDone);
       }
-    } catch { if (onDone) onDone(); }
+    } catch {
+      if (onDone) onDone();
+    }
   }
 
   /** Show the persistent pointer (keeps its last position; starts at center). */
@@ -224,8 +256,8 @@ if (!window[Symbol.for("_x7cs")]) {
         cursor.style.transition = "none";
         cursorX = Math.round(window.innerWidth / 2);
         cursorY = Math.round(window.innerHeight / 2);
-        cursor.style.left = (cursorX - 6) + "px";
-        cursor.style.top = (cursorY - 2) + "px";
+        cursor.style.left = cursorX - 6 + "px";
+        cursor.style.top = cursorY - 2 + "px";
       }
     } catch {}
   }
@@ -246,14 +278,31 @@ if (!window[Symbol.for("_x7cs")]) {
       const oldPfx = _pfx;
       _pfx = message.prefix;
       if (oldPfx !== _pfx) {
-        for (const id of [`${oldPfx}-overlay-style`, `${oldPfx}-agent-overlay`, `${oldPfx}-cursor-style`, `${oldPfx}-action-cursor`]) {
+        for (const id of [
+          `${oldPfx}-overlay-style`,
+          `${oldPfx}-agent-overlay`,
+          `${oldPfx}-cursor-style`,
+          `${oldPfx}-action-cursor`,
+        ]) {
           const el = document.getElementById(id);
           if (el) el.remove();
         }
-        overlayEl = null; styleEl = null; cursorStyleEl = null; persistentCursorEl = null;
-        if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-        if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null; }
-        if (autoHideTimer) { clearTimeout(autoHideTimer); autoHideTimer = null; }
+        overlayEl = null;
+        styleEl = null;
+        cursorStyleEl = null;
+        persistentCursorEl = null;
+        if (hideTimer) {
+          clearTimeout(hideTimer);
+          hideTimer = null;
+        }
+        if (fadeTimer) {
+          clearTimeout(fadeTimer);
+          fadeTimer = null;
+        }
+        if (autoHideTimer) {
+          clearTimeout(autoHideTimer);
+          autoHideTimer = null;
+        }
         overlayCount = 0;
       }
       sendResponse({ ok: true });
@@ -293,18 +342,23 @@ if (!window[Symbol.for("_x7cs")]) {
       const rect = el.getBoundingClientRect();
       Object.assign(overlay.style, {
         position: "fixed",
-        left: `${rect.left - 2}px`, top: `${rect.top - 2}px`,
-        width: `${rect.width + 4}px`, height: `${rect.height + 4}px`,
+        left: `${rect.left - 2}px`,
+        top: `${rect.top - 2}px`,
+        width: `${rect.width + 4}px`,
+        height: `${rect.height + 4}px`,
         border: "2px solid #111",
         borderRadius: "3px",
         backgroundColor: "rgba(17, 24, 39, 0.12)",
-        zIndex: "2147483647", pointerEvents: "none",
+        zIndex: "2147483647",
+        pointerEvents: "none",
         transition: "opacity 0.3s",
       });
       (document.body || document.documentElement).appendChild(overlay);
       setTimeout(() => {
         overlay.style.opacity = "0";
-        setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, 300);
+        setTimeout(() => {
+          if (overlay.parentNode) overlay.remove();
+        }, 300);
       }, duration);
     } catch {
       // Ignore errors

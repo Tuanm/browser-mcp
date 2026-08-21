@@ -24,7 +24,14 @@
  */
 
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 
 // ============================================================================
@@ -59,15 +66,19 @@ const token: string | undefined = (args.token as string) || undefined;
  * it on /browser/ws and /browser/files/* (?token=). Defense in depth on top of
  * the mandatory chrome-extension:// Origin check.
  */
-const extensionToken: string | undefined = (args["extension-token"] as string) || undefined;
+const extensionToken: string | undefined =
+  (args["extension-token"] as string) || undefined;
 /** Gateway domain (e.g. gateway.example.workers.dev). */
 const gatewayDomain: string | undefined = (args.gateway as string) || undefined;
 /** Device id for the gateway connection. */
 const deviceId: string | undefined = (args.id as string) || undefined;
 /** Directory containing the unpacked extension (for /extension zip). */
-const extDir: string = (args["ext-dir"] as string) ?? resolve(import.meta.dir, "packages", "browser-extension");
+const extDir: string =
+  (args["ext-dir"] as string) ??
+  resolve(import.meta.dir, "packages", "browser-extension");
 /** Where agent/extension files are stored. */
-const filesDir: string = (args["files-dir"] as string) ?? resolve(import.meta.dir, "files");
+const filesDir: string =
+  (args["files-dir"] as string) ?? resolve(import.meta.dir, "files");
 /** DEV ONLY: skip the chrome-extension:// Origin check on /browser/ws. Never use on a shared machine. */
 const allowAnyOrigin = args["allow-any-origin"] === true;
 
@@ -104,7 +115,13 @@ function saveFile(name: string, buf: Uint8Array, mimetype: string): StoredFile {
   const id = randomBytes(6).toString("hex"); // 12 hex chars, unguessable
   const safeName = sanitizeFilename(name);
   const dot = safeName.lastIndexOf(".");
-  const ext = dot > 0 ? safeName.slice(dot + 1).replace(/[^a-zA-Z0-9]/g, "").slice(0, 10) : "";
+  const ext =
+    dot > 0
+      ? safeName
+          .slice(dot + 1)
+          .replace(/[^a-zA-Z0-9]/g, "")
+          .slice(0, 10)
+      : "";
   const storedName = ext ? `${id}.${ext}` : id;
   const path = join(filesDir, storedName);
   writeFileSync(path, buf, { mode: 0o600 });
@@ -120,7 +137,9 @@ function saveFile(name: string, buf: Uint8Array, mimetype: string): StoredFile {
     path,
   };
   fileIndex.set(id, meta);
-  try { writeFileSync(`${path}.json`, JSON.stringify(meta), { mode: 0o600 }); } catch {}
+  try {
+    writeFileSync(`${path}.json`, JSON.stringify(meta), { mode: 0o600 });
+  } catch {}
   return meta;
 }
 
@@ -129,8 +148,11 @@ function loadFileIndex(): void {
   for (const f of readdirSync(filesDir)) {
     if (!f.endsWith(".json")) continue;
     try {
-      const meta = JSON.parse(readFileSync(join(filesDir, f), "utf8")) as StoredFile;
-      if (meta?.id && meta?.path && existsSync(meta.path)) fileIndex.set(meta.id, meta);
+      const meta = JSON.parse(
+        readFileSync(join(filesDir, f), "utf8"),
+      ) as StoredFile;
+      if (meta?.id && meta?.path && existsSync(meta.path))
+        fileIndex.set(meta.id, meta);
     } catch {}
   }
 }
@@ -140,23 +162,33 @@ function getFile(id: string): StoredFile | null {
 }
 
 // TTL cleanup (hourly, unref'd so it never blocks exit)
-const cleanupTimer = setInterval(() => {
-  const cutoff = Date.now() - FILE_TTL_MS;
-  for (const [id, f] of fileIndex) {
-    if (f.createdAt < cutoff) {
-      try { unlinkSync(f.path); } catch {}
-      try { unlinkSync(`${f.path}.json`); } catch {}
-      fileIndex.delete(id);
+const cleanupTimer = setInterval(
+  () => {
+    const cutoff = Date.now() - FILE_TTL_MS;
+    for (const [id, f] of fileIndex) {
+      if (f.createdAt < cutoff) {
+        try {
+          unlinkSync(f.path);
+        } catch {}
+        try {
+          unlinkSync(`${f.path}.json`);
+        } catch {}
+        fileIndex.delete(id);
+      }
     }
-  }
-}, 60 * 60 * 1000);
+  },
+  60 * 60 * 1000,
+);
 cleanupTimer.unref();
 
 // ============================================================================
 // Auth helpers
 // ============================================================================
 
-function checkTokenValue(given: string | null | undefined, expected: string | undefined): boolean {
+function checkTokenValue(
+  given: string | null | undefined,
+  expected: string | undefined,
+): boolean {
   if (!expected) return true; // no auth configured
   if (!given) return false;
   const a = Buffer.from(given);
@@ -191,8 +223,17 @@ function checkExtensionToken(req: Request, url: URL): boolean {
 function checkExtensionOrigin(req: Request): { ok: boolean; reason?: string } {
   if (allowAnyOrigin) return { ok: true };
   const origin = req.headers.get("origin");
-  if (!origin) return { ok: false, reason: "missing Origin header (extensions always send chrome-extension://)" };
-  if (origin.startsWith("chrome-extension://") || origin.startsWith("moz-extension://")) return { ok: true };
+  if (!origin)
+    return {
+      ok: false,
+      reason:
+        "missing Origin header (extensions always send chrome-extension://)",
+    };
+  if (
+    origin.startsWith("chrome-extension://") ||
+    origin.startsWith("moz-extension://")
+  )
+    return { ok: true };
   return { ok: false, reason: `origin not allowed: ${origin.slice(0, 64)}` };
 }
 
@@ -234,7 +275,6 @@ function corsHeadersFor(req: Request): Record<string, string> {
   return CORS_HEADERS;
 }
 
-
 // ============================================================================
 // Element ref cache (agent-browser @ref system)
 // ============================================================================
@@ -275,27 +315,51 @@ function resolveRefArg(args: Record<string, any>): string | undefined {
   const ref = args?.ref;
   if (ref == null) return undefined;
   const m = String(ref).match(/^@?(e\d+)$/);
-  if (!m) throw new Error("Invalid ref format: \"" + ref + "\". Refs look like \"e3\" or \"@e3\" (from snapshot).");
+  if (!m)
+    throw new Error(
+      'Invalid ref format: "' +
+        ref +
+        '". Refs look like "e3" or "@e3" (from snapshot).',
+    );
   const entry = refCache.get(m[1]);
-  if (!entry) throw new Error("Ref \"" + ref + "\" not found or stale (page changed). Run snapshot again to refresh refs.");
+  if (!entry)
+    throw new Error(
+      'Ref "' +
+        ref +
+        '" not found or stale (page changed). Run snapshot again to refresh refs.',
+    );
   return entry.selector;
 }
 
 /** Tools whose handlers accept a ref-or-selector target (dispatcher injects the resolved selector). */
 const REF_SUPPORTING = new Set([
-  "click", "type", "fill", "hover", "select",
-  "screenshot", "check", "uncheck",
-  "focus", "dblclick", "highlight", "get", "is",
+  "click",
+  "type",
+  "fill",
+  "hover",
+  "select",
+  "screenshot",
+  "check",
+  "uncheck",
+  "focus",
+  "dblclick",
+  "highlight",
+  "get",
+  "is",
   "upload",
 ]);
 
 const REF_PARAM = {
   type: "string",
-  description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+  description:
+    "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
 };
 
 /** Resolve refs in a tool-call's arguments before dispatch (mutates args when needed). */
-function resolveArgsRefs(name: string, args: Record<string, any>): Record<string, any> {
+function resolveArgsRefs(
+  name: string,
+  args: Record<string, any>,
+): Record<string, any> {
   if (!args) return args;
   if (REF_SUPPORTING.has(name) && args.ref != null) {
     const sel = resolveRefArg(args);
@@ -303,8 +367,18 @@ function resolveArgsRefs(name: string, args: Record<string, any>): Record<string
   }
   if (name === "drag") {
     let next = args;
-    if (args.from_ref != null) next = { ...next, from_ref: undefined, from_selector: resolveRefArg({ ref: args.from_ref }) };
-    if (args.to_ref != null) next = { ...next, to_ref: undefined, to_selector: resolveRefArg({ ref: args.to_ref }) };
+    if (args.from_ref != null)
+      next = {
+        ...next,
+        from_ref: undefined,
+        from_selector: resolveRefArg({ ref: args.from_ref }),
+      };
+    if (args.to_ref != null)
+      next = {
+        ...next,
+        to_ref: undefined,
+        to_selector: resolveRefArg({ ref: args.to_ref }),
+      };
     return next;
   }
   if (name === "wait" && args.mode === "selector" && args.ref != null) {
@@ -315,13 +389,18 @@ function resolveArgsRefs(name: string, args: Record<string, any>): Record<string
 
 /** Resolve a tab id from the server's own status (for get url/title without a bridge round-trip). */
 async function activeTabIdFallback(): Promise<number> {
-  throw new Error("get url/title requires the extension (use tabs to list tabs first)");
+  throw new Error(
+    "get url/title requires the extension (use tabs to list tabs first)",
+  );
 }
 
 /** Fetch a tab from the extension (used by get url/title). */
-async function fetchTab(tabId: number): Promise<{ url: string; title: string }> {
+async function fetchTab(
+  tabId: number,
+): Promise<{ url: string; title: string }> {
   const res = await sendBrowserCommand("tabs", { action: "list" });
-  const tab = (res?.tabs || []).find((t: any) => t.id === tabId) || (res?.tabs || [])[0];
+  const tab =
+    (res?.tabs || []).find((t: any) => t.id === tabId) || (res?.tabs || [])[0];
   if (!tab) throw new Error("No tab found");
   return { url: tab.url || "", title: tab.title || "" };
 }
@@ -382,10 +461,14 @@ const heartbeatInterval = setInterval(() => {
     const lastSeen = lastPong.get(extId) ?? ws.data.connectedAt;
     if (now - lastSeen > HEARTBEAT_DEAD_THRESHOLD_MS) {
       console.warn(`[browser-mcp] extension ${extId} unresponsive, closing`);
-      try { ws.close(1001, "heartbeat timeout"); } catch {}
+      try {
+        ws.close(1001, "heartbeat timeout");
+      } catch {}
       continue;
     }
-    try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+    try {
+      ws.send(JSON.stringify({ type: "ping" }));
+    } catch {}
   }
 }, HEARTBEAT_CHECK_INTERVAL_MS);
 heartbeatInterval.unref();
@@ -394,9 +477,13 @@ function handleBrowserWsOpen(ws: any): void {
   const extId = ws.data.extensionId;
   const existing = connections.get(extId);
   if (existing) {
-    try { existing.close(1000, "replaced"); } catch {}
+    try {
+      existing.close(1000, "replaced");
+    } catch {}
   } else if (connections.size >= MAX_CONNECTIONS) {
-    try { ws.close(1013, "Too many browser extensions connected"); } catch {}
+    try {
+      ws.close(1013, "Too many browser extensions connected");
+    } catch {}
     return;
   }
   connections.set(extId, ws);
@@ -406,21 +493,31 @@ function handleBrowserWsOpen(ws: any): void {
   // gateway client (code-mcp style: the gateway forwards ?token= to local /mcp).
   if (ws.data.token) {
     if (token && token !== ws.data.token) {
-      console.warn("[browser-mcp] Popup token differs from --token; using the popup token for /mcp auth");
+      console.warn(
+        "[browser-mcp] Popup token differs from --token; using the popup token for /mcp auth",
+      );
     }
     effectiveToken = ws.data.token;
   }
   if (ws.data.deviceId) {
     if (!effectiveToken) {
       console.warn(
-        "[browser-mcp] Extension linked gateway device '" + ws.data.deviceId + "' WITHOUT a token - " +
-        "anyone who can reach the gateway can control this browser. Enter a token in the popup.",
+        "[browser-mcp] Extension linked gateway device '" +
+          ws.data.deviceId +
+          "' WITHOUT a token - " +
+          "anyone who can reach the gateway can control this browser. Enter a token in the popup.",
       );
     }
     startGatewayClient(ws.data.deviceId);
   }
-  const linkInfo = ws.data.deviceId ? " device=" + ws.data.deviceId + (effectiveToken ? " (auth)" : " (NO AUTH)") : "";
-  console.log(`[browser-mcp] Extension connected: ${extId} (${connections.size} total)${linkInfo}`);
+  const linkInfo = ws.data.deviceId
+    ? " device=" +
+      ws.data.deviceId +
+      (effectiveToken ? " (auth)" : " (NO AUTH)")
+    : "";
+  console.log(
+    `[browser-mcp] Extension connected: ${extId} (${connections.size} total)${linkInfo}`,
+  );
 }
 
 function handleBrowserWsClose(ws: any): void {
@@ -432,17 +529,27 @@ function handleBrowserWsClose(ws: any): void {
     if (p.extensionId === extId) {
       clearTimeout(p.timer);
       pendingRequests.delete(id);
-      p.reject(new Error(`Browser extension disconnected during '${p.method}'`));
+      p.reject(
+        new Error(`Browser extension disconnected during '${p.method}'`),
+      );
     }
   }
-  console.log(`[browser-mcp] Extension disconnected: ${extId} (${connections.size} total)`);
+  console.log(
+    `[browser-mcp] Extension disconnected: ${extId} (${connections.size} total)`,
+  );
 }
 
 function handleBrowserWsMessage(ws: any, message: string | Buffer): void {
   let data: any;
-  try { data = JSON.parse(message.toString()); } catch { return; }
+  try {
+    data = JSON.parse(message.toString());
+  } catch {
+    return;
+  }
   if (data.type === "ping") {
-    try { ws.send(JSON.stringify({ type: "pong" })); } catch {}
+    try {
+      ws.send(JSON.stringify({ type: "pong" }));
+    } catch {}
     lastPong.set(ws.data.extensionId, Date.now());
     return;
   }
@@ -455,7 +562,9 @@ function handleBrowserWsMessage(ws: any, message: string | Buffer): void {
     pendingRequests.delete(data.id);
     clearTimeout(pending.timer);
     if (data.error) {
-      pending.reject(new Error(data.error.message || JSON.stringify(data.error)));
+      pending.reject(
+        new Error(data.error.message || JSON.stringify(data.error)),
+      );
     } else {
       pending.resolve(data.result);
     }
@@ -490,19 +599,36 @@ function sendBrowserCommand(
   }
   const id = `req_${++requestCounter}_${randomBytes(4).toString("hex")}`;
   const extId = ws.data.extensionId;
-  const timeoutMs = Math.min(opts?.timeoutMs || COMMAND_TIMEOUTS[method] || DEFAULT_TIMEOUT_MS, maxBridgeTimeout);
+  const timeoutMs = Math.min(
+    opts?.timeoutMs || COMMAND_TIMEOUTS[method] || DEFAULT_TIMEOUT_MS,
+    maxBridgeTimeout,
+  );
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(id);
-      reject(new Error(`Browser command '${method}' timed out after ${Math.round(timeoutMs / 1000)}s`));
+      reject(
+        new Error(
+          `Browser command '${method}' timed out after ${Math.round(timeoutMs / 1000)}s`,
+        ),
+      );
     }, timeoutMs);
-    pendingRequests.set(id, { resolve, reject, method, timer, extensionId: extId });
+    pendingRequests.set(id, {
+      resolve,
+      reject,
+      method,
+      timer,
+      extensionId: extId,
+    });
     try {
       ws.send(JSON.stringify({ id, method, params }));
     } catch (err: any) {
       clearTimeout(timer);
       pendingRequests.delete(id);
-      reject(err instanceof Error ? err : new Error("Failed to send browser command"));
+      reject(
+        err instanceof Error
+          ? err
+          : new Error("Failed to send browser command"),
+      );
     }
   });
 }
@@ -530,15 +656,27 @@ function textBlocks(text: string): any[] {
 
 /** JSON-stringify a result, truncating long text. */
 function jsonOut(v: any): string {
-  if (typeof v === "string") return v.length > MAX_TEXT_OUTPUT ? v.slice(0, MAX_TEXT_OUTPUT) + "\n\n... (truncated)" : v;
+  if (typeof v === "string")
+    return v.length > MAX_TEXT_OUTPUT
+      ? v.slice(0, MAX_TEXT_OUTPUT) + "\n\n... (truncated)"
+      : v;
   let s: string;
-  try { s = JSON.stringify(v, null, 2); } catch { s = String(v); }
-  return s.length > MAX_TEXT_OUTPUT ? s.slice(0, MAX_TEXT_OUTPUT) + "\n\n... (truncated)" : s;
+  try {
+    s = JSON.stringify(v, null, 2);
+  } catch {
+    s = String(v);
+  }
+  return s.length > MAX_TEXT_OUTPUT
+    ? s.slice(0, MAX_TEXT_OUTPUT) + "\n\n... (truncated)"
+    : s;
 }
 
 /** bridge_timeout (seconds) -> ms override, capped by server limits. */
 function bridgeTimeoutMs(args: Record<string, any>): number | undefined {
-  const t = typeof args.bridge_timeout === "number" ? args.bridge_timeout * 1000 : undefined;
+  const t =
+    typeof args.bridge_timeout === "number"
+      ? args.bridge_timeout * 1000
+      : undefined;
   return t;
 }
 
@@ -563,7 +701,11 @@ const tools: Record<string, ToolDef> = {
         connected,
         extensions: connections.size,
         message: connected
-          ? "Browser extension connected (" + connections.size + " instance" + (connections.size > 1 ? "s" : "") + ")."
+          ? "Browser extension connected (" +
+            connections.size +
+            " instance" +
+            (connections.size > 1 ? "s" : "") +
+            ")."
           : "No browser extension connected. Install and enable the Browser MCP extension, then click the toolbar icon and Connect.",
       });
     },
@@ -574,7 +716,10 @@ const tools: Record<string, ToolDef> = {
       "Navigate a browser tab to a URL. If a tab with the target URL is already open (check via tabs list first), reuse it by passing its tab_id instead of opening a new tab. Creates a new tab if no tab_id is specified. Close tabs you no longer need via tabs action=close.",
     parameters: {
       url: { type: "string", description: "URL to navigate to" },
-      tab_id: { type: "number", description: "Target tab ID (optional - creates new tab if omitted)" },
+      tab_id: {
+        type: "number",
+        description: "Target tab ID (optional - creates new tab if omitted)",
+      },
       wait_for: {
         type: "string",
         description: 'Wait condition: "load" (default) or "domcontentloaded"',
@@ -582,15 +727,33 @@ const tools: Record<string, ToolDef> = {
       },
       bridge_timeout: {
         type: "number",
-        description: "Override server-side timeout in seconds (default: 60, max: 120). Use for slow-loading pages.",
+        description:
+          "Override server-side timeout in seconds (default: 60, max: 120). Use for slow-loading pages.",
       },
     },
     required: ["url"],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("navigate", { url: args.url, tabId: args.tab_id, waitFor: args.wait_for || "load" }, { timeoutMs: bridgeTimeoutMs(args) });
-        return outJson({ tab_id: result.tabId, url: result.url, title: result.title, ...(result.download_triggered && { download_triggered: result.download_triggered }) });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand(
+          "navigate",
+          {
+            url: args.url,
+            tabId: args.tab_id,
+            waitFor: args.wait_for || "load",
+          },
+          { timeoutMs: bridgeTimeoutMs(args) },
+        );
+        return outJson({
+          tab_id: result.tabId,
+          url: result.url,
+          title: result.title,
+          ...(result.download_triggered && {
+            download_triggered: result.download_triggered,
+          }),
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -601,28 +764,56 @@ const tools: Record<string, ToolDef> = {
       "Only use screenshots when you need visual layout information that cannot be obtained from DOM/text extraction (e.g., charts, images, visual styling, spatial layout). " +
       "On anti-bot protected sites, use stealth=true (viewport-only, no selector/fullPage).",
     parameters: {
-      tab_id: { type: "number", description: "Tab to screenshot (optional - uses active tab)" },
-      selector: { type: "string", description: "CSS selector to screenshot a specific element (optional)" },
-      full_page: { type: "boolean", description: "Capture full scrollable page instead of viewport (default: false)" },
+      tab_id: {
+        type: "number",
+        description: "Tab to screenshot (optional - uses active tab)",
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector to screenshot a specific element (optional)",
+      },
+      full_page: {
+        type: "boolean",
+        description:
+          "Capture full scrollable page instead of viewport (default: false)",
+      },
       stealth: {
         type: "boolean",
-        description: "Use stealth mode. Only viewport screenshots are available (selector and full_page are ignored). Uses chrome.tabs.captureVisibleTab instead of CDP.",
+        description:
+          "Use stealth mode. Only viewport screenshots are available (selector and full_page are ignored). Uses chrome.tabs.captureVisibleTab instead of CDP.",
       },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("screenshot", { tabId: args.tab_id, selector: args.selector, fullPage: args.full_page, stealth: args.stealth });
-        if (!result.dataUrl) return outError(new Error("No screenshot data returned"));
+        const result = await sendBrowserCommand("screenshot", {
+          tabId: args.tab_id,
+          selector: args.selector,
+          fullPage: args.full_page,
+          stealth: args.stealth,
+        });
+        if (!result.dataUrl)
+          return outError(new Error("No screenshot data returned"));
         const m = result.dataUrl.match(/^data:(image\/[\w+.-]+);base64,(.*)$/);
         const mimeType = m ? m[1] : "image/jpeg";
-        const base64 = m ? m[2] : result.dataUrl.replace(/^data:image\/\w+;base64,/, "");
+        const base64 = m
+          ? m[2]
+          : result.dataUrl.replace(/^data:image\/\w+;base64,/, "");
         const bytes = Math.floor((base64.length * 3) / 4);
         if (bytes <= MAX_SCREENSHOT_IMAGE_BYTES) {
           return {
             blocks: [
               { type: "image", data: base64, mimeType },
-              { type: "text", text: jsonOut({ tab_id: result.tabId, width: result.width, height: result.height, format: "jpeg", size: bytes }) },
+              {
+                type: "text",
+                text: jsonOut({
+                  tab_id: result.tabId,
+                  width: result.width,
+                  height: result.height,
+                  format: "jpeg",
+                  size: bytes,
+                }),
+              },
             ],
           };
         }
@@ -637,7 +828,9 @@ const tools: Record<string, ToolDef> = {
           size: file.size,
           message: `Screenshot too large for an inline image block (${(bytes / 1024 / 1024).toFixed(1)} MiB). Stored as file_id="${file.id}". Use file_read or fetch /files/${file.id} locally.`,
         });
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -646,33 +839,72 @@ const tools: Record<string, ToolDef> = {
       'Click an element on the page. Supports single-click, double-click (click_count=2 to select words or open items), and right-click (button="right" for context menus). For dynamic pages, prefer selectors over coordinates. Set intercept_file_chooser=true when clicking upload/file buttons. ' +
       "WARNING: On anti-bot protected sites, use stealth=true to avoid CDP debugger detection that causes immediate logout/redirect.",
     parameters: {
-      selector: { type: "string", description: "CSS selector of element to click" },
+      selector: {
+        type: "string",
+        description: "CSS selector of element to click",
+      },
       x: { type: "number", description: "X coordinate (if no selector)" },
       y: { type: "number", description: "Y coordinate (if no selector)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      button: { type: "string", description: '"left" (default) for normal click, "right" for context menu, "middle" for new-tab link open', enum: ["left", "right", "middle"] },
-      click_count: { type: "number", description: "1 = single-click (default), 2 = double-click (select word, open item), 3 = triple-click (select line/paragraph)" },
-      pierce: { type: "boolean", description: "Pierce shadow DOM and iframes to find the element (default: false)" },
+      button: {
+        type: "string",
+        description:
+          '"left" (default) for normal click, "right" for context menu, "middle" for new-tab link open',
+        enum: ["left", "right", "middle"],
+      },
+      click_count: {
+        type: "number",
+        description:
+          "1 = single-click (default), 2 = double-click (select word, open item), 3 = triple-click (select line/paragraph)",
+      },
+      pierce: {
+        type: "boolean",
+        description:
+          "Pierce shadow DOM and iframes to find the element (default: false)",
+      },
       intercept_file_chooser: {
         type: "boolean",
-        description: "Set true when clicking a file upload button. Intercepts the file chooser dialog so you can provide a file via upload. Do NOT set for download buttons.",
+        description:
+          "Set true when clicking a file upload button. Intercepts the file chooser dialog so you can provide a file via upload. Do NOT set for download buttons.",
       },
       stealth: {
         type: "boolean",
-        description: "Use stealth mode to avoid CDP debugger detection on anti-bot protected sites. Uses chrome.scripting injection instead of CDP Input events. el.click() is used (isTrusted=true). Cannot intercept file choosers in stealth mode.",
+        description:
+          "Use stealth mode to avoid CDP debugger detection on anti-bot protected sites. Uses chrome.scripting injection instead of CDP Input events. el.click() is used (isTrusted=true). Cannot intercept file choosers in stealth mode.",
       },
     },
     required: [],
     handler: async (args) => {
       if (!args.selector && (args.x === undefined || args.y === undefined))
-        return outError(new Error("Provide either a CSS selector or x,y coordinates"));
+        return outError(
+          new Error("Provide either a CSS selector or x,y coordinates"),
+        );
       try {
         const result = await sendBrowserCommand("click", {
-          selector: args.selector, x: args.x, y: args.y, tabId: args.tab_id, button: args.button || "left",
-          clickCount: args.click_count, pierce: args.pierce, intercept_file_chooser: args.intercept_file_chooser, stealth: args.stealth,
+          selector: args.selector,
+          x: args.x,
+          y: args.y,
+          tabId: args.tab_id,
+          button: args.button || "left",
+          clickCount: args.click_count,
+          pierce: args.pierce,
+          intercept_file_chooser: args.intercept_file_chooser,
+          stealth: args.stealth,
         });
-        return outJson({ clicked: true, element: result.element || args.selector || `(${args.x}, ${args.y})`, tab_id: result.tabId, ...(result.download_triggered && { download_triggered: result.download_triggered }), ...(result.file_chooser_opened && { file_chooser_opened: result.file_chooser_opened }) });
-      } catch (e) { return outError(e); }
+        return outJson({
+          clicked: true,
+          element: result.element || args.selector || `(${args.x}, ${args.y})`,
+          tab_id: result.tabId,
+          ...(result.download_triggered && {
+            download_triggered: result.download_triggered,
+          }),
+          ...(result.file_chooser_opened && {
+            file_chooser_opened: result.file_chooser_opened,
+          }),
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -682,22 +914,52 @@ const tools: Record<string, ToolDef> = {
       "On anti-bot protected sites, use stealth=true to avoid CDP debugger detection.",
     parameters: {
       text: { type: "string", description: "Text to type" },
-      selector: { type: "string", description: "CSS selector of input element (optional - types into focused element)" },
+      selector: {
+        type: "string",
+        description:
+          "CSS selector of input element (optional - types into focused element)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      clear_first: { type: "boolean", description: "Clear the field before typing (default: false)" },
-      press_enter: { type: "boolean", description: "Press Enter after typing (default: false)" },
-      pierce: { type: "boolean", description: "Pierce shadow DOM and iframes to find the element (default: false)" },
+      clear_first: {
+        type: "boolean",
+        description: "Clear the field before typing (default: false)",
+      },
+      press_enter: {
+        type: "boolean",
+        description: "Press Enter after typing (default: false)",
+      },
+      pierce: {
+        type: "boolean",
+        description:
+          "Pierce shadow DOM and iframes to find the element (default: false)",
+      },
       stealth: {
         type: "boolean",
-        description: "Use stealth mode to avoid CDP debugger detection. Sets value via native setter + dispatches input/change events. Works with React/Vue controlled inputs.",
+        description:
+          "Use stealth mode to avoid CDP debugger detection. Sets value via native setter + dispatches input/change events. Works with React/Vue controlled inputs.",
       },
     },
     required: ["text"],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("type", { text: args.text, selector: args.selector, tabId: args.tab_id, clearFirst: args.clear_first, pressEnter: args.press_enter, pierce: args.pierce, stealth: args.stealth });
-        return outJson({ typed: true, text_length: String(args.text).length, element: result.element || args.selector || "(focused)", tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("type", {
+          text: args.text,
+          selector: args.selector,
+          tabId: args.tab_id,
+          clearFirst: args.clear_first,
+          pressEnter: args.press_enter,
+          pierce: args.pierce,
+          stealth: args.stealth,
+        });
+        return outJson({
+          typed: true,
+          text_length: String(args.text).length,
+          element: result.element || args.selector || "(focused)",
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -708,20 +970,43 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       mode: {
         type: "string",
-        description: '"text" (visible text), "links" (all links), "forms" (form fields), "tables" (table data), "accessibility" (accessibility tree), "html" (raw HTML of selector)',
+        description:
+          '"text" (visible text), "links" (all links), "forms" (form fields), "tables" (table data), "accessibility" (accessibility tree), "html" (raw HTML of selector)',
         enum: ["text", "links", "forms", "tables", "accessibility", "html"],
       },
-      selector: { type: "string", description: "CSS selector to scope extraction (optional - uses whole page)" },
+      selector: {
+        type: "string",
+        description:
+          "CSS selector to scope extraction (optional - uses whole page)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      frame_id: { type: "string", description: "Frame ID to extract from (use frames to list frames)" },
-      bridge_timeout: { type: "number", description: "Override server-side timeout in seconds (default: 30, max: 120). Use for heavy pages." },
+      frame_id: {
+        type: "string",
+        description: "Frame ID to extract from (use frames to list frames)",
+      },
+      bridge_timeout: {
+        type: "number",
+        description:
+          "Override server-side timeout in seconds (default: 30, max: 120). Use for heavy pages.",
+      },
     },
     required: ["mode"],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("extract", { mode: args.mode, selector: args.selector, tabId: args.tab_id, frameId: args.frame_id }, { timeoutMs: bridgeTimeoutMs(args) });
+        const result = await sendBrowserCommand(
+          "extract",
+          {
+            mode: args.mode,
+            selector: args.selector,
+            tabId: args.tab_id,
+            frameId: args.frame_id,
+          },
+          { timeoutMs: bridgeTimeoutMs(args) },
+        );
         return { blocks: textBlocks(jsonOut(result.data)) };
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -729,18 +1014,34 @@ const tools: Record<string, ToolDef> = {
     description:
       "List, close, or activate browser tabs. IMPORTANT: Before opening new tabs, check if a suitable tab is already open. Close tabs you no longer need to keep the browser tidy and reduce resource usage.",
     parameters: {
-      action: { type: "string", description: '"list" (default) - shows all tabs; "close" - close a tab; "activate" - bring a tab to foreground', enum: ["list", "close", "activate"] },
-      tab_id: { type: "number", description: "Tab ID for close/activate actions" },
+      action: {
+        type: "string",
+        description:
+          '"list" (default) - shows all tabs; "close" - close a tab; "activate" - bring a tab to foreground',
+        enum: ["list", "close", "activate"],
+      },
+      tab_id: {
+        type: "number",
+        description: "Tab ID for close/activate actions",
+      },
     },
     required: [],
     handler: async (args) => {
       const action = args.action || "list";
-      if ((action === "close" || action === "activate") && args.tab_id === undefined)
+      if (
+        (action === "close" || action === "activate") &&
+        args.tab_id === undefined
+      )
         return outError(new Error(`tab_id is required for "${action}" action`));
       try {
-        const result = await sendBrowserCommand("tabs", { action, tabId: args.tab_id });
+        const result = await sendBrowserCommand("tabs", {
+          action,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -752,39 +1053,98 @@ const tools: Record<string, ToolDef> = {
       "TIP: If you find yourself running similar code more than once, save it as a reusable script via store (with a description) and call it by script_id going forward. " +
       "WARNING: On anti-bot protected sites, use stealth=true to avoid CDP debugger detection that causes immediate logout/redirect.",
     parameters: {
-      code: { type: "string", description: "JavaScript code to execute in the page context (omit if using script_id)" },
+      code: {
+        type: "string",
+        description:
+          "JavaScript code to execute in the page context (omit if using script_id)",
+      },
       script_id: {
         type: "string",
-        description: "Key of a stored script (saved via store with action=set). The script is loaded and wrapped in an async function - use 'return <expr>' to return values (unlike inline code, the last expression is NOT implicitly returned). Prefer this over re-sending code.",
+        description:
+          "Key of a stored script (saved via store with action=set). The script is loaded and wrapped in an async function - use 'return <expr>' to return values (unlike inline code, the last expression is NOT implicitly returned). Prefer this over re-sending code.",
       },
-      script_args: { type: "object", description: "Arguments object passed to the stored script as __args. Access via __args.key inside the script. Only used with script_id." },
+      script_args: {
+        type: "object",
+        description:
+          "Arguments object passed to the stored script as __args. Access via __args.key inside the script. Only used with script_id.",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      frame_id: { type: "string", description: "Frame ID for frame-targeted execution (use frames to list frames)" },
+      frame_id: {
+        type: "string",
+        description:
+          "Frame ID for frame-targeted execution (use frames to list frames)",
+      },
       stealth: {
         type: "boolean",
-        description: "Use stealth mode to avoid CDP debugger detection. Runs code via chrome.scripting in MAIN world instead of CDP Runtime.evaluate. Frame targeting not supported in stealth mode.",
+        description:
+          "Use stealth mode to avoid CDP debugger detection. Runs code via chrome.scripting in MAIN world instead of CDP Runtime.evaluate. Frame targeting not supported in stealth mode.",
       },
-      bridge_timeout: { type: "number", description: "Override server-side timeout in seconds (default: 60, max: 120). Use for long-running scripts." },
+      bridge_timeout: {
+        type: "number",
+        description:
+          "Override server-side timeout in seconds (default: 60, max: 120). Use for long-running scripts.",
+      },
     },
     required: [],
     handler: async (args) => {
       try {
         let code = args.code;
         if (args.script_id) {
-          const storeResult = await sendBrowserCommand("store", { action: "get", key: args.script_id, tabId: args.tab_id });
+          const storeResult = await sendBrowserCommand("store", {
+            action: "get",
+            key: args.script_id,
+            tabId: args.tab_id,
+          });
           const storedScript = storeResult?.value;
-          if (!storeResult?.found) return outError(new Error(`Stored script '${String(args.script_id).slice(0, 100)}' not found. Use store action=set to save it first, or store action=list to see available scripts.`));
-          if (typeof storedScript !== "string" || storedScript.length === 0) return outError(new Error(`Stored item '${String(args.script_id).slice(0, 100)}' is not a valid script (type: ${typeof storedScript}). Store a non-empty JS code string.`));
+          if (!storeResult?.found)
+            return outError(
+              new Error(
+                `Stored script '${String(args.script_id).slice(0, 100)}' not found. Use store action=set to save it first, or store action=list to see available scripts.`,
+              ),
+            );
+          if (typeof storedScript !== "string" || storedScript.length === 0)
+            return outError(
+              new Error(
+                `Stored item '${String(args.script_id).slice(0, 100)}' is not a valid script (type: ${typeof storedScript}). Store a non-empty JS code string.`,
+              ),
+            );
           let argsJson: string;
-          try { argsJson = JSON.stringify(args.script_args ?? {}); } catch { return outError(new Error("script_args is not JSON-serializable (check for BigInt, circular references, or other non-serializable values)")); }
+          try {
+            argsJson = JSON.stringify(args.script_args ?? {});
+          } catch {
+            return outError(
+              new Error(
+                "script_args is not JSON-serializable (check for BigInt, circular references, or other non-serializable values)",
+              ),
+            );
+          }
           code = `(async function(){const __args=${argsJson};${storedScript}})()`;
         }
-        if (!code) return outError(new Error("Either 'code' or 'script_id' is required."));
+        if (!code)
+          return outError(
+            new Error("Either 'code' or 'script_id' is required."),
+          );
         if (!args.script_id) code = `(async()=>{${code}})()`;
-        const result = await sendBrowserCommand("execute", { code, tabId: args.tab_id, frameId: args.frame_id, stealth: args.stealth }, { timeoutMs: bridgeTimeoutMs(args) });
-        let output = result.value !== undefined ? (typeof result.value === "string" ? result.value : jsonOut(result.value)) : "(undefined)";
+        const result = await sendBrowserCommand(
+          "execute",
+          {
+            code,
+            tabId: args.tab_id,
+            frameId: args.frame_id,
+            stealth: args.stealth,
+          },
+          { timeoutMs: bridgeTimeoutMs(args) },
+        );
+        let output =
+          result.value !== undefined
+            ? typeof result.value === "string"
+              ? result.value
+              : jsonOut(result.value)
+            : "(undefined)";
         return { blocks: textBlocks(output) };
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -792,20 +1152,56 @@ const tools: Record<string, ToolDef> = {
     description:
       "Scroll the page or a specific scrollable area (sidebar, panel, chat list, etc.). When selector is given, the scroll event targets that element - the browser automatically scrolls the nearest scrollable ancestor. Use this to scroll within nested containers, not just the main page.",
     parameters: {
-      direction: { type: "string", description: "Scroll direction", enum: ["up", "down", "left", "right"] },
-      amount: { type: "number", description: "Scroll distance in pixels (default: 300)" },
-      selector: { type: "string", description: "CSS selector - scroll event fires at this element's center, scrolling its nearest scrollable container (sidebar, panel, etc.)" },
-      x: { type: "number", description: "X coordinate to scroll at (alternative to selector)" },
-      y: { type: "number", description: "Y coordinate to scroll at (alternative to selector)" },
+      direction: {
+        type: "string",
+        description: "Scroll direction",
+        enum: ["up", "down", "left", "right"],
+      },
+      amount: {
+        type: "number",
+        description: "Scroll distance in pixels (default: 300)",
+      },
+      selector: {
+        type: "string",
+        description:
+          "CSS selector - scroll event fires at this element's center, scrolling its nearest scrollable container (sidebar, panel, etc.)",
+      },
+      x: {
+        type: "number",
+        description: "X coordinate to scroll at (alternative to selector)",
+      },
+      y: {
+        type: "number",
+        description: "Y coordinate to scroll at (alternative to selector)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      stealth: { type: "boolean", description: "Use stealth mode. Uses window.scrollBy() via chrome.scripting instead of CDP mouseWheel events." },
+      stealth: {
+        type: "boolean",
+        description:
+          "Use stealth mode. Uses window.scrollBy() via chrome.scripting instead of CDP mouseWheel events.",
+      },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("scroll", { direction: args.direction || "down", amount: args.amount, selector: args.selector, x: args.x, y: args.y, tabId: args.tab_id, stealth: args.stealth });
-        return outJson({ scrolled: true, direction: result.direction, amount: result.amount, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("scroll", {
+          direction: args.direction || "down",
+          amount: args.amount,
+          selector: args.selector,
+          x: args.x,
+          y: args.y,
+          tabId: args.tab_id,
+          stealth: args.stealth,
+        });
+        return outJson({
+          scrolled: true,
+          direction: result.direction,
+          amount: result.amount,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -813,21 +1209,47 @@ const tools: Record<string, ToolDef> = {
     description:
       "Hover over an element to reveal hidden UI: tooltips, dropdown menus, action buttons, preview popups, and hover-only content. Essential for inspecting elements that only appear on mouse-over. After hovering, take a screenshot or extract to see the revealed content.",
     parameters: {
-      selector: { type: "string", description: "CSS selector of element to hover over" },
+      selector: {
+        type: "string",
+        description: "CSS selector of element to hover over",
+      },
       x: { type: "number", description: "X coordinate (if no selector)" },
       y: { type: "number", description: "Y coordinate (if no selector)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      pierce: { type: "boolean", description: "Pierce shadow DOM and iframes to find the element (default: false)" },
-      stealth: { type: "boolean", description: "Use stealth mode. Dispatches mouseenter/mouseover/mousemove events via chrome.scripting. CSS :hover may not activate (JS listeners will fire)." },
+      pierce: {
+        type: "boolean",
+        description:
+          "Pierce shadow DOM and iframes to find the element (default: false)",
+      },
+      stealth: {
+        type: "boolean",
+        description:
+          "Use stealth mode. Dispatches mouseenter/mouseover/mousemove events via chrome.scripting. CSS :hover may not activate (JS listeners will fire).",
+      },
     },
     required: [],
     handler: async (args) => {
       if (!args.selector && (args.x === undefined || args.y === undefined))
-        return outError(new Error("Provide either a CSS selector or x,y coordinates"));
+        return outError(
+          new Error("Provide either a CSS selector or x,y coordinates"),
+        );
       try {
-        const result = await sendBrowserCommand("hover", { selector: args.selector, x: args.x, y: args.y, tabId: args.tab_id, pierce: args.pierce, stealth: args.stealth });
-        return outJson({ hovered: true, element: result.element, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("hover", {
+          selector: args.selector,
+          x: args.x,
+          y: args.y,
+          tabId: args.tab_id,
+          pierce: args.pierce,
+          stealth: args.stealth,
+        });
+        return outJson({
+          hovered: true,
+          element: result.element,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -837,15 +1259,30 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       x: { type: "number", description: "Target X coordinate" },
       y: { type: "number", description: "Target Y coordinate" },
-      steps: { type: "number", description: "Number of intermediate movement steps (default: 1). Use higher values for smoother travel." },
+      steps: {
+        type: "number",
+        description:
+          "Number of intermediate movement steps (default: 1). Use higher values for smoother travel.",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["x", "y"],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("mouse_move", { x: args.x, y: args.y, steps: args.steps, tabId: args.tab_id });
-        return outJson({ moved: true, position: result.position, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("mouse_move", {
+          x: args.x,
+          y: args.y,
+          steps: args.steps,
+          tabId: args.tab_id,
+        });
+        return outJson({
+          moved: true,
+          position: result.position,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -853,25 +1290,73 @@ const tools: Record<string, ToolDef> = {
     description:
       "Drag and drop from one position to another. Use selectors or coordinates for source and target. Works for sliders, sortable lists, and drag-and-drop UIs.",
     parameters: {
-      from_selector: { type: "string", description: "CSS selector of element to drag from" },
-      from_x: { type: "number", description: "Start X coordinate (if no from_selector)" },
-      from_y: { type: "number", description: "Start Y coordinate (if no from_selector)" },
-      to_selector: { type: "string", description: "CSS selector of element to drop onto" },
-      to_x: { type: "number", description: "End X coordinate (if no to_selector)" },
-      to_y: { type: "number", description: "End Y coordinate (if no to_selector)" },
+      from_selector: {
+        type: "string",
+        description: "CSS selector of element to drag from",
+      },
+      from_x: {
+        type: "number",
+        description: "Start X coordinate (if no from_selector)",
+      },
+      from_y: {
+        type: "number",
+        description: "Start Y coordinate (if no from_selector)",
+      },
+      to_selector: {
+        type: "string",
+        description: "CSS selector of element to drop onto",
+      },
+      to_x: {
+        type: "number",
+        description: "End X coordinate (if no to_selector)",
+      },
+      to_y: {
+        type: "number",
+        description: "End Y coordinate (if no to_selector)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      steps: { type: "number", description: "Number of intermediate move steps (default: 10). More steps = smoother drag." },
+      steps: {
+        type: "number",
+        description:
+          "Number of intermediate move steps (default: 10). More steps = smoother drag.",
+      },
     },
     required: [],
     handler: async (args) => {
-      if (!args.from_selector && (args.from_x === undefined || args.from_y === undefined))
-        return outError(new Error("Provide from_selector or from_x/from_y coordinates"));
-      if (!args.to_selector && (args.to_x === undefined || args.to_y === undefined))
-        return outError(new Error("Provide to_selector or to_x/to_y coordinates"));
+      if (
+        !args.from_selector &&
+        (args.from_x === undefined || args.from_y === undefined)
+      )
+        return outError(
+          new Error("Provide from_selector or from_x/from_y coordinates"),
+        );
+      if (
+        !args.to_selector &&
+        (args.to_x === undefined || args.to_y === undefined)
+      )
+        return outError(
+          new Error("Provide to_selector or to_x/to_y coordinates"),
+        );
       try {
-        const result = await sendBrowserCommand("drag", { fromSelector: args.from_selector, fromX: args.from_x, fromY: args.from_y, toSelector: args.to_selector, toX: args.to_x, toY: args.to_y, tabId: args.tab_id, steps: args.steps });
-        return outJson({ dragged: true, from: result.from, to: result.to, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("drag", {
+          fromSelector: args.from_selector,
+          fromX: args.from_x,
+          fromY: args.from_y,
+          toSelector: args.to_selector,
+          toX: args.to_x,
+          toY: args.to_y,
+          tabId: args.tab_id,
+          steps: args.steps,
+        });
+        return outJson({
+          dragged: true,
+          from: result.from,
+          to: result.to,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -881,18 +1366,40 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       key: {
         type: "string",
-        description: 'Key to press: "Enter", "Tab", "Escape", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Home", "End", "PageUp", "PageDown", "F1"-"F12", or any character',
+        description:
+          'Key to press: "Enter", "Tab", "Escape", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Home", "End", "PageUp", "PageDown", "F1"-"F12", or any character',
       },
-      modifiers: { type: "array", items: { type: "string" }, description: 'Modifier keys to hold: "ctrl", "shift", "alt", "meta", or combinations like ["ctrl", "shift"]' },
+      modifiers: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          'Modifier keys to hold: "ctrl", "shift", "alt", "meta", or combinations like ["ctrl", "shift"]',
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      stealth: { type: "boolean", description: "Use stealth mode. Dispatches KeyboardEvent via chrome.scripting instead of CDP Input.dispatchKeyEvent." },
+      stealth: {
+        type: "boolean",
+        description:
+          "Use stealth mode. Dispatches KeyboardEvent via chrome.scripting instead of CDP Input.dispatchKeyEvent.",
+      },
     },
     required: ["key"],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("keypress", { key: args.key, modifiers: args.modifiers, tabId: args.tab_id, stealth: args.stealth });
-        return outJson({ pressed: true, key: result.key, modifiers: result.modifiers, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("keypress", {
+          key: args.key,
+          modifiers: args.modifiers,
+          tabId: args.tab_id,
+          stealth: args.stealth,
+        });
+        return outJson({
+          pressed: true,
+          key: result.key,
+          modifiers: result.modifiers,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -900,20 +1407,50 @@ const tools: Record<string, ToolDef> = {
     description:
       'Select an option from a <select> dropdown element. Can select by value, visible text, or index. Dispatches "input" and "change" events.',
     parameters: {
-      selector: { type: "string", description: "CSS selector of the <select> element" },
-      value: { type: "string", description: "Option value attribute to select" },
-      text: { type: "string", description: "Visible text of the option to select" },
-      index: { type: "number", description: "Zero-based index of the option to select" },
+      selector: {
+        type: "string",
+        description: "CSS selector of the <select> element",
+      },
+      value: {
+        type: "string",
+        description: "Option value attribute to select",
+      },
+      text: {
+        type: "string",
+        description: "Visible text of the option to select",
+      },
+      index: {
+        type: "number",
+        description: "Zero-based index of the option to select",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["selector"],
     handler: async (args) => {
-      if (args.value === undefined && args.text === undefined && args.index === undefined)
+      if (
+        args.value === undefined &&
+        args.text === undefined &&
+        args.index === undefined
+      )
         return outError(new Error("Provide value, text, or index to select"));
       try {
-        const result = await sendBrowserCommand("select", { selector: args.selector, value: args.value, text: args.text, index: args.index, tabId: args.tab_id });
-        return outJson({ selected: true, value: result.selected, text: result.text, index: result.index, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("select", {
+          selector: args.selector,
+          value: args.value,
+          text: args.text,
+          index: args.index,
+          tabId: args.tab_id,
+        });
+        return outJson({
+          selected: true,
+          value: result.selected,
+          text: result.text,
+          index: result.index,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -921,16 +1458,34 @@ const tools: Record<string, ToolDef> = {
     description:
       'Handle a JavaScript dialog (alert, confirm, or prompt). Must be called after a dialog appears. Use action "accept" to click OK or "dismiss" to click Cancel.',
     parameters: {
-      action: { type: "string", description: '"accept" (click OK, default) or "dismiss" (click Cancel)', enum: ["accept", "dismiss"] },
-      prompt_text: { type: "string", description: "Text to enter in a prompt() dialog (optional)" },
+      action: {
+        type: "string",
+        description: '"accept" (click OK, default) or "dismiss" (click Cancel)',
+        enum: ["accept", "dismiss"],
+      },
+      prompt_text: {
+        type: "string",
+        description: "Text to enter in a prompt() dialog (optional)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("dialog", { action: args.action || "accept", promptText: args.prompt_text, tabId: args.tab_id });
-        return outJson({ handled: result.handled, type: result.type, dialog_message: result.dialogMessage, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("dialog", {
+          action: args.action || "accept",
+          promptText: args.prompt_text,
+          tabId: args.tab_id,
+        });
+        return outJson({
+          handled: result.handled,
+          type: result.type,
+          dialog_message: result.dialogMessage,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -942,11 +1497,24 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       selector: {
         type: "string",
-        description: 'CSS selector of the <input type="file"> element. Optional if a file chooser dialog is pending from a previous click.',
+        description:
+          'CSS selector of the <input type="file"> element. Optional if a file chooser dialog is pending from a previous click.',
       },
-      file_id: { type: "string", description: "File ID from a previous upload (POST /files/upload) or from file_read/download" },
-      content: { type: "string", description: "Base64-encoded file content (alternative to file_id for remote agents). Max ~20 MiB decoded." },
-      filename: { type: "string", description: "Filename used when content is provided (e.g. 'report.pdf')" },
+      file_id: {
+        type: "string",
+        description:
+          "File ID from a previous upload (POST /files/upload) or from file_read/download",
+      },
+      content: {
+        type: "string",
+        description:
+          "Base64-encoded file content (alternative to file_id for remote agents). Max ~20 MiB decoded.",
+      },
+      filename: {
+        type: "string",
+        description:
+          "Filename used when content is provided (e.g. 'report.pdf')",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
@@ -955,14 +1523,38 @@ const tools: Record<string, ToolDef> = {
         let fileId = args.file_id;
         if (!fileId && args.content) {
           const buf = Buffer.from(String(args.content), "base64");
-          if (buf.length > 20 * 1024 * 1024) return outError(new Error(`Inline content too large (${(buf.length / 1024 / 1024).toFixed(1)} MiB). Max 20 MiB - upload via POST /files/upload instead.`));
-          const f = saveFile(String(args.filename || "upload.bin"), buf, "application/octet-stream");
+          if (buf.length > 20 * 1024 * 1024)
+            return outError(
+              new Error(
+                `Inline content too large (${(buf.length / 1024 / 1024).toFixed(1)} MiB). Max 20 MiB - upload via POST /files/upload instead.`,
+              ),
+            );
+          const f = saveFile(
+            String(args.filename || "upload.bin"),
+            buf,
+            "application/octet-stream",
+          );
           fileId = f.id;
         }
-        if (!fileId) return outError(new Error("file_id is required (or provide content+filename)"));
-        const result = await sendBrowserCommand("file_upload", { selector: args.selector, fileId, tabId: args.tab_id });
-        return outJson({ uploaded: true, selector: result.selector || args.selector || "(file chooser)", file_id: fileId, filename: result.fileName, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        if (!fileId)
+          return outError(
+            new Error("file_id is required (or provide content+filename)"),
+          );
+        const result = await sendBrowserCommand("file_upload", {
+          selector: args.selector,
+          fileId,
+          tabId: args.tab_id,
+        });
+        return outJson({
+          uploaded: true,
+          selector: result.selector || args.selector || "(file chooser)",
+          file_id: fileId,
+          filename: result.fileName,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -975,33 +1567,69 @@ const tools: Record<string, ToolDef> = {
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("frames", { tabId: args.tab_id });
+        const result = await sendBrowserCommand("frames", {
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
   touch: {
-    description: "Dispatch touch events for mobile interaction testing. Supports tap, swipe, long-press, and pinch gestures.",
+    description:
+      "Dispatch touch events for mobile interaction testing. Supports tap, swipe, long-press, and pinch gestures.",
     parameters: {
-      action: { type: "string", description: '"tap", "swipe", "long-press", or "pinch"', enum: ["tap", "swipe", "long-press", "pinch"] },
-      selector: { type: "string", description: "CSS selector of target element (alternative to x,y)" },
+      action: {
+        type: "string",
+        description: '"tap", "swipe", "long-press", or "pinch"',
+        enum: ["tap", "swipe", "long-press", "pinch"],
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector of target element (alternative to x,y)",
+      },
       x: { type: "number", description: "Start X coordinate" },
       y: { type: "number", description: "Start Y coordinate" },
-      end_x: { type: "number", description: "End X coordinate for swipe gesture" },
+      end_x: {
+        type: "number",
+        description: "End X coordinate for swipe gesture",
+      },
       end_y: { type: "number", description: "End Y coordinate for swipe" },
-      scale: { type: "number", description: "Scale factor for pinch gesture (e.g., 0.5 = zoom out, 2.0 = zoom in)" },
-      duration: { type: "number", description: "Hold duration in ms for long-press (default: 500)" },
+      scale: {
+        type: "number",
+        description:
+          "Scale factor for pinch gesture (e.g., 0.5 = zoom out, 2.0 = zoom in)",
+      },
+      duration: {
+        type: "number",
+        description: "Hold duration in ms for long-press (default: 500)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action"],
     handler: async (args) => {
       if (!args.selector && (args.x === undefined || args.y === undefined))
-        return outError(new Error("Provide either selector or x,y coordinates"));
+        return outError(
+          new Error("Provide either selector or x,y coordinates"),
+        );
       try {
-        const result = await sendBrowserCommand("touch", { action: args.action, selector: args.selector, x: args.x, y: args.y, endX: args.end_x, endY: args.end_y, scale: args.scale, duration: args.duration, tabId: args.tab_id });
+        const result = await sendBrowserCommand("touch", {
+          action: args.action,
+          selector: args.selector,
+          x: args.x,
+          y: args.y,
+          endX: args.end_x,
+          endY: args.end_y,
+          scale: args.scale,
+          duration: args.duration,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1009,21 +1637,50 @@ const tools: Record<string, ToolDef> = {
     description:
       'Emulate a mobile device or custom viewport. Set screen dimensions, device scale factor, touch capability, and user agent. Use action "clear" to reset.',
     parameters: {
-      action: { type: "string", description: '"set" (default) to apply emulation, or "clear" to reset to defaults', enum: ["set", "clear"] },
+      action: {
+        type: "string",
+        description:
+          '"set" (default) to apply emulation, or "clear" to reset to defaults',
+        enum: ["set", "clear"],
+      },
       width: { type: "number", description: "Viewport width in pixels" },
       height: { type: "number", description: "Viewport height in pixels" },
-      device_scale_factor: { type: "number", description: "Device pixel ratio (default: 1, use 2 for retina, 3 for high-DPI mobile)" },
-      is_mobile: { type: "boolean", description: "Enable mobile mode (affects rendering, default: false)" },
-      has_touch: { type: "boolean", description: "Enable touch event support (default: false)" },
-      user_agent: { type: "string", description: "Custom user agent string (optional)" },
+      device_scale_factor: {
+        type: "number",
+        description:
+          "Device pixel ratio (default: 1, use 2 for retina, 3 for high-DPI mobile)",
+      },
+      is_mobile: {
+        type: "boolean",
+        description: "Enable mobile mode (affects rendering, default: false)",
+      },
+      has_touch: {
+        type: "boolean",
+        description: "Enable touch event support (default: false)",
+      },
+      user_agent: {
+        type: "string",
+        description: "Custom user agent string (optional)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("emulate", { action: args.action || "set", width: args.width, height: args.height, deviceScaleFactor: args.device_scale_factor, isMobile: args.is_mobile, hasTouch: args.has_touch, userAgent: args.user_agent, tabId: args.tab_id });
+        const result = await sendBrowserCommand("emulate", {
+          action: args.action || "set",
+          width: args.width,
+          height: args.height,
+          deviceScaleFactor: args.device_scale_factor,
+          isMobile: args.is_mobile,
+          hasTouch: args.has_touch,
+          userAgent: args.user_agent,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1031,16 +1688,30 @@ const tools: Record<string, ToolDef> = {
     description:
       'Track and capture file downloads. Use "list" to see recent downloads, "wait" to wait for a download to complete, or "latest" to get the most recent completed download. Completed downloads are automatically uploaded to the Browser MCP server and returned as file_id (max 500 MiB). Use file_read or fetch /files/<file_id> to read the content.',
     parameters: {
-      action: { type: "string", description: '"list" (recent downloads), "wait" (wait for next download), or "latest" (most recent completed)', enum: ["list", "wait", "latest"] },
-      timeout: { type: "number", description: "Max wait time in ms for 'wait' action (default: 30000, max: 120000)" },
+      action: {
+        type: "string",
+        description:
+          '"list" (recent downloads), "wait" (wait for next download), or "latest" (most recent completed)',
+        enum: ["list", "wait", "latest"],
+      },
+      timeout: {
+        type: "number",
+        description:
+          "Max wait time in ms for 'wait' action (default: 30000, max: 120000)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action"],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("download", { action: args.action, timeout: args.timeout });
+        const result = await sendBrowserCommand("download", {
+          action: args.action,
+          timeout: args.timeout,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1048,18 +1719,40 @@ const tools: Record<string, ToolDef> = {
     description:
       'Handle HTTP Basic/Digest authentication popups (e.g., staging servers, enterprise proxies). Use "status" to check if a page requires auth, "provide" to supply credentials, or "cancel" to dismiss.',
     parameters: {
-      action: { type: "string", description: '"status" (check for pending auth), "provide" (supply credentials), or "cancel"', enum: ["status", "provide", "cancel"] },
-      username: { type: "string", description: "Username for authentication (required for 'provide')" },
-      password: { type: "string", description: "Password for authentication (required for 'provide')" },
-      vault_name: { type: "string", description: "Vault entry name to pull credentials from (unlocked vault; alternative to username+password)" },
+      action: {
+        type: "string",
+        description:
+          '"status" (check for pending auth), "provide" (supply credentials), or "cancel"',
+        enum: ["status", "provide", "cancel"],
+      },
+      username: {
+        type: "string",
+        description: "Username for authentication (required for 'provide')",
+      },
+      password: {
+        type: "string",
+        description: "Password for authentication (required for 'provide')",
+      },
+      vault_name: {
+        type: "string",
+        description:
+          "Vault entry name to pull credentials from (unlocked vault; alternative to username+password)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action"],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("auth", { action: args.action, username: args.username, password: args.password, tabId: args.tab_id });
+        const result = await sendBrowserCommand("auth", {
+          action: args.action,
+          username: args.username,
+          password: args.password,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1067,22 +1760,39 @@ const tools: Record<string, ToolDef> = {
     description:
       'Grant, deny, or reset browser permissions for a site. Controls access to camera, microphone, geolocation, notifications, clipboard, MIDI, and other web APIs. Grant permissions before interacting with features that need them (e.g., grant "geolocation" before testing a map app).',
     parameters: {
-      action: { type: "string", description: '"grant", "deny", or "reset" (back to prompt)', enum: ["grant", "deny", "reset"] },
+      action: {
+        type: "string",
+        description: '"grant", "deny", or "reset" (back to prompt)',
+        enum: ["grant", "deny", "reset"],
+      },
       permissions: {
         type: "array",
         items: { type: "string" },
-        description: 'Permission names: "geolocation", "camera", "microphone", "notifications", "clipboard-read", "clipboard-write", "midi", "background-sync", "sensors", "screen-wake-lock"',
+        description:
+          'Permission names: "geolocation", "camera", "microphone", "notifications", "clipboard-read", "clipboard-write", "midi", "background-sync", "sensors", "screen-wake-lock"',
       },
-      origin: { type: "string", description: "Origin to set permission for (default: current page origin)" },
+      origin: {
+        type: "string",
+        description:
+          "Origin to set permission for (default: current page origin)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action", "permissions"],
     handler: async (args) => {
-      if (!args.permissions?.length) return outError(new Error("permissions array is required"));
+      if (!args.permissions?.length)
+        return outError(new Error("permissions array is required"));
       try {
-        const result = await sendBrowserCommand("permissions", { action: args.action, permissions: args.permissions, origin: args.origin, tabId: args.tab_id });
+        const result = await sendBrowserCommand("permissions", {
+          action: args.action,
+          permissions: args.permissions,
+          origin: args.origin,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1096,20 +1806,40 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       action: {
         type: "string",
-        description: '"set", "get", "list" (all keys with descriptions), "delete" (one key), or "clear" (all data for this origin)',
+        description:
+          '"set", "get", "list" (all keys with descriptions), "delete" (one key), or "clear" (all data for this origin)',
         enum: ["set", "get", "list", "delete", "clear"],
       },
-      key: { type: "string", description: "Storage key (required for set/get/delete)" },
-      value: { type: "string", description: "Value to store (required for set; for scripts this is the JS code)" },
-      description: { type: "string", description: "Human-readable description of the stored item (optional, recommended for scripts)" },
+      key: {
+        type: "string",
+        description: "Storage key (required for set/get/delete)",
+      },
+      value: {
+        type: "string",
+        description:
+          "Value to store (required for set; for scripts this is the JS code)",
+      },
+      description: {
+        type: "string",
+        description:
+          "Human-readable description of the stored item (optional, recommended for scripts)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action"],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("store", { action: args.action, key: args.key, value: args.value, description: args.description, tabId: args.tab_id });
+        const result = await sendBrowserCommand("store", {
+          action: args.action,
+          key: args.key,
+          value: args.value,
+          description: args.description,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1120,29 +1850,64 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       action: {
         type: "string",
-        description: '"getAll" (list cookies for url/domain), "get" (one cookie by name), "set", or "remove"',
+        description:
+          '"getAll" (list cookies for url/domain), "get" (one cookie by name), "set", or "remove"',
         enum: ["getAll", "get", "set", "remove"],
       },
-      url: { type: "string", description: "URL scope for cookie operations (optional - inferred from active tab)" },
-      domain: { type: "string", description: "Domain filter for getAll (optional)" },
-      name: { type: "string", description: "Cookie name (required for get/set/remove)" },
+      url: {
+        type: "string",
+        description:
+          "URL scope for cookie operations (optional - inferred from active tab)",
+      },
+      domain: {
+        type: "string",
+        description: "Domain filter for getAll (optional)",
+      },
+      name: {
+        type: "string",
+        description: "Cookie name (required for get/set/remove)",
+      },
       value: { type: "string", description: "Cookie value (for set)" },
-      path: { type: "string", description: "Cookie path (for set, default '/')" },
+      path: {
+        type: "string",
+        description: "Cookie path (for set, default '/')",
+      },
       secure: { type: "boolean", description: "Secure flag (for set)" },
       http_only: { type: "boolean", description: "HttpOnly flag (for set)" },
-      same_site: { type: "string", description: "SameSite value: 'Strict', 'Lax', or 'None' (for set)" },
-      expiration_date: { type: "number", description: "Unix timestamp for expiration. Omit for session cookie." },
-      tab_id: { type: "number", description: "Target tab ID (optional, used to infer URL if not provided)" },
+      same_site: {
+        type: "string",
+        description: "SameSite value: 'Strict', 'Lax', or 'None' (for set)",
+      },
+      expiration_date: {
+        type: "number",
+        description: "Unix timestamp for expiration. Omit for session cookie.",
+      },
+      tab_id: {
+        type: "number",
+        description:
+          "Target tab ID (optional, used to infer URL if not provided)",
+      },
     },
     required: ["action"],
     handler: async (args) => {
       try {
         const result = await sendBrowserCommand("cookies", {
-          action: args.action, url: args.url, domain: args.domain, name: args.name, value: args.value, path: args.path,
-          secure: args.secure, httpOnly: args.http_only, sameSite: args.same_site, expirationDate: args.expiration_date, tabId: args.tab_id,
+          action: args.action,
+          url: args.url,
+          domain: args.domain,
+          name: args.name,
+          value: args.value,
+          path: args.path,
+          secure: args.secure,
+          httpOnly: args.http_only,
+          sameSite: args.same_site,
+          expirationDate: args.expiration_date,
+          tabId: args.tab_id,
         });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1159,30 +1924,85 @@ const tools: Record<string, ToolDef> = {
       if (!f) return outError(new Error("File not found: " + args.file_id));
       // Check size on disk FIRST - never load a large file into memory just to return a hint.
       let size: number;
-      try { size = statSync(f.path).size; } catch { return outError(new Error("File missing on disk: " + args.file_id)); }
-      if (size > MAX_FILE_READ_TEXT && !(f.mimetype.startsWith("image/") && size <= MAX_FILE_READ_IMAGE)) {
+      try {
+        size = statSync(f.path).size;
+      } catch {
+        return outError(new Error("File missing on disk: " + args.file_id));
+      }
+      if (
+        size > MAX_FILE_READ_TEXT &&
+        !(f.mimetype.startsWith("image/") && size <= MAX_FILE_READ_IMAGE)
+      ) {
         return outJson({
           file_id: f.id,
           name: f.name,
           mimetype: f.mimetype,
           size,
           sha256: f.sha256,
-          message: "File is " + (size / 1024 / 1024).toFixed(1) + " MiB - too large to return inline. Fetch it locally via GET http://localhost:" + port + "/files/" + f.id + ".",
+          message:
+            "File is " +
+            (size / 1024 / 1024).toFixed(1) +
+            " MiB - too large to return inline. Fetch it locally via GET http://localhost:" +
+            port +
+            "/files/" +
+            f.id +
+            ".",
         });
       }
       const buf = await Bun.file(f.path).arrayBuffer();
       const bytes = new Uint8Array(buf);
-      const isText = /^(text\/|application\/(json|xml|javascript|typescript|x-javascript|x-www-form-urlencoded)|image\/svg\+xml)/.test(f.mimetype);
-      if (f.mimetype.startsWith("image/") && bytes.length <= MAX_FILE_READ_IMAGE) {
-        return { blocks: [{ type: "image", data: Buffer.from(bytes).toString("base64"), mimeType: f.mimetype }] };
+      const isText =
+        /^(text\/|application\/(json|xml|javascript|typescript|x-javascript|x-www-form-urlencoded)|image\/svg\+xml)/.test(
+          f.mimetype,
+        );
+      if (
+        f.mimetype.startsWith("image/") &&
+        bytes.length <= MAX_FILE_READ_IMAGE
+      ) {
+        return {
+          blocks: [
+            {
+              type: "image",
+              data: Buffer.from(bytes).toString("base64"),
+              mimeType: f.mimetype,
+            },
+          ],
+        };
       }
       if (bytes.length <= 50_000) {
-        const body = isText ? new TextDecoder().decode(bytes) : Buffer.from(bytes).toString("base64");
-        return { blocks: textBlocks(jsonOut({ file_id: f.id, name: f.name, mimetype: f.mimetype, size: f.size, body })) };
+        const body = isText
+          ? new TextDecoder().decode(bytes)
+          : Buffer.from(bytes).toString("base64");
+        return {
+          blocks: textBlocks(
+            jsonOut({
+              file_id: f.id,
+              name: f.name,
+              mimetype: f.mimetype,
+              size: f.size,
+              body,
+            }),
+          ),
+        };
       }
       if (bytes.length <= MAX_FILE_READ_TEXT) {
-        const body = isText ? new TextDecoder().decode(bytes) : Buffer.from(bytes).toString("base64");
-        return { blocks: textBlocks("file_id: " + f.id + "\nname: " + f.name + "\nmimetype: " + f.mimetype + "\nsize: " + f.size + "\nbody:\n" + body) };
+        const body = isText
+          ? new TextDecoder().decode(bytes)
+          : Buffer.from(bytes).toString("base64");
+        return {
+          blocks: textBlocks(
+            "file_id: " +
+              f.id +
+              "\nname: " +
+              f.name +
+              "\nmimetype: " +
+              f.mimetype +
+              "\nsize: " +
+              f.size +
+              "\nbody:\n" +
+              body,
+          ),
+        };
       }
       return outJson({
         file_id: f.id,
@@ -1190,11 +2010,17 @@ const tools: Record<string, ToolDef> = {
         mimetype: f.mimetype,
         size: f.size,
         sha256: f.sha256,
-        message: "File is " + (f.size / 1024 / 1024).toFixed(1) + " MiB - too large to return inline. Fetch it locally via GET http://localhost:" + port + "/files/" + f.id + ".",
+        message:
+          "File is " +
+          (f.size / 1024 / 1024).toFixed(1) +
+          " MiB - too large to return inline. Fetch it locally via GET http://localhost:" +
+          port +
+          "/files/" +
+          f.id +
+          ".",
       });
     },
   },
-
 
   // ===========================================================================
   // agent-browser port: element discovery + interaction extras
@@ -1203,31 +2029,60 @@ const tools: Record<string, ToolDef> = {
   snapshot: {
     description:
       "Capture the page's interactive element tree with refs (agent-browser style @ref system). " +
-      "Returns compact lines like 'button \"Submit\" [ref=e4]'. Use the ref (e.g. \"e4\" or \"@e4\") as the 'ref' argument of any interaction tool (click/type/fill/hover/select/check/uncheck/focus/dblclick/highlight/get/is/wait_for) instead of writing CSS selectors. " +
+      'Returns compact lines like \'button "Submit" [ref=e4]\'. Use the ref (e.g. "e4" or "@e4") as the \'ref\' argument of any interaction tool (click/type/fill/hover/select/check/uncheck/focus/dblclick/highlight/get/is/wait_for) instead of writing CSS selectors. ' +
       "Refs are valid until the next snapshot or page navigation. Elements: buttons, links, inputs, selects, textareas, checkboxes, radios, sliders, focusables, and cursor:pointer elements (when cursor=true).",
     parameters: {
-      interactive: { type: "boolean", description: "Only interactive elements (default: true)" },
-      cursor: { type: "boolean", description: "Also include cursor:pointer elements without ARIA roles (default: false)" },
-      include_headings: { type: "boolean", description: "Also include headings h1-h6 (default: false)" },
-      max: { type: "number", description: "Max elements to capture (default: 300, cap 500)" },
-      scope: { type: "string", description: "CSS selector to scope the snapshot (optional)" },
+      interactive: {
+        type: "boolean",
+        description: "Only interactive elements (default: true)",
+      },
+      cursor: {
+        type: "boolean",
+        description:
+          "Also include cursor:pointer elements without ARIA roles (default: false)",
+      },
+      include_headings: {
+        type: "boolean",
+        description: "Also include headings h1-h6 (default: false)",
+      },
+      max: {
+        type: "number",
+        description: "Max elements to capture (default: 300, cap 500)",
+      },
+      scope: {
+        type: "string",
+        description: "CSS selector to scope the snapshot (optional)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("snapshot", { interactive: args.interactive, cursor: args.cursor, max: args.max, includeHeadings: args.include_headings, scope: args.scope, tabId: args.tab_id });
+        const result = await sendBrowserCommand("snapshot", {
+          interactive: args.interactive,
+          cursor: args.cursor,
+          max: args.max,
+          includeHeadings: args.include_headings,
+          scope: args.scope,
+          tabId: args.tab_id,
+        });
         const entries = result.entries || [];
         resetRefs();
         const lines = [];
         for (let i = 0; i < entries.length; i++) {
           const e = entries[i];
           const ref = "e" + (i + 1);
-          storeRef(ref, { selector: e.selector || "", role: e.role || "", name: e.name || "", ts: Date.now() });
+          storeRef(ref, {
+            selector: e.selector || "",
+            role: e.role || "",
+            name: e.name || "",
+            ts: Date.now(),
+          });
           let line = e.role || e.tag;
-          if (e.name) line += " \"" + String(e.name).slice(0, 80) + "\"";
+          if (e.name) line += ' "' + String(e.name).slice(0, 80) + '"';
           line += " [ref=" + ref + "]";
-          if (e.value !== undefined) line += " [value=\"" + String(e.value).slice(0, 60) + "\"]";
+          if (e.value !== undefined)
+            line += ' [value="' + String(e.value).slice(0, 60) + '"]';
           if (e.checked !== undefined) line += " [checked=" + e.checked + "]";
           if (e.href) line += " -> " + String(e.href).slice(0, 200);
           if (e.level) line += " [level=" + e.level + "]";
@@ -1235,10 +2090,25 @@ const tools: Record<string, ToolDef> = {
         }
         let body = lines.map((l) => "  " + l).join("\n");
         const MAX_SNAPSHOT_OUT = 50_000;
-        if (body.length > MAX_SNAPSHOT_OUT) body = body.slice(0, MAX_SNAPSHOT_OUT) + "\n... (snapshot truncated at " + Math.round(MAX_SNAPSHOT_OUT / 1024) + "KB - pass a scope or max to narrow it)";
-        const out = "page: " + (result.url || "") + " - " + entries.length + " element" + (entries.length === 1 ? "" : "s") + " (refs valid until next snapshot)\n" + body;
+        if (body.length > MAX_SNAPSHOT_OUT)
+          body =
+            body.slice(0, MAX_SNAPSHOT_OUT) +
+            "\n... (snapshot truncated at " +
+            Math.round(MAX_SNAPSHOT_OUT / 1024) +
+            "KB - pass a scope or max to narrow it)";
+        const out =
+          "page: " +
+          (result.url || "") +
+          " - " +
+          entries.length +
+          " element" +
+          (entries.length === 1 ? "" : "s") +
+          " (refs valid until next snapshot)\n" +
+          body;
         return { blocks: textBlocks(out) };
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1247,37 +2117,95 @@ const tools: Record<string, ToolDef> = {
       "Semantic element search (agent-browser style). Find elements by role, accessible name, visible text, label, placeholder, title, data-testid, or CSS selector. " +
       "Returns matching elements with refs you can pass to interaction tools. Prefer over hand-writing CSS selectors.",
     parameters: {
-      role: { type: "string", description: "ARIA role to match: button, link, textbox, checkbox, radio, combobox, heading, ..." },
-      name: { type: "string", description: "Accessible name to match (used together with role, exact match)" },
+      role: {
+        type: "string",
+        description:
+          "ARIA role to match: button, link, textbox, checkbox, radio, combobox, heading, ...",
+      },
+      name: {
+        type: "string",
+        description:
+          "Accessible name to match (used together with role, exact match)",
+      },
       text: { type: "string", description: "Visible text substring to match" },
-      label: { type: "string", description: "<label> text to match (for form fields)" },
+      label: {
+        type: "string",
+        description: "<label> text to match (for form fields)",
+      },
       placeholder: { type: "string", description: "Placeholder text to match" },
       title: { type: "string", description: "title attribute to match" },
       testid: { type: "string", description: "data-testid value to match" },
-      selector: { type: "string", description: "CSS selector to match (alternative to semantic criteria)" },
-      exact: { type: "boolean", description: "Exact string match (default: true for name, false for substrings)" },
-      max: { type: "number", description: "Max results (default: 50, cap 100)" },
+      selector: {
+        type: "string",
+        description: "CSS selector to match (alternative to semantic criteria)",
+      },
+      exact: {
+        type: "boolean",
+        description:
+          "Exact string match (default: true for name, false for substrings)",
+      },
+      max: {
+        type: "number",
+        description: "Max results (default: 50, cap 100)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("find", { role: args.role, name: args.name, text: args.text, label: args.label, placeholder: args.placeholder, title: args.title, testid: args.testid, selector: args.selector, exact: args.exact, max: args.max, tabId: args.tab_id });
+        const result = await sendBrowserCommand("find", {
+          role: args.role,
+          name: args.name,
+          text: args.text,
+          label: args.label,
+          placeholder: args.placeholder,
+          title: args.title,
+          testid: args.testid,
+          selector: args.selector,
+          exact: args.exact,
+          max: args.max,
+          tabId: args.tab_id,
+        });
         const matches = result.matches || [];
         const lines = [];
         for (const m of matches) {
           refCounter++;
           const ref = "e" + refCounter;
-          storeRef(ref, { selector: m.selector || "", role: m.role || "", name: m.name || "", ts: Date.now() });
-          let line = (m.role || m.tag) + " \"" + String(m.name || m.text || "").slice(0, 60) + "\" [ref=" + ref + "]";
-          if (m.value) line += " [value=\"" + String(m.value).slice(0, 40) + "\"]";
+          storeRef(ref, {
+            selector: m.selector || "",
+            role: m.role || "",
+            name: m.name || "",
+            ts: Date.now(),
+          });
+          let line =
+            (m.role || m.tag) +
+            ' "' +
+            String(m.name || m.text || "").slice(0, 60) +
+            '" [ref=' +
+            ref +
+            "]";
+          if (m.value)
+            line += ' [value="' + String(m.value).slice(0, 40) + '"]';
           if (m.href) line += " -> " + String(m.href).slice(0, 150);
           lines.push(line);
         }
         let body = lines.map((l) => "  " + l).join("\n");
-        if (body.length > 50_000) body = body.slice(0, 50_000) + "\n... (results truncated - add more specific criteria)";
-        return { blocks: textBlocks("found " + matches.length + " match" + (matches.length === 1 ? "" : "es") + (lines.length ? "\n" + body : "")) };
-      } catch (e) { return outError(e); }
+        if (body.length > 50_000)
+          body =
+            body.slice(0, 50_000) +
+            "\n... (results truncated - add more specific criteria)";
+        return {
+          blocks: textBlocks(
+            "found " +
+              matches.length +
+              " match" +
+              (matches.length === 1 ? "" : "es") +
+              (lines.length ? "\n" + body : ""),
+          ),
+        };
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1285,11 +2213,39 @@ const tools: Record<string, ToolDef> = {
     description:
       "Get information from the page or an element. Properties: text, html, value, attribute (needs attr), url, title, count, box, styles (needs style_property). Target with ref (from snapshot) or selector.",
     parameters: {
-      property: { type: "string", description: "What to get: text, html, value, attribute, url, title, count, box, styles", enum: ["text", "html", "value", "attribute", "url", "title", "count", "box", "styles"] },
-      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
-      selector: { type: "string", description: "CSS selector (alternative to ref)" },
-      attr: { type: "string", description: "Attribute name (required when property=attribute)" },
-      style_property: { type: "string", description: "Computed style property (optional for property=styles)" },
+      property: {
+        type: "string",
+        description:
+          "What to get: text, html, value, attribute, url, title, count, box, styles",
+        enum: [
+          "text",
+          "html",
+          "value",
+          "attribute",
+          "url",
+          "title",
+          "count",
+          "box",
+          "styles",
+        ],
+      },
+      ref: {
+        type: "string",
+        description:
+          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector (alternative to ref)",
+      },
+      attr: {
+        type: "string",
+        description: "Attribute name (required when property=attribute)",
+      },
+      style_property: {
+        type: "string",
+        description: "Computed style property (optional for property=styles)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["property"],
@@ -1299,16 +2255,50 @@ const tools: Record<string, ToolDef> = {
         if (args.property === "url" || args.property === "title") {
           const tid = args.tab_id || (await activeTabIdFallback());
           const tab = await fetchTab(tid);
-          return { blocks: textBlocks(args.property === "url" ? tab.url : tab.title) };
+          return {
+            blocks: textBlocks(args.property === "url" ? tab.url : tab.title),
+          };
         }
-        if (!sel) return outError(new Error("get requires ref or selector for property=" + args.property));
-        const result = await sendBrowserCommand("get_element", { selector: sel, property: args.property, attr: args.attr || null, styleProperty: args.style_property || null, tabId: args.tab_id });
-        if (result && typeof result === "object" && "exists" in result && !result.exists) return outError(new Error("Element not found: " + sel));
-        const keys = ["exists", "tag", "id", "className", "role", "text", "value", "count", "box", "styles", "html"];
+        if (!sel)
+          return outError(
+            new Error(
+              "get requires ref or selector for property=" + args.property,
+            ),
+          );
+        const result = await sendBrowserCommand("get_element", {
+          selector: sel,
+          property: args.property,
+          attr: args.attr || null,
+          styleProperty: args.style_property || null,
+          tabId: args.tab_id,
+        });
+        if (
+          result &&
+          typeof result === "object" &&
+          "exists" in result &&
+          !result.exists
+        )
+          return outError(new Error("Element not found: " + sel));
+        const keys = [
+          "exists",
+          "tag",
+          "id",
+          "className",
+          "role",
+          "text",
+          "value",
+          "count",
+          "box",
+          "styles",
+          "html",
+        ];
         const compact: Record<string, any> = {};
-        for (const k of keys) if (result && result[k] !== undefined) compact[k] = result[k];
+        for (const k of keys)
+          if (result && result[k] !== undefined) compact[k] = result[k];
         return outJson(compact);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1316,9 +2306,30 @@ const tools: Record<string, ToolDef> = {
     description:
       "Check an element's state. Checks: visible, hidden, enabled, disabled, checked, unchecked, editable, readonly, focused. Returns true/false. Target with ref or selector.",
     parameters: {
-      check: { type: "string", description: "State to check", enum: ["visible", "hidden", "enabled", "disabled", "checked", "unchecked", "editable", "readonly", "focused"] },
-      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
-      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      check: {
+        type: "string",
+        description: "State to check",
+        enum: [
+          "visible",
+          "hidden",
+          "enabled",
+          "disabled",
+          "checked",
+          "unchecked",
+          "editable",
+          "readonly",
+          "focused",
+        ],
+      },
+      ref: {
+        type: "string",
+        description:
+          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector (alternative to ref)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["check"],
@@ -1326,9 +2337,15 @@ const tools: Record<string, ToolDef> = {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
         if (!sel) return outError(new Error("is requires ref or selector"));
-        const result = await sendBrowserCommand("is_element", { selector: sel, check: args.check, tabId: args.tab_id });
+        const result = await sendBrowserCommand("is_element", {
+          selector: sel,
+          check: args.check,
+          tabId: args.tab_id,
+        });
         return { blocks: textBlocks(String(result.result)) };
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1337,26 +2354,56 @@ const tools: Record<string, ToolDef> = {
       "Fill an input field: clear it, then type the text. For fields where you want to APPEND text, use type. Target with ref or selector.",
     parameters: {
       text: { type: "string", description: "Text to fill" },
-      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
-      selector: { type: "string", description: "CSS selector (alternative to ref)" },
-      press_enter: { type: "boolean", description: "Press Enter after filling (default: false)" },
+      ref: {
+        type: "string",
+        description:
+          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector (alternative to ref)",
+      },
+      press_enter: {
+        type: "boolean",
+        description: "Press Enter after filling (default: false)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["text"],
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        const result = await sendBrowserCommand("fill", { text: args.text, selector: sel, tabId: args.tab_id, pressEnter: args.press_enter });
-        return outJson({ filled: true, text_length: String(args.text).length, element: sel || "(focused)", tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("fill", {
+          text: args.text,
+          selector: sel,
+          tabId: args.tab_id,
+          pressEnter: args.press_enter,
+        });
+        return outJson({
+          filled: true,
+          text_length: String(args.text).length,
+          element: sel || "(focused)",
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
   check: {
-    description: "Check a checkbox or radio button. No-op if already checked. Target with ref or selector.",
+    description:
+      "Check a checkbox or radio button. No-op if already checked. Target with ref or selector.",
     parameters: {
-      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
-      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      ref: {
+        type: "string",
+        description:
+          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector (alternative to ref)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
@@ -1364,35 +2411,70 @@ const tools: Record<string, ToolDef> = {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
         if (!sel) return outError(new Error("check requires ref or selector"));
-        const result = await sendBrowserCommand("check", { selector: sel, tabId: args.tab_id });
-        return outJson({ checked: true, already: !!result.already, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("check", {
+          selector: sel,
+          tabId: args.tab_id,
+        });
+        return outJson({
+          checked: true,
+          already: !!result.already,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
   uncheck: {
-    description: "Uncheck a checkbox or radio button. No-op if already unchecked. Target with ref or selector.",
+    description:
+      "Uncheck a checkbox or radio button. No-op if already unchecked. Target with ref or selector.",
     parameters: {
-      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
-      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      ref: {
+        type: "string",
+        description:
+          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector (alternative to ref)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        if (!sel) return outError(new Error("uncheck requires ref or selector"));
-        const result = await sendBrowserCommand("uncheck", { selector: sel, tabId: args.tab_id });
-        return outJson({ checked: false, already: !!result.already, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        if (!sel)
+          return outError(new Error("uncheck requires ref or selector"));
+        const result = await sendBrowserCommand("uncheck", {
+          selector: sel,
+          tabId: args.tab_id,
+        });
+        return outJson({
+          checked: false,
+          already: !!result.already,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
   focus: {
-    description: "Focus an element. Scrolls it into view first. Target with ref or selector.",
+    description:
+      "Focus an element. Scrolls it into view first. Target with ref or selector.",
     parameters: {
-      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
-      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      ref: {
+        type: "string",
+        description:
+          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector (alternative to ref)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
@@ -1400,79 +2482,150 @@ const tools: Record<string, ToolDef> = {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
         if (!sel) return outError(new Error("focus requires ref or selector"));
-        const result = await sendBrowserCommand("focus", { selector: sel, tabId: args.tab_id });
+        const result = await sendBrowserCommand("focus", {
+          selector: sel,
+          tabId: args.tab_id,
+        });
         return outJson({ focused: true, element: sel, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
   dblclick: {
-    description: "Double-click an element. Equivalent to click with click_count=2. Target with ref, selector, or coordinates.",
+    description:
+      "Double-click an element. Equivalent to click with click_count=2. Target with ref, selector, or coordinates.",
     parameters: {
-      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
-      selector: { type: "string", description: "CSS selector (alternative to ref)" },
+      ref: {
+        type: "string",
+        description:
+          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector (alternative to ref)",
+      },
       x: { type: "number", description: "X coordinate (if no selector/ref)" },
       y: { type: "number", description: "Y coordinate (if no selector/ref)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      stealth: { type: "boolean", description: "Use stealth mode on anti-bot protected sites" },
+      stealth: {
+        type: "boolean",
+        description: "Use stealth mode on anti-bot protected sites",
+      },
     },
     required: [],
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        const result = await sendBrowserCommand("dblclick", { selector: sel, x: args.x, y: args.y, tabId: args.tab_id, stealth: args.stealth });
-        return outJson({ double_clicked: true, element: result.element || sel || "(" + args.x + "," + args.y + ")", tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("dblclick", {
+          selector: sel,
+          x: args.x,
+          y: args.y,
+          tabId: args.tab_id,
+          stealth: args.stealth,
+        });
+        return outJson({
+          double_clicked: true,
+          element: result.element || sel || "(" + args.x + "," + args.y + ")",
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
   reload: {
     description: "Reload the current page.",
     parameters: {
       tab_id: { type: "number", description: "Target tab ID (optional)" },
-      wait_for: { type: "string", description: "Wait for load (default) after reload", enum: ["load", "domcontentloaded"] },
+      wait_for: {
+        type: "string",
+        description: "Wait for load (default) after reload",
+        enum: ["load", "domcontentloaded"],
+      },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("reload", { tabId: args.tab_id, waitFor: args.wait_for });
-        return outJson({ reloaded: true, url: result.url, title: result.title, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("reload", {
+          tabId: args.tab_id,
+          waitFor: args.wait_for,
+        });
+        return outJson({
+          reloaded: true,
+          url: result.url,
+          title: result.title,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
   back: {
     description: "Go back in history.",
-    parameters: { tab_id: { type: "number", description: "Target tab ID (optional)" } },
+    parameters: {
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
     required: [],
     handler: async (args) => {
       try {
         const result = await sendBrowserCommand("back", { tabId: args.tab_id });
-        return outJson({ navigated: "back", url: result.url, title: result.title, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        return outJson({
+          navigated: "back",
+          url: result.url,
+          title: result.title,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
   forward: {
     description: "Go forward in history.",
-    parameters: { tab_id: { type: "number", description: "Target tab ID (optional)" } },
+    parameters: {
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("forward", { tabId: args.tab_id });
-        return outJson({ navigated: "forward", url: result.url, title: result.title, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+        const result = await sendBrowserCommand("forward", {
+          tabId: args.tab_id,
+        });
+        return outJson({
+          navigated: "forward",
+          url: result.url,
+          title: result.title,
+          tab_id: result.tabId,
+        });
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
   close: {
     description: "Close a browser tab. Defaults to the active tab.",
-    parameters: { tab_id: { type: "number", description: "Tab ID to close (optional - active tab)" } },
+    parameters: {
+      tab_id: {
+        type: "number",
+        description: "Tab ID to close (optional - active tab)",
+      },
+    },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("close", { tabId: args.tab_id });
+        const result = await sendBrowserCommand("close", {
+          tabId: args.tab_id,
+        });
         return outJson({ closed: result.closed });
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1481,19 +2634,44 @@ const tools: Record<string, ToolDef> = {
       "Read, write, or clear localStorage/sessionStorage of the current page. " +
       "Use type='local' (default) or 'session'. Actions: get (all or one key), set, remove, clear.",
     parameters: {
-      action: { type: "string", description: "get (default), set, remove, or clear", enum: ["get", "set", "remove", "clear"] },
-      type: { type: "string", description: "local (localStorage, default) or session (sessionStorage)", enum: ["local", "session"] },
-      key: { type: "string", description: "Storage key (required for set/remove; optional for get - returns all if omitted)" },
-      value: { type: "string", description: "Value to store (required for set)" },
+      action: {
+        type: "string",
+        description: "get (default), set, remove, or clear",
+        enum: ["get", "set", "remove", "clear"],
+      },
+      type: {
+        type: "string",
+        description:
+          "local (localStorage, default) or session (sessionStorage)",
+        enum: ["local", "session"],
+      },
+      key: {
+        type: "string",
+        description:
+          "Storage key (required for set/remove; optional for get - returns all if omitted)",
+      },
+      value: {
+        type: "string",
+        description: "Value to store (required for set)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action"],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("storage", { action: args.action || "get", type: args.type || "local", key: args.key, value: args.value, tabId: args.tab_id });
-        if (result && typeof result === "object" && result.error) return outError(new Error(String(result.error)));
+        const result = await sendBrowserCommand("storage", {
+          action: args.action || "get",
+          type: args.type || "local",
+          key: args.key,
+          value: args.value,
+          tabId: args.tab_id,
+        });
+        if (result && typeof result === "object" && result.error)
+          return outError(new Error(String(result.error)));
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1501,28 +2679,60 @@ const tools: Record<string, ToolDef> = {
     description:
       "Export the current page as a PDF. The PDF is stored on the Browser MCP server and returned as file_id - fetch it via GET /files/<file_id> (local) or read it with file_read.",
     parameters: {
-      format: { type: "string", description: "Paper format: letter (default), a4, a3, a5, legal, tabloid", enum: ["letter", "a4", "a3", "a5", "legal", "tabloid"] },
-      landscape: { type: "boolean", description: "Landscape orientation (default: false)" },
-      print_background: { type: "boolean", description: "Print background graphics (default: true)" },
-      display_header_footer: { type: "boolean", description: "Display header/footer (default: false)" },
+      format: {
+        type: "string",
+        description:
+          "Paper format: letter (default), a4, a3, a5, legal, tabloid",
+        enum: ["letter", "a4", "a3", "a5", "legal", "tabloid"],
+      },
+      landscape: {
+        type: "boolean",
+        description: "Landscape orientation (default: false)",
+      },
+      print_background: {
+        type: "boolean",
+        description: "Print background graphics (default: true)",
+      },
+      display_header_footer: {
+        type: "boolean",
+        description: "Display header/footer (default: false)",
+      },
       scale: { type: "number", description: "Scale factor (default: 1)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("pdf", { tabId: args.tab_id, format: args.format, landscape: args.landscape, printBackground: args.print_background, displayHeaderFooter: args.display_header_footer, scale: args.scale });
+        const result = await sendBrowserCommand("pdf", {
+          tabId: args.tab_id,
+          format: args.format,
+          landscape: args.landscape,
+          printBackground: args.print_background,
+          displayHeaderFooter: args.display_header_footer,
+          scale: args.scale,
+        });
         if (!result?.data) return outError(new Error("No PDF data returned"));
         const buf = Buffer.from(result.data, "base64");
-        const file = saveFile("page-" + Date.now() + ".pdf", buf, "application/pdf");
+        const file = saveFile(
+          "page-" + Date.now() + ".pdf",
+          buf,
+          "application/pdf",
+        );
         return outJson({
           file_id: file.id,
           filename: file.name,
           size: file.size,
           tab_id: result.tabId,
-          message: "PDF exported. Fetch via GET http://localhost:" + port + "/files/" + file.id + " or file_read.",
+          message:
+            "PDF exported. Fetch via GET http://localhost:" +
+            port +
+            "/files/" +
+            file.id +
+            " or file_read.",
         });
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1530,46 +2740,119 @@ const tools: Record<string, ToolDef> = {
     description:
       "Configure browser behavior. Properties: viewport (width/height), device (preset name), geo (latitude/longitude), offline (true/false), headers (object of extra HTTP headers), media (color_scheme/reduced_motion). Emulation persists until cleared via emulate action=clear or tab close.",
     parameters: {
-      property: { type: "string", description: "What to set: viewport, device, geo, offline, headers, media", enum: ["viewport", "device", "geo", "offline", "headers", "media"] },
-      width: { type: "number", description: "Viewport width (property=viewport)" },
-      height: { type: "number", description: "Viewport height (property=viewport)" },
-      device_scale_factor: { type: "number", description: "Device pixel ratio (property=viewport)" },
-      is_mobile: { type: "boolean", description: "Mobile mode (property=viewport)" },
-      has_touch: { type: "boolean", description: "Touch support (property=viewport)" },
-      device_name: { type: "string", description: "Device preset: 'Desktop Chrome', 'iPhone 14', 'iPhone 13', 'Pixel 5', 'iPad Pro', 'Galaxy S21' (property=device)" },
+      property: {
+        type: "string",
+        description:
+          "What to set: viewport, device, geo, offline, headers, media",
+        enum: ["viewport", "device", "geo", "offline", "headers", "media"],
+      },
+      width: {
+        type: "number",
+        description: "Viewport width (property=viewport)",
+      },
+      height: {
+        type: "number",
+        description: "Viewport height (property=viewport)",
+      },
+      device_scale_factor: {
+        type: "number",
+        description: "Device pixel ratio (property=viewport)",
+      },
+      is_mobile: {
+        type: "boolean",
+        description: "Mobile mode (property=viewport)",
+      },
+      has_touch: {
+        type: "boolean",
+        description: "Touch support (property=viewport)",
+      },
+      device_name: {
+        type: "string",
+        description:
+          "Device preset: 'Desktop Chrome', 'iPhone 14', 'iPhone 13', 'Pixel 5', 'iPad Pro', 'Galaxy S21' (property=device)",
+      },
       latitude: { type: "number", description: "Latitude (property=geo)" },
       longitude: { type: "number", description: "Longitude (property=geo)" },
-      offline: { type: "boolean", description: "Go offline (property=offline)" },
-      headers: { type: "object", description: "Extra HTTP headers, e.g. {\"X-Custom\": \"v\"} (property=headers)" },
-      color_scheme: { type: "string", description: "prefers-color-scheme: light or dark (property=media)" },
-      reduced_motion: { type: "string", description: "prefers-reduced-motion: reduce or no-preference (property=media)" },
+      offline: {
+        type: "boolean",
+        description: "Go offline (property=offline)",
+      },
+      headers: {
+        type: "object",
+        description:
+          'Extra HTTP headers, e.g. {"X-Custom": "v"} (property=headers)',
+      },
+      color_scheme: {
+        type: "string",
+        description: "prefers-color-scheme: light or dark (property=media)",
+      },
+      reduced_motion: {
+        type: "string",
+        description:
+          "prefers-reduced-motion: reduce or no-preference (property=media)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["property"],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("set", { property: args.property, width: args.width, height: args.height, deviceScaleFactor: args.device_scale_factor, isMobile: args.is_mobile, hasTouch: args.has_touch, deviceName: args.device_name, latitude: args.latitude, longitude: args.longitude, offline: args.offline, headers: args.headers, colorScheme: args.color_scheme, reducedMotion: args.reduced_motion, tabId: args.tab_id });
+        const result = await sendBrowserCommand("set", {
+          property: args.property,
+          width: args.width,
+          height: args.height,
+          deviceScaleFactor: args.device_scale_factor,
+          isMobile: args.is_mobile,
+          hasTouch: args.has_touch,
+          deviceName: args.device_name,
+          latitude: args.latitude,
+          longitude: args.longitude,
+          offline: args.offline,
+          headers: args.headers,
+          colorScheme: args.color_scheme,
+          reducedMotion: args.reduced_motion,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
   highlight: {
-    description: "Flash a highlight box around an element so the user can see what the agent is targeting (debug helper). Target with ref or selector.",
+    description:
+      "Flash a highlight box around an element so the user can see what the agent is targeting (debug helper). Target with ref or selector.",
     parameters: {
-      ref: { type: "string", description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector." },
-      selector: { type: "string", description: "CSS selector (alternative to ref)" },
-      duration: { type: "number", description: "Highlight duration in ms (default: 2000)" },
+      ref: {
+        type: "string",
+        description:
+          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector (alternative to ref)",
+      },
+      duration: {
+        type: "number",
+        description: "Highlight duration in ms (default: 2000)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        if (!sel) return outError(new Error("highlight requires ref or selector"));
-        const result = await sendBrowserCommand("highlight", { selector: sel, duration: args.duration, tabId: args.tab_id });
+        if (!sel)
+          return outError(new Error("highlight requires ref or selector"));
+        const result = await sendBrowserCommand("highlight", {
+          selector: sel,
+          duration: args.duration,
+          tabId: args.tab_id,
+        });
         return outJson({ highlighted: sel, tab_id: result.tabId });
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1577,16 +2860,32 @@ const tools: Record<string, ToolDef> = {
     description:
       "Manage browser windows. Actions: list (all windows + tabs), create (new window, optionally with url), close (by window_id).",
     parameters: {
-      action: { type: "string", description: "list (default), create, or close", enum: ["list", "create", "close"] },
-      url: { type: "string", description: "URL to open in the new window (action=create)" },
-      window_id: { type: "number", description: "Window ID to close (action=close)" },
+      action: {
+        type: "string",
+        description: "list (default), create, or close",
+        enum: ["list", "create", "close"],
+      },
+      url: {
+        type: "string",
+        description: "URL to open in the new window (action=create)",
+      },
+      window_id: {
+        type: "number",
+        description: "Window ID to close (action=close)",
+      },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("window", { action: args.action || "list", url: args.url, windowId: args.window_id });
+        const result = await sendBrowserCommand("window", {
+          action: args.action || "list",
+          url: args.url,
+          windowId: args.window_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1594,18 +2893,38 @@ const tools: Record<string, ToolDef> = {
     description:
       "View or clear browser console messages. action=view returns console.log/error/warn/info etc. captured for this tab; supports filter (substring) and types (array). action=clear empties the buffer. Capture starts from the first call (Runtime domain enabled lazily) - reload the page to capture early messages.",
     parameters: {
-      action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
-      filter: { type: "string", description: "Case-insensitive substring filter on messages" },
-      types: { type: "array", items: { type: "string" }, description: "Message types to include: log, error, warn, info, debug, ..." },
+      action: {
+        type: "string",
+        description: "view (default) or clear",
+        enum: ["view", "clear"],
+      },
+      filter: {
+        type: "string",
+        description: "Case-insensitive substring filter on messages",
+      },
+      types: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Message types to include: log, error, warn, info, debug, ...",
+      },
       clear: { type: "boolean", description: "Clear messages after viewing" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("console", { action: args.action || "view", filter: args.filter, types: args.types, clear: args.clear, tabId: args.tab_id });
+        const result = await sendBrowserCommand("console", {
+          action: args.action || "view",
+          filter: args.filter,
+          types: args.types,
+          clear: args.clear,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1613,17 +2932,31 @@ const tools: Record<string, ToolDef> = {
     description:
       "View or clear uncaught JavaScript errors on the page. action=view returns captured runtime exceptions; supports filter. action=clear empties the buffer. Capture starts from the first call - reload to capture early errors.",
     parameters: {
-      action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
-      filter: { type: "string", description: "Case-insensitive substring filter on error messages" },
+      action: {
+        type: "string",
+        description: "view (default) or clear",
+        enum: ["view", "clear"],
+      },
+      filter: {
+        type: "string",
+        description: "Case-insensitive substring filter on error messages",
+      },
       clear: { type: "boolean", description: "Clear errors after viewing" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("errors", { action: args.action || "view", filter: args.filter, clear: args.clear, tabId: args.tab_id });
+        const result = await sendBrowserCommand("errors", {
+          action: args.action || "view",
+          filter: args.filter,
+          clear: args.clear,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1631,16 +2964,29 @@ const tools: Record<string, ToolDef> = {
     description:
       "View or clear captured network requests for the tab. action=view returns {url, method, status, mimeType, resourceType, size, duration}; supports filter (URL substring). action=clear empties the log. Capture starts from the first call - reload/navigate to capture requests.",
     parameters: {
-      action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
-      filter: { type: "string", description: "Case-insensitive substring filter on request URLs" },
+      action: {
+        type: "string",
+        description: "view (default) or clear",
+        enum: ["view", "clear"],
+      },
+      filter: {
+        type: "string",
+        description: "Case-insensitive substring filter on request URLs",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
-        const result = await sendBrowserCommand("network", { action: args.action || "view", filter: args.filter, tabId: args.tab_id });
+        const result = await sendBrowserCommand("network", {
+          action: args.action || "view",
+          filter: args.filter,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1648,37 +2994,79 @@ const tools: Record<string, ToolDef> = {
     description:
       "Wait for a condition. Modes: timeout (sleep), load (page load), url (substring or regex match), text (page contains text), selector (element appears, use ref or selector). Returns once the condition is met or after timeout (default 10s, max 30s).",
     parameters: {
-      mode: { type: "string", description: "timeout, load, url, text, or selector", enum: ["timeout", "load", "url", "text", "selector"] },
-      timeout: { type: "number", description: "Max wait in ms (default 10000, max 30000)" },
+      mode: {
+        type: "string",
+        description: "timeout, load, url, text, or selector",
+        enum: ["timeout", "load", "url", "text", "selector"],
+      },
+      timeout: {
+        type: "number",
+        description: "Max wait in ms (default 10000, max 30000)",
+      },
       url: { type: "string", description: "URL substring or regex (mode=url)" },
       text: { type: "string", description: "Text to wait for (mode=text)" },
-      ref: { type: "string", description: "Element ref from snapshot (mode=selector, alternative to selector)" },
+      ref: {
+        type: "string",
+        description:
+          "Element ref from snapshot (mode=selector, alternative to selector)",
+      },
       selector: { type: "string", description: "CSS selector (mode=selector)" },
-      state: { type: "string", description: "Load state for mode=load: load (default) or domcontentloaded", enum: ["load", "domcontentloaded"] },
+      state: {
+        type: "string",
+        description:
+          "Load state for mode=load: load (default) or domcontentloaded",
+        enum: ["load", "domcontentloaded"],
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
       try {
-        const sel = args.mode === "selector" && args.ref ? resolveRefArg(args) : args.selector;
-        const result = await sendBrowserCommand("wait", { mode: args.mode || "timeout", selector: sel, text: args.text, url: args.url, timeout: args.timeout, state: args.state, tabId: args.tab_id });
+        const sel =
+          args.mode === "selector" && args.ref
+            ? resolveRefArg(args)
+            : args.selector;
+        const result = await sendBrowserCommand("wait", {
+          mode: args.mode || "timeout",
+          selector: sel,
+          text: args.text,
+          url: args.url,
+          timeout: args.timeout,
+          state: args.state,
+          tabId: args.tab_id,
+        });
         return outJson(result);
-      } catch (e) { return outError(e); }
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
   history: {
     description:
       "Browser history. Actions: search (query - recent history items), visits (url - visit timestamps for one URL), clear (delete all history).",
     parameters: {
-      action: { type: "string", description: "search, visits, or clear", enum: ["search", "visits", "clear"] },
+      action: {
+        type: "string",
+        description: "search, visits, or clear",
+        enum: ["search", "visits", "clear"],
+      },
       query: { type: "string", description: "Search query for action=search" },
       url: { type: "string", description: "URL for action=visits" },
       max_results: { type: "number", description: "Max results (default 50)" },
     },
     required: ["action"],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("history", { action: args.action, query: args.query, url: args.url, maxResults: args.max_results }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("history", {
+          action: args.action,
+          query: args.query,
+          url: args.url,
+          maxResults: args.max_results,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1688,13 +3076,25 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       title: { type: "string", description: "Notification title" },
       message: { type: "string", description: "Notification body message" },
-      url: { type: "string", description: "URL to open when the notification is clicked (optional)" },
+      url: {
+        type: "string",
+        description: "URL to open when the notification is clicked (optional)",
+      },
       priority: { type: "number", description: "-2 to 2 (default 0)" },
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("notify", { title: args.title, message: args.message, url: args.url, priority: args.priority }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("notify", {
+          title: args.title,
+          message: args.message,
+          url: args.url,
+          priority: args.priority,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1702,17 +3102,47 @@ const tools: Record<string, ToolDef> = {
     description:
       "Manage Chrome tab groups. Actions: list (all groups), create (tab_ids + optional title/color), add (tab_ids + group_id), remove (tab_ids), update (group_id + title/color/collapsed), list_tabs (group_id).",
     parameters: {
-      action: { type: "string", description: "list (default), create, add, remove, update, or list_tabs", enum: ["list", "create", "add", "remove", "update", "list_tabs"] },
-      tab_ids: { type: "array", items: { type: "number" }, description: "Tab IDs for create/add/remove" },
-      group_id: { type: "number", description: "Group ID for add/update/list_tabs" },
+      action: {
+        type: "string",
+        description:
+          "list (default), create, add, remove, update, or list_tabs",
+        enum: ["list", "create", "add", "remove", "update", "list_tabs"],
+      },
+      tab_ids: {
+        type: "array",
+        items: { type: "number" },
+        description: "Tab IDs for create/add/remove",
+      },
+      group_id: {
+        type: "number",
+        description: "Group ID for add/update/list_tabs",
+      },
       title: { type: "string", description: "Group title" },
-      color: { type: "string", description: "grey, blue, red, yellow, green, pink, purple, cyan, or orange" },
-      collapsed: { type: "boolean", description: "Whether the group is collapsed" },
+      color: {
+        type: "string",
+        description:
+          "grey, blue, red, yellow, green, pink, purple, cyan, or orange",
+      },
+      collapsed: {
+        type: "boolean",
+        description: "Whether the group is collapsed",
+      },
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("groups", { action: args.action || "list", tabIds: args.tab_ids, groupId: args.group_id, title: args.title, color: args.color, collapsed: args.collapsed }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("groups", {
+          action: args.action || "list",
+          tabIds: args.tab_ids,
+          groupId: args.group_id,
+          title: args.title,
+          color: args.color,
+          collapsed: args.collapsed,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1720,16 +3150,33 @@ const tools: Record<string, ToolDef> = {
     description:
       "Manage browser bookmarks. Actions: tree (all bookmarks), create (title + optional parent_id/url), search (query).",
     parameters: {
-      action: { type: "string", description: "tree (default), create, or search", enum: ["tree", "create", "search"] },
+      action: {
+        type: "string",
+        description: "tree (default), create, or search",
+        enum: ["tree", "create", "search"],
+      },
       parent_id: { type: "string", description: "Parent folder ID for create" },
       title: { type: "string", description: "Bookmark/folder title" },
-      url: { type: "string", description: "Bookmark URL (omit to create a folder)" },
+      url: {
+        type: "string",
+        description: "Bookmark URL (omit to create a folder)",
+      },
       query: { type: "string", description: "Search query" },
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("bookmarks", { action: args.action || "tree", parentId: args.parent_id, title: args.title, url: args.url, query: args.query }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("bookmarks", {
+          action: args.action || "tree",
+          parentId: args.parent_id,
+          title: args.title,
+          url: args.url,
+          query: args.query,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1737,13 +3184,27 @@ const tools: Record<string, ToolDef> = {
     description:
       "Browser session tools. Actions: recent (recently closed tabs/windows), restore (reopen the most recently closed tab/window).",
     parameters: {
-      action: { type: "string", description: "recent (default) or restore", enum: ["recent", "restore"] },
-      max_results: { type: "number", description: "Max recently-closed items (default 10, max 25)" },
+      action: {
+        type: "string",
+        description: "recent (default) or restore",
+        enum: ["recent", "restore"],
+      },
+      max_results: {
+        type: "number",
+        description: "Max recently-closed items (default 10, max 25)",
+      },
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("session", { action: args.action || "recent", maxResults: args.max_results }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("session", {
+          action: args.action || "recent",
+          maxResults: args.max_results,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1751,21 +3212,65 @@ const tools: Record<string, ToolDef> = {
     description:
       "Intercept network requests in a tab. Actions: enable (patterns - URL substrings, empty = all), status (paused requests), continue (request_id or url), fail (request_id/url + error_reason), fulfill (request_id/url + status/body/content_type/headers), stop.",
     parameters: {
-      action: { type: "string", description: "enable, status, continue, fail, fulfill, or stop", enum: ["enable", "status", "continue", "fail", "fulfill", "stop"] },
-      patterns: { type: "array", items: { type: "string" }, description: "URL substrings to intercept (empty = all requests)" },
-      request_id: { type: "string", description: "Paused request ID (from status)" },
-      url: { type: "string", description: "Alternative to request_id: URL substring of the paused request" },
+      action: {
+        type: "string",
+        description: "enable, status, continue, fail, fulfill, or stop",
+        enum: ["enable", "status", "continue", "fail", "fulfill", "stop"],
+      },
+      patterns: {
+        type: "array",
+        items: { type: "string" },
+        description: "URL substrings to intercept (empty = all requests)",
+      },
+      request_id: {
+        type: "string",
+        description: "Paused request ID (from status)",
+      },
+      url: {
+        type: "string",
+        description:
+          "Alternative to request_id: URL substring of the paused request",
+      },
       status: { type: "number", description: "HTTP status for fulfill" },
-      body: { type: "string", description: "Response body for fulfill (plain text; base64 strings are passed through)" },
-      content_type: { type: "string", description: "Content-Type header for fulfill" },
-      headers: { type: "object", description: "Extra response headers for fulfill" },
-      error_reason: { type: "string", description: "Fail reason: Failed, Aborted, TimedOut, AccessDenied, ConnectionClosed/Reset/Refused/Aborted/Failed, NameNotResolved, InternetDisconnected, AddressUnreachable" },
+      body: {
+        type: "string",
+        description:
+          "Response body for fulfill (plain text; base64 strings are passed through)",
+      },
+      content_type: {
+        type: "string",
+        description: "Content-Type header for fulfill",
+      },
+      headers: {
+        type: "object",
+        description: "Extra response headers for fulfill",
+      },
+      error_reason: {
+        type: "string",
+        description:
+          "Fail reason: Failed, Aborted, TimedOut, AccessDenied, ConnectionClosed/Reset/Refused/Aborted/Failed, NameNotResolved, InternetDisconnected, AddressUnreachable",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action"],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("intercept", { action: args.action, patterns: args.patterns, requestId: args.request_id, url: args.url, status: args.status, body: args.body, contentType: args.content_type, headers: args.headers, errorReason: args.error_reason, tabId: args.tab_id }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("intercept", {
+          action: args.action,
+          patterns: args.patterns,
+          requestId: args.request_id,
+          url: args.url,
+          status: args.status,
+          body: args.body,
+          contentType: args.content_type,
+          headers: args.headers,
+          errorReason: args.error_reason,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1777,8 +3282,12 @@ const tools: Record<string, ToolDef> = {
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("har", { tabId: args.tab_id }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("har", { tabId: args.tab_id });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1786,15 +3295,31 @@ const tools: Record<string, ToolDef> = {
     description:
       "View or clear captured WebSocket frames for a tab (filter by URL substring). Capture starts on the first call - reload to capture early frames.",
     parameters: {
-      action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
-      filter: { type: "string", description: "Case-insensitive substring filter on frame URLs" },
+      action: {
+        type: "string",
+        description: "view (default) or clear",
+        enum: ["view", "clear"],
+      },
+      filter: {
+        type: "string",
+        description: "Case-insensitive substring filter on frame URLs",
+      },
       clear: { type: "boolean", description: "Clear frames after viewing" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("ws", { action: args.action || "view", filter: args.filter, clear: args.clear, tabId: args.tab_id }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("ws", {
+          action: args.action || "view",
+          filter: args.filter,
+          clear: args.clear,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1802,17 +3327,41 @@ const tools: Record<string, ToolDef> = {
     description:
       "Simulate network conditions. Presets: offline, slow-3g, 3g, 4g, wifi. Or pass custom latency (ms) / download_throughput / upload_throughput (bytes/sec). clear resets to normal.",
     parameters: {
-      preset: { type: "string", description: "offline, slow-3g, 3g, 4g, or wifi", enum: ["offline", "slow-3g", "3g", "4g", "wifi"] },
+      preset: {
+        type: "string",
+        description: "offline, slow-3g, 3g, 4g, or wifi",
+        enum: ["offline", "slow-3g", "3g", "4g", "wifi"],
+      },
       latency: { type: "number", description: "Custom latency in ms" },
-      download_throughput: { type: "number", description: "Custom download throughput in bytes/sec (-1 = unlimited)" },
-      upload_throughput: { type: "number", description: "Custom upload throughput in bytes/sec (-1 = unlimited)" },
-      clear: { type: "boolean", description: "Reset to normal network conditions" },
+      download_throughput: {
+        type: "number",
+        description: "Custom download throughput in bytes/sec (-1 = unlimited)",
+      },
+      upload_throughput: {
+        type: "number",
+        description: "Custom upload throughput in bytes/sec (-1 = unlimited)",
+      },
+      clear: {
+        type: "boolean",
+        description: "Reset to normal network conditions",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("throttle", { preset: args.preset, latency: args.latency, downloadThroughput: args.download_throughput, uploadThroughput: args.upload_throughput, clear: args.clear, tabId: args.tab_id }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("throttle", {
+          preset: args.preset,
+          latency: args.latency,
+          downloadThroughput: args.download_throughput,
+          uploadThroughput: args.upload_throughput,
+          clear: args.clear,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1820,14 +3369,26 @@ const tools: Record<string, ToolDef> = {
     description:
       "Inspect page resources. Actions: list (resources loaded by the page via Performance API), read (url - read a resource body from the browser cache; requires network capture active while it loaded).",
     parameters: {
-      action: { type: "string", description: "list (default) or read", enum: ["list", "read"] },
+      action: {
+        type: "string",
+        description: "list (default) or read",
+        enum: ["list", "read"],
+      },
       url: { type: "string", description: "Resource URL for read" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("resources", { action: args.action || "list", url: args.url, tabId: args.tab_id }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("resources", {
+          action: args.action || "list",
+          url: args.url,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1835,14 +3396,30 @@ const tools: Record<string, ToolDef> = {
     description:
       "CSS usage coverage. Actions: start (begin tracking), stop (stop + report), report (one-shot measure: starts, waits wait_ms, reports). Returns per-stylesheet used percentages.",
     parameters: {
-      action: { type: "string", description: "start, stop, or report (default)", enum: ["start", "stop", "report"] },
-      wait_ms: { type: "number", description: "Wait before measuring for report (default 1000, max 10000)" },
+      action: {
+        type: "string",
+        description: "start, stop, or report (default)",
+        enum: ["start", "stop", "report"],
+      },
+      wait_ms: {
+        type: "number",
+        description:
+          "Wait before measuring for report (default 1000, max 10000)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("coverage", { action: args.action || "report", waitMs: args.wait_ms, tabId: args.tab_id }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("coverage", {
+          action: args.action || "report",
+          waitMs: args.wait_ms,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1850,15 +3427,36 @@ const tools: Record<string, ToolDef> = {
     description:
       "Force CSS pseudo-class states (:hover/:focus/:active/...) on an element so you can inspect hover/focus styles without real interaction. action=clear resets.",
     parameters: {
-      action: { type: "string", description: "force (default) or clear", enum: ["force", "clear"] },
-      selector: { type: "string", description: "CSS selector of the target element" },
-      states: { type: "array", items: { type: "string" }, description: "Pseudo-classes to force, e.g. [\"hover\"] (default: [\"hover\"])" },
+      action: {
+        type: "string",
+        description: "force (default) or clear",
+        enum: ["force", "clear"],
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector of the target element",
+      },
+      states: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          'Pseudo-classes to force, e.g. ["hover"] (default: ["hover"])',
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["selector"],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("pseudo", { action: args.action || "force", selector: args.selector, states: args.states, tabId: args.tab_id }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("pseudo", {
+          action: args.action || "force",
+          selector: args.selector,
+          states: args.states,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1866,15 +3464,33 @@ const tools: Record<string, ToolDef> = {
     description:
       "Get computed styles and matched CSS rules for an element (selector or ref). Optionally filter computed styles by property.",
     parameters: {
-      ref: { type: "string", description: "Element ref from snapshot (alternative to selector)" },
-      selector: { type: "string", description: "CSS selector of the target element" },
-      property: { type: "string", description: "Filter computed styles to one CSS property (optional)" },
+      ref: {
+        type: "string",
+        description: "Element ref from snapshot (alternative to selector)",
+      },
+      selector: {
+        type: "string",
+        description: "CSS selector of the target element",
+      },
+      property: {
+        type: "string",
+        description: "Filter computed styles to one CSS property (optional)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
-      try { const sel = args.ref ? resolveRefArg(args) : args.selector; const result = await sendBrowserCommand("styles", { selector: sel, property: args.property, tabId: args.tab_id }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const sel = args.ref ? resolveRefArg(args) : args.selector;
+        const result = await sendBrowserCommand("styles", {
+          selector: sel,
+          property: args.property,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1882,18 +3498,39 @@ const tools: Record<string, ToolDef> = {
     description:
       "Clear site data for an origin (cookies, local_storage, cache, indexed_db, service_workers). Defaults to the current tab's origin.",
     parameters: {
-      origin: { type: "string", description: "Origin to clear (defaults to current tab's origin)" },
-      cookies: { type: "boolean", description: "Clear cookies (default true if nothing else specified)" },
+      origin: {
+        type: "string",
+        description: "Origin to clear (defaults to current tab's origin)",
+      },
+      cookies: {
+        type: "boolean",
+        description: "Clear cookies (default true if nothing else specified)",
+      },
       local_storage: { type: "boolean", description: "Clear localStorage" },
       cache: { type: "boolean", description: "Clear HTTP cache" },
       indexed_db: { type: "boolean", description: "Clear IndexedDB" },
-      service_workers: { type: "boolean", description: "Unregister service workers" },
+      service_workers: {
+        type: "boolean",
+        description: "Unregister service workers",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("site_data", { origin: args.origin, cookies: args.cookies, localStorage: args.local_storage, cache: args.cache, indexedDB: args.indexed_db, serviceWorkers: args.service_workers, tabId: args.tab_id }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("site_data", {
+          origin: args.origin,
+          cookies: args.cookies,
+          localStorage: args.local_storage,
+          cache: args.cache,
+          indexedDB: args.indexed_db,
+          serviceWorkers: args.service_workers,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1901,12 +3538,22 @@ const tools: Record<string, ToolDef> = {
     description:
       "Extension diagnostics. Actions: state (version, mode, captures, vault status), reload (reload the extension), reconnect (force gateway reconnect).",
     parameters: {
-      action: { type: "string", description: "state (default), reload, or reconnect", enum: ["state", "reload", "reconnect"] },
+      action: {
+        type: "string",
+        description: "state (default), reload, or reconnect",
+        enum: ["state", "reload", "reconnect"],
+      },
     },
     required: [],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("extension", { action: args.action || "state" }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("extension", {
+          action: args.action || "state",
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
 
@@ -1914,26 +3561,76 @@ const tools: Record<string, ToolDef> = {
     description:
       "Encrypted in-browser credential store (like a password manager). Actions: init (create vault with master password), unlock (master), lock, status, set (origin/name/username/password/url), get (origin/name - returns credentials), list, delete, fill (fill a login form on the current page from the vault - credentials never leave the extension).",
     parameters: {
-      action: { type: "string", description: "init, unlock, lock, status, set, get, list, delete, or fill", enum: ["init", "unlock", "lock", "status", "set", "get", "list", "delete", "fill"] },
-      master: { type: "string", description: "Master password for init/unlock (never stored)" },
-      origin: { type: "string", description: "Site origin (defaults to current tab's origin)" },
-      name: { type: "string", description: "Entry name, e.g. \"work\" or \"personal\"" },
+      action: {
+        type: "string",
+        description:
+          "init, unlock, lock, status, set, get, list, delete, or fill",
+        enum: [
+          "init",
+          "unlock",
+          "lock",
+          "status",
+          "set",
+          "get",
+          "list",
+          "delete",
+          "fill",
+        ],
+      },
+      master: {
+        type: "string",
+        description: "Master password for init/unlock (never stored)",
+      },
+      origin: {
+        type: "string",
+        description: "Site origin (defaults to current tab's origin)",
+      },
+      name: {
+        type: "string",
+        description: 'Entry name, e.g. "work" or "personal"',
+      },
       username: { type: "string", description: "Username for set" },
       password: { type: "string", description: "Password for set" },
       url: { type: "string", description: "Optional URL for the entry" },
-      username_selector: { type: "string", description: "CSS selector for the username field (fill only; defaults to auto-detect)" },
-      password_selector: { type: "string", description: "CSS selector for the password field (fill only; defaults to auto-detect)" },
-      submit: { type: "boolean", description: "Press Enter after filling (fill only)" },
+      username_selector: {
+        type: "string",
+        description:
+          "CSS selector for the username field (fill only; defaults to auto-detect)",
+      },
+      password_selector: {
+        type: "string",
+        description:
+          "CSS selector for the password field (fill only; defaults to auto-detect)",
+      },
+      submit: {
+        type: "boolean",
+        description: "Press Enter after filling (fill only)",
+      },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action"],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("vault", { action: args.action, master: args.master, origin: args.origin, name: args.name, username: args.username, password: args.password, url: args.url, usernameSelector: args.username_selector, passwordSelector: args.password_selector, submit: args.submit, tabId: args.tab_id }); return outJson(result); }
-      catch (e) { return outError(e); }
+      try {
+        const result = await sendBrowserCommand("vault", {
+          action: args.action,
+          master: args.master,
+          origin: args.origin,
+          name: args.name,
+          username: args.username,
+          password: args.password,
+          url: args.url,
+          usernameSelector: args.username_selector,
+          passwordSelector: args.password_selector,
+          submit: args.submit,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
     },
   },
-
-};// ============================================================================
+}; // ============================================================================
 // JSON-RPC dispatch (MCP Streamable-HTTP style, same as code-mcp)
 // ============================================================================
 
@@ -1942,9 +3639,17 @@ type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 async function handle(msg: Json): Promise<Json | null> {
   const { id, method, params } = (msg ?? {}) as any;
   const ok = (result: Json) => ({ jsonrpc: "2.0", id, result });
-  const err = (code: number, message: string) => ({ jsonrpc: "2.0", id, error: { code, message } });
+  const err = (code: number, message: string) => ({
+    jsonrpc: "2.0",
+    id,
+    error: { code, message },
+  });
 
-  if (params !== undefined && params !== null && (typeof params !== "object" || Array.isArray(params))) {
+  if (
+    params !== undefined &&
+    params !== null &&
+    (typeof params !== "object" || Array.isArray(params))
+  ) {
     return err(-32602, "Invalid params: expected object");
   }
   try {
@@ -1965,13 +3670,27 @@ async function handle(msg: Json): Promise<Json | null> {
           const props = { ...t.parameters };
           if (REF_SUPPORTING.has(name) && !props.ref) props.ref = REF_PARAM;
           if (name === "drag") {
-            if (!props.from_ref) props.from_ref = { ...REF_PARAM, description: "Element ref for drag source (alternative to from_selector)" };
-            if (!props.to_ref) props.to_ref = { ...REF_PARAM, description: "Element ref for drag target (alternative to to_selector)" };
+            if (!props.from_ref)
+              props.from_ref = {
+                ...REF_PARAM,
+                description:
+                  "Element ref for drag source (alternative to from_selector)",
+              };
+            if (!props.to_ref)
+              props.to_ref = {
+                ...REF_PARAM,
+                description:
+                  "Element ref for drag target (alternative to to_selector)",
+              };
           }
           return {
             name,
             description: t.description,
-            inputSchema: { type: "object", properties: props, required: t.required },
+            inputSchema: {
+              type: "object",
+              properties: props,
+              required: t.required,
+            },
           };
         }),
       });
@@ -1983,7 +3702,10 @@ async function handle(msg: Json): Promise<Json | null> {
       const resolvedArgs = resolveArgsRefs(name, args ?? {});
       const result = await t.handler(resolvedArgs);
       if (result && typeof result === "object" && "blocks" in result) {
-        return ok({ content: result.blocks, ...(result.isError ? { isError: true } : {}) });
+        return ok({
+          content: result.blocks,
+          ...(result.isError ? { isError: true } : {}),
+        });
       }
       const text = typeof result === "string" ? result : jsonOut(result);
       return ok({ content: [{ type: "text", text }] });
@@ -2007,44 +3729,78 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Max-Age": "86400",
 };
 
-function contentDisposition(type: "attachment" | "inline", filename: string): string {
+function contentDisposition(
+  type: "attachment" | "inline",
+  filename: string,
+): string {
   const safe = filename.replace(/[\r\n"]/g, "_").replace(/[^\x20-\x7E]/g, "_");
-  return type + "; filename=\"" + safe + "\"";
+  return type + '; filename="' + safe + '"';
 }
 
 async function handleFileUpload(req: Request): Promise<Response> {
   const declaredLen = Number(req.headers.get("content-length") ?? "0");
   if (Number.isFinite(declaredLen) && declaredLen > MAX_FILE_BYTES) {
-    return Response.json({ ok: false, error: "upload exceeds " + MAX_FILE_BYTES + " bytes" }, { status: 413 });
+    return Response.json(
+      { ok: false, error: "upload exceeds " + MAX_FILE_BYTES + " bytes" },
+      { status: 413 },
+    );
   }
   let form: FormData;
   try {
     form = await req.formData();
   } catch (e: any) {
-    return Response.json({ ok: false, error: "bad form: " + (e?.message ?? e) }, { status: 400 });
+    return Response.json(
+      { ok: false, error: "bad form: " + (e?.message ?? e) },
+      { status: 400 },
+    );
   }
   const f = form.get("file");
-  if (!(f instanceof File)) return Response.json({ ok: false, error: "missing 'file' field" }, { status: 400 });
+  if (!(f instanceof File))
+    return Response.json(
+      { ok: false, error: "missing 'file' field" },
+      { status: 400 },
+    );
   if (f.size > MAX_FILE_BYTES) {
-    return Response.json({ ok: false, error: "file too large (max " + MAX_FILE_BYTES + " bytes)" }, { status: 413 });
+    return Response.json(
+      { ok: false, error: "file too large (max " + MAX_FILE_BYTES + " bytes)" },
+      { status: 413 },
+    );
   }
   const buf = new Uint8Array(await f.arrayBuffer());
-  const stored = saveFile(f.name || "upload.bin", buf, f.type || "application/octet-stream");
+  const stored = saveFile(
+    f.name || "upload.bin",
+    buf,
+    f.type || "application/octet-stream",
+  );
   return Response.json({
     ok: true,
-    file: { id: stored.id, name: stored.name, mimetype: stored.mimetype, size: stored.size, sha256: stored.sha256 },
+    file: {
+      id: stored.id,
+      name: stored.name,
+      mimetype: stored.mimetype,
+      size: stored.size,
+      sha256: stored.sha256,
+    },
   });
 }
 
 function handleFileDownload(id: string, inline: boolean): Response | null {
-  if (!FILE_ID_PATTERN.test(id)) return Response.json({ ok: false, error: "invalid file id" }, { status: 400 });
+  if (!FILE_ID_PATTERN.test(id))
+    return Response.json(
+      { ok: false, error: "invalid file id" },
+      { status: 400 },
+    );
   const f = getFile(id);
-  if (!f || !existsSync(f.path)) return Response.json({ ok: false, error: "not found" }, { status: 404 });
+  if (!f || !existsSync(f.path))
+    return Response.json({ ok: false, error: "not found" }, { status: 404 });
   const blob = Bun.file(f.path);
   return new Response(blob, {
     headers: {
       "Content-Type": f.mimetype,
-      "Content-Disposition": contentDisposition(inline ? "inline" : "attachment", f.name),
+      "Content-Disposition": contentDisposition(
+        inline ? "inline" : "attachment",
+        f.name,
+      ),
       "Content-Length": String(f.size),
       "Referrer-Policy": "no-referrer",
     },
@@ -2061,26 +3817,42 @@ function renderStatusPage(): string {
   if (gatewayActive || gatewayMode) {
     const gwClass = gw.connected ? "ok" : "bad";
     const gwLabel = gw.connected ? "connected" : "connecting/reconnecting";
-    gwHtml = "<div>Gateway: <span class=\"" + gwClass + "\">" + gwLabel + "</span>" + (gw.deviceId ? " (device " + gw.deviceId + ")" : "") + "</div>";
+    gwHtml =
+      '<div>Gateway: <span class="' +
+      gwClass +
+      '">' +
+      gwLabel +
+      "</span>" +
+      (gw.deviceId ? " (device " + gw.deviceId + ")" : "") +
+      "</div>";
   } else {
-    gwHtml = "<div>Gateway: <span class=\"bad\">not configured</span> (start with --gateway &lt;domain&gt;)</div>";
+    gwHtml =
+      '<div>Gateway: <span class="bad">not configured</span> (start with --gateway &lt;domain&gt;)</div>';
   }
   const lines = [
     "<!DOCTYPE html>",
-    "<html><head><meta charset=\"utf-8\"><title>Browser MCP</title>",
+    '<html><head><meta charset="utf-8"><title>Browser MCP</title>',
     "<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:40px auto;padding:0 16px;color:#111}",
     "h1{font-size:20px}.card{border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin:12px 0}",
     ".ok{color:#16a34a;font-weight:600}.bad{color:#9ca3af;font-weight:600}",
     "code{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:13px}</style></head><body>",
     "<h1>Browser MCP</h1>",
-    "<div class=\"card\">",
-    "<div>Extension: <span class=\"" + extClass + "\">" + extLabel + "</span></div>",
-    "<div>Extensions: " + (exts.length > 0 ? exts.join(", ") : "none") + "</div>",
+    '<div class="card">',
+    '<div>Extension: <span class="' +
+      extClass +
+      '">' +
+      extLabel +
+      "</span></div>",
+    "<div>Extensions: " +
+      (exts.length > 0 ? exts.join(", ") : "none") +
+      "</div>",
     "<div>MCP tools: " + String(Object.keys(tools).length) + "</div>",
     gwHtml,
     "</div>",
-    "<div class=\"card\">",
-    "<div><b>MCP endpoint:</b> <code>POST http://localhost:" + String(port) + "/mcp</code></div>",
+    '<div class="card">',
+    "<div><b>MCP endpoint:</b> <code>POST http://localhost:" +
+      String(port) +
+      "/mcp</code></div>",
     "<div><b>Extension zip:</b> <code>GET /extension</code></div>",
     "<div><b>Health:</b> <code>GET /health</code></div>",
     "</div>",
@@ -2090,7 +3862,10 @@ function renderStatusPage(): string {
 }
 
 // Gateway status shared with the status page
-const gatewayStatus: { connected: boolean; deviceId: string | null } = { connected: false, deviceId: null };
+const gatewayStatus: { connected: boolean; deviceId: string | null } = {
+  connected: false,
+  deviceId: null,
+};
 
 const server = Bun.serve({
   port,
@@ -2102,21 +3877,35 @@ const server = Bun.serve({
 
     // CORS preflight for agent-facing endpoints only (browser-based MCP clients).
     // Origin-gated: browser clients from non-local origins get 403 (CSRF defense).
-    if (req.method === "OPTIONS" && (path === "/mcp" || path.startsWith("/files/"))) {
+    if (
+      req.method === "OPTIONS" &&
+      (path === "/mcp" || path.startsWith("/files/"))
+    ) {
       const oc = checkMcpOrigin(req);
-      if (!oc.ok) return new Response("Rejected: " + oc.reason, { status: 403 });
+      if (!oc.ok)
+        return new Response("Rejected: " + oc.reason, { status: 403 });
       return new Response(null, { status: 204, headers: corsHeadersFor(req) });
     }
 
     // Status page + health (no auth - localhost only by default)
-    if (req.method === "GET" && path === "/") return new Response(renderStatusPage(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    if (req.method === "GET" && path === "/")
+      return new Response(renderStatusPage(), {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
     if (req.method === "GET" && path === "/health") {
       return Response.json({
         ok: true,
         extensionConnected: isExtensionConnected(),
         extensions: Array.from(connections.keys()),
         tools: Object.keys(tools).length,
-        gateway: (gatewayActive || gatewayMode) ? { configured: true, connected: gatewayStatus.connected, deviceId: gatewayStatus.deviceId } : { configured: false },
+        gateway:
+          gatewayActive || gatewayMode
+            ? {
+                configured: true,
+                connected: gatewayStatus.connected,
+                deviceId: gatewayStatus.deviceId,
+              }
+            : { configured: false },
       });
     }
 
@@ -2124,12 +3913,16 @@ const server = Bun.serve({
     if (req.method === "GET" && path === "/extension") {
       const zipPath = join(import.meta.dir, "dist", "browser-extension.zip");
       if (!existsSync(zipPath)) {
-        return new Response("Extension zip not found. Run: bun build-extension.ts", { status: 404 });
+        return new Response(
+          "Extension zip not found. Run: bun build-extension.ts",
+          { status: 404 },
+        );
       }
       return new Response(Bun.file(zipPath), {
         headers: {
           "Content-Type": "application/zip",
-          "Content-Disposition": "attachment; filename=\"browser-mcp-extension.zip\"",
+          "Content-Disposition":
+            'attachment; filename="browser-mcp-extension.zip"',
           "Content-Length": String(statSync(zipPath).size),
         },
       });
@@ -2137,13 +3930,18 @@ const server = Bun.serve({
 
     // Extension file endpoints (uploaded downloads, files for upload)
     if (path === "/browser/files/upload" && req.method === "POST") {
-      if (!checkExtensionToken(req, url)) return new Response("unauthorized", { status: 401 });
+      if (!checkExtensionToken(req, url))
+        return new Response("unauthorized", { status: 401 });
       const resp = await handleFileUpload(req);
-      return new Response(resp.body, { status: resp.status, headers: { "Content-Type": "application/json" } });
+      return new Response(resp.body, {
+        status: resp.status,
+        headers: { "Content-Type": "application/json" },
+      });
     }
     const extFileMatch = path.match(/^\/browser\/files\/([A-Za-z0-9]+)$/);
     if (extFileMatch && req.method === "GET") {
-      if (!checkExtensionToken(req, url)) return new Response("unauthorized", { status: 401 });
+      if (!checkExtensionToken(req, url))
+        return new Response("unauthorized", { status: 401 });
       const resp = handleFileDownload(extFileMatch[1], false);
       return resp ?? new Response("not found", { status: 404 });
     }
@@ -2151,18 +3949,38 @@ const server = Bun.serve({
     // Agent file endpoints (origin-gated like /mcp - CSRF defense for browser clients)
     if (path === "/files/upload" && req.method === "POST") {
       const oc = checkMcpOrigin(req);
-      if (!oc.ok) return new Response("Rejected: " + oc.reason, { status: 403 });
-      if (!checkMcpToken(req, url)) return new Response("unauthorized", { status: 401, headers: corsHeadersFor(req) });
+      if (!oc.ok)
+        return new Response("Rejected: " + oc.reason, { status: 403 });
+      if (!checkMcpToken(req, url))
+        return new Response("unauthorized", {
+          status: 401,
+          headers: corsHeadersFor(req),
+        });
       const resp = await handleFileUpload(req);
-      return new Response(resp.body, { status: resp.status, headers: { "Content-Type": "application/json", ...corsHeadersFor(req) } });
+      return new Response(resp.body, {
+        status: resp.status,
+        headers: { "Content-Type": "application/json", ...corsHeadersFor(req) },
+      });
     }
     const agentFileMatch = path.match(/^\/files\/([A-Za-z0-9]+)$/);
     if (agentFileMatch && req.method === "GET") {
       const oc = checkMcpOrigin(req);
-      if (!oc.ok) return new Response("Rejected: " + oc.reason, { status: 403 });
-      if (!checkMcpToken(req, url)) return new Response("unauthorized", { status: 401, headers: corsHeadersFor(req) });
+      if (!oc.ok)
+        return new Response("Rejected: " + oc.reason, { status: 403 });
+      if (!checkMcpToken(req, url))
+        return new Response("unauthorized", {
+          status: 401,
+          headers: corsHeadersFor(req),
+        });
       const resp = handleFileDownload(agentFileMatch[1], true);
-      if (resp) return new Response(resp.body, { status: resp.status, headers: { ...Object.fromEntries(resp.headers), ...corsHeadersFor(req) } });
+      if (resp)
+        return new Response(resp.body, {
+          status: resp.status,
+          headers: {
+            ...Object.fromEntries(resp.headers),
+            ...corsHeadersFor(req),
+          },
+        });
       return new Response("not found", { status: 404 });
     }
 
@@ -2170,11 +3988,15 @@ const server = Bun.serve({
     if (path === "/browser/ws") {
       const originCheck = checkExtensionOrigin(req);
       if (!originCheck.ok) {
-        console.warn("[browser-mcp] Rejected /browser/ws: " + originCheck.reason);
+        console.warn(
+          "[browser-mcp] Rejected /browser/ws: " + originCheck.reason,
+        );
         return new Response("Rejected: " + originCheck.reason, { status: 403 });
       }
       if (!checkExtensionToken(req, url)) {
-        return new Response("Auth token required. Provide ?token= parameter.", { status: 401 });
+        return new Response("Auth token required. Provide ?token= parameter.", {
+          status: 401,
+        });
       }
       const rawExtId = url.searchParams.get("extId");
       if (rawExtId && !EXT_ID_PATTERN.test(rawExtId)) {
@@ -2183,13 +4005,15 @@ const server = Bun.serve({
       // Gateway link params from the popup: device ID + token (code-mcp style).
       const rawDeviceId = url.searchParams.get("deviceId");
       if (rawDeviceId && !DEVICE_ID_PATTERN.test(rawDeviceId)) {
-        return new Response("Invalid device ID (use letters, digits, _ or -)", { status: 400 });
+        return new Response("Invalid device ID (use letters, digits, _ or -)", {
+          status: 400,
+        });
       }
       const rawWsToken = url.searchParams.get("token");
       if (rawWsToken && !TOKEN_PATTERN.test(rawWsToken)) {
         return new Response("Invalid token format", { status: 400 });
       }
-      const extId = rawExtId || ("ext_" + randomBytes(4).toString("hex"));
+      const extId = rawExtId || "ext_" + randomBytes(4).toString("hex");
       const success = srv.upgrade(req, {
         data: {
           type: "browser-extension" as const,
@@ -2205,41 +4029,64 @@ const server = Bun.serve({
 
     // MCP JSON-RPC endpoint (origin-gated - a malicious website must not be able to drive the browser)
     if (path === "/mcp") {
-      if (req.method !== "POST") return new Response("POST /mcp", { status: 405, headers: CORS_HEADERS });
+      if (req.method !== "POST")
+        return new Response("POST /mcp", {
+          status: 405,
+          headers: CORS_HEADERS,
+        });
       const oc = checkMcpOrigin(req);
-      if (!oc.ok) return new Response("Rejected: " + oc.reason, { status: 403 });
-      if (!checkMcpToken(req, url)) return new Response("unauthorized", { status: 401, headers: corsHeadersFor(req) });
+      if (!oc.ok)
+        return new Response("Rejected: " + oc.reason, { status: 403 });
+      if (!checkMcpToken(req, url))
+        return new Response("unauthorized", {
+          status: 401,
+          headers: corsHeadersFor(req),
+        });
       let body: any;
       try {
         body = await req.json();
       } catch {
         return Response.json(
-          { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } },
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32700, message: "Parse error" },
+          },
           { status: 400, headers: corsHeadersFor(req) },
         );
       }
       const resp = await handle(body);
-      if (resp === null) return new Response(null, { status: 204, headers: corsHeadersFor(req) });
+      if (resp === null)
+        return new Response(null, {
+          status: 204,
+          headers: corsHeadersFor(req),
+        });
       return Response.json(resp, { headers: corsHeadersFor(req) });
     }
 
     return new Response("not found", { status: 404 });
   },
   websocket: {
-    open(ws) { handleBrowserWsOpen(ws); },
-    close(ws) { handleBrowserWsClose(ws); },
-    message(ws, message) { handleBrowserWsMessage(ws, message); },
+    open(ws) {
+      handleBrowserWsOpen(ws);
+    },
+    close(ws) {
+      handleBrowserWsClose(ws);
+    },
+    message(ws, message) {
+      handleBrowserWsMessage(ws, message);
+    },
     perMessageDeflate: false,
   },
 });
-
 
 // ============================================================================
 // Gateway client (mirrors code-mcp.ts protocol)
 // ============================================================================
 
 /** Default gateway when the extension provides a device ID (popup ID field). */
-const DEFAULT_GATEWAY_DOMAIN = process.env.BMCP_GATEWAY_DOMAIN ?? "code-mcp.tuanm.dev";
+const DEFAULT_GATEWAY_DOMAIN =
+  process.env.BMCP_GATEWAY_DOMAIN ?? "code-mcp.tuanm.dev";
 /**
  * Effective /mcp auth token: CLI --token by default; overridden by the popup
  * token when the extension connects (the popup is the source of truth for the
@@ -2256,7 +4103,9 @@ let currentGatewayDeviceId: string | null = null;
 function stopGatewayClient(): void {
   gatewayGeneration++;
   if (gatewayWs) {
-    try { gatewayWs.close(); } catch {}
+    try {
+      gatewayWs.close();
+    } catch {}
     gatewayWs = null;
   }
 }
@@ -2281,7 +4130,10 @@ function startGatewayClient(requestedDeviceId: string): void {
 
   function connect() {
     if (gen !== gatewayGeneration) return; // superseded by a newer client
-    const isLocal = /^(localhost|127\.|192\.168\.|10\.|172\.16\.|ws:\/\/|http:\/\/)/.test(domain);
+    const isLocal =
+      /^(localhost|127\.|192\.168\.|10\.|172\.16\.|ws:\/\/|http:\/\/)/.test(
+        domain,
+      );
     const scheme = isLocal ? "ws" : "wss";
     const url = scheme + "://" + domain + "/ws/" + gwDevice;
     console.error("[" + gwDevice + "] Connecting to gateway " + url + " ...");
@@ -2289,7 +4141,9 @@ function startGatewayClient(requestedDeviceId: string): void {
     try {
       ws = new WebSocket(url);
     } catch (err: any) {
-      console.error("[" + gwDevice + "] WS create failed: " + (err?.message ?? err));
+      console.error(
+        "[" + gwDevice + "] WS create failed: " + (err?.message ?? err),
+      );
       scheduleRetry();
       return;
     }
@@ -2301,17 +4155,36 @@ function startGatewayClient(requestedDeviceId: string): void {
     const armWatchdog = () => {
       if (watchdogTimer) clearTimeout(watchdogTimer);
       watchdogTimer = setTimeout(() => {
-        console.error("[" + gwDevice + "] no inbound for " + WATCHDOG_MS + "ms; forcing reconnect");
-        try { ws.close(); } catch {}
+        console.error(
+          "[" +
+            gwDevice +
+            "] no inbound for " +
+            WATCHDOG_MS +
+            "ms; forcing reconnect",
+        );
+        try {
+          ws.close();
+        } catch {}
       }, WATCHDOG_MS);
     };
     const cleanup = () => {
-      if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
-      if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
+      if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
+      }
+      if (watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
     };
 
     ws.addEventListener("open", () => {
-      if (gen !== gatewayGeneration) { try { ws.close(); } catch {} return; }
+      if (gen !== gatewayGeneration) {
+        try {
+          ws.close();
+        } catch {}
+        return;
+      }
       console.error("[" + gwDevice + "] Connected to gateway");
       retries = 0;
       currentGatewayDeviceId = gwDevice;
@@ -2320,10 +4193,18 @@ function startGatewayClient(requestedDeviceId: string): void {
       ws.send(JSON.stringify({ type: "register", deviceId: gwDevice }));
       armWatchdog();
       keepaliveTimer = setInterval(() => {
-        try { ws.send(JSON.stringify({ type: "keepalive" })); }
-        catch (err: any) {
-          console.error("[" + gwDevice + "] keepalive send failed: " + (err?.message ?? err));
-          try { ws.close(); } catch {}
+        try {
+          ws.send(JSON.stringify({ type: "keepalive" }));
+        } catch (err: any) {
+          console.error(
+            "[" +
+              gwDevice +
+              "] keepalive send failed: " +
+              (err?.message ?? err),
+          );
+          try {
+            ws.close();
+          } catch {}
         }
       }, 25_000);
     });
@@ -2334,7 +4215,9 @@ function startGatewayClient(requestedDeviceId: string): void {
         const msg = JSON.parse(e.data as string);
         if (msg?.type === "keepalive-ack") return;
         if (msg?.id == null || !msg?.request) return;
-        const tokenParam = msg.token ? "?token=" + encodeURIComponent(msg.token) : "";
+        const tokenParam = msg.token
+          ? "?token=" + encodeURIComponent(msg.token)
+          : "";
         try {
           const res = await fetch(localMcpUrl + tokenParam, {
             method: "POST",
@@ -2343,19 +4226,45 @@ function startGatewayClient(requestedDeviceId: string): void {
             signal: AbortSignal.timeout(60_000),
           });
           let resp: any;
-          try { resp = await res.json(); } catch {
+          try {
+            resp = await res.json();
+          } catch {
             const text = await res.text().catch(() => "");
-            resp = { jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "upstream HTTP " + res.status + ": " + text.slice(0, 200) } };
+            resp = {
+              jsonrpc: "2.0",
+              id: msg.id,
+              error: {
+                code: -32000,
+                message:
+                  "upstream HTTP " + res.status + ": " + text.slice(0, 200),
+              },
+            };
           }
           ws.send(JSON.stringify({ id: msg.id, response: resp }));
         } catch (err: any) {
           try {
-            ws.send(JSON.stringify({ id: msg.id, response: { jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "upstream error: " + (err?.message ?? err) } } }));
+            ws.send(
+              JSON.stringify({
+                id: msg.id,
+                response: {
+                  jsonrpc: "2.0",
+                  id: msg.id,
+                  error: {
+                    code: -32000,
+                    message: "upstream error: " + (err?.message ?? err),
+                  },
+                },
+              }),
+            );
           } catch {}
-          console.error("[" + gwDevice + "] handle error: " + (err?.message ?? err));
+          console.error(
+            "[" + gwDevice + "] handle error: " + (err?.message ?? err),
+          );
         }
       } catch (err: any) {
-        console.error("[" + gwDevice + "] gateway message error: " + (err?.message ?? err));
+        console.error(
+          "[" + gwDevice + "] gateway message error: " + (err?.message ?? err),
+        );
       }
     });
 
@@ -2364,19 +4273,37 @@ function startGatewayClient(requestedDeviceId: string): void {
       if (gen !== gatewayGeneration) return; // superseded - a newer client owns the device slot
       gatewayWs = null;
       gatewayStatus.connected = false;
-      const delay = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * Math.pow(2, Math.min(retries, 6))) + Math.floor(Math.random() * 500);
+      const delay =
+        Math.min(
+          MAX_DELAY_MS,
+          BASE_DELAY_MS * Math.pow(2, Math.min(retries, 6)),
+        ) + Math.floor(Math.random() * 500);
       retries++;
-      console.error("[" + gwDevice + "] Disconnected; retry #" + retries + " in " + delay + "ms");
+      console.error(
+        "[" +
+          gwDevice +
+          "] Disconnected; retry #" +
+          retries +
+          " in " +
+          delay +
+          "ms",
+      );
       setTimeout(connect, delay);
     });
 
     ws.addEventListener("error", (err: any) => {
-      console.error("[" + gwDevice + "] Gateway WS error: " + (err?.message ?? err));
+      console.error(
+        "[" + gwDevice + "] Gateway WS error: " + (err?.message ?? err),
+      );
     });
 
     function scheduleRetry() {
       if (gen !== gatewayGeneration) return;
-      const delay = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * Math.pow(2, Math.min(retries, 6))) + Math.floor(Math.random() * 500);
+      const delay =
+        Math.min(
+          MAX_DELAY_MS,
+          BASE_DELAY_MS * Math.pow(2, Math.min(retries, 6)),
+        ) + Math.floor(Math.random() * 500);
       retries++;
       console.error("[" + gwDevice + "] Retrying in " + delay + "ms");
       setTimeout(connect, delay);
@@ -2395,21 +4322,28 @@ if (gatewayMode) {
 
 loadFileIndex();
 console.error(
-  "browser-mcp listening on http://" + (bindAddr === "0.0.0.0" ? "localhost" : bindAddr) + ":" + port + "/mcp"
-  + (token ? " (auth)" : " (no auth)")
-  + " - tools: " + Object.keys(tools).join(", ")
-  + (gatewayMode ? " - gateway: " + gatewayDomain : ""),
+  "browser-mcp listening on http://" +
+    (bindAddr === "0.0.0.0" ? "localhost" : bindAddr) +
+    ":" +
+    port +
+    "/mcp" +
+    (token ? " (auth)" : " (no auth)") +
+    " - tools: " +
+    Object.keys(tools).join(", ") +
+    (gatewayMode ? " - gateway: " + gatewayDomain : ""),
 );
 if (gatewayMode && !token) {
   console.error(
     "WARNING: gateway mode is enabled WITHOUT --token. Anyone who can reach the gateway can control this browser. " +
-    "Configure the same token on the gateway device to lock it down.",
+      "Configure the same token on the gateway device to lock it down.",
   );
 }
 if (bindAddr !== "127.0.0.1" && !token) {
   console.error(
-    "WARNING: binding to " + bindAddr + " without --token exposes browser control on the network. " +
-    "Use --token when binding to 0.0.0.0.",
+    "WARNING: binding to " +
+      bindAddr +
+      " without --token exposes browser control on the network. " +
+      "Use --token when binding to 0.0.0.0.",
   );
 }
 

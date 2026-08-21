@@ -8,7 +8,8 @@
     "check": "bun build browser-mcp.ts --no-bundle > /dev/null && bun build scripts/build-extension.ts --no-bundle > /dev/null && for f in packages/browser-extension/src/*.js; do node --check \"$f\" || exit 1; done",
     "test": "bun scripts/test-integration.ts",
     "build": "bun scripts/build-extension.ts",
-    "icons": "cd packages/browser-extension/icons && for s in 16 48 128; do rsvg-convert -w $s -h $s -o app-icon-$s.png mcp-gray.svg; rsvg-convert -w $s -h $s -o connected-$s.png mcp-green.svg; done"
+    "icons": "cd packages/browser-extension/icons && for s in 16 48 128; do rsvg-convert -w $s -h $s -o app-icon-$s.png mcp-gray.svg; rsvg-convert -w $s -h $s -o connected-$s.png mcp-green.svg; done",
+    "format": "prettier --write ."
   },
   "devDependencies": {
     "@types/bun": "latest"

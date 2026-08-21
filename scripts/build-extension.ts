@@ -3,13 +3,21 @@
  * build-extension.ts - Zip the browser extension into dist/browser-extension.zip
  * (pure JS, store method, dependency-free). The server serves it at GET /extension.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join, relative } from "node:path";
 
 /** Short git hash of the current commit (used as version_name in the manifest). */
 function gitHash(): string {
   try {
-    const out = Bun.spawnSync(["git", "rev-parse", "--short=7", "HEAD"], { stdout: "pipe" });
+    const out = Bun.spawnSync(["git", "rev-parse", "--short=7", "HEAD"], {
+      stdout: "pipe",
+    });
     const h = (out.stdout || "").toString().trim();
     return /^[0-9a-f]{4,}$/.test(h) ? h : "dev";
   } catch {
@@ -31,16 +39,29 @@ function crc32(buf: Uint8Array): number {
   }
   return ~c >>> 0;
 }
-function u16(v: number): Uint8Array { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, v, true); return b; }
-function u32(v: number): Uint8Array { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v >>> 0, true); return b; }
+function u16(v: number): Uint8Array {
+  const b = new Uint8Array(2);
+  new DataView(b.buffer).setUint16(0, v, true);
+  return b;
+}
+function u32(v: number): Uint8Array {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, v >>> 0, true);
+  return b;
+}
 function concat(parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);
   let o = 0;
-  for (const p of parts) { out.set(p, o); o += p.length; }
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
   return out;
 }
-function buildZip(files: Array<{ name: string; data: Uint8Array }>): Uint8Array {
+function buildZip(
+  files: Array<{ name: string; data: Uint8Array }>,
+): Uint8Array {
   const encoder = new TextEncoder();
   const locals: Uint8Array[] = [];
   const centrals: Uint8Array[] = [];
@@ -49,16 +70,61 @@ function buildZip(files: Array<{ name: string; data: Uint8Array }>): Uint8Array 
     const nameBytes = encoder.encode(f.name);
     const crc = crc32(f.data);
     // local file header (signature 0x04034b50)
-    locals.push(new Uint8Array([...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(f.data.length), ...u32(f.data.length), ...u16(nameBytes.length), ...u16(0), ...nameBytes]));
+    locals.push(
+      new Uint8Array([
+        ...u32(0x04034b50),
+        ...u16(20),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u32(crc),
+        ...u32(f.data.length),
+        ...u32(f.data.length),
+        ...u16(nameBytes.length),
+        ...u16(0),
+        ...nameBytes,
+      ]),
+    );
     locals.push(f.data);
     // central directory entry (signature 0x02014b50)
-    centrals.push(new Uint8Array([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(f.data.length), ...u32(f.data.length), ...u16(nameBytes.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset), ...nameBytes]));
+    centrals.push(
+      new Uint8Array([
+        ...u32(0x02014b50),
+        ...u16(20),
+        ...u16(20),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u32(crc),
+        ...u32(f.data.length),
+        ...u32(f.data.length),
+        ...u16(nameBytes.length),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u32(0),
+        ...u32(offset),
+        ...nameBytes,
+      ]),
+    );
     offset += 30 + nameBytes.length + f.data.length;
   }
   const cdStart = offset;
   const cd = concat(centrals);
   const cdSize = cd.length;
-  const eocd = new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(cdSize), ...u32(cdStart), ...u16(0)]); // EOCD
+  const eocd = new Uint8Array([
+    ...u32(0x06054b50),
+    ...u16(0),
+    ...u16(0),
+    ...u16(files.length),
+    ...u16(files.length),
+    ...u32(cdSize),
+    ...u32(cdStart),
+    ...u16(0),
+  ]); // EOCD
   return concat([...locals, cd, eocd]);
 }
 
@@ -83,7 +149,9 @@ function main() {
           // Tag the build with the git hash so the popup can show it.
           const manifest = JSON.parse(new TextDecoder().decode(data));
           manifest.version_name = gitHash();
-          data = new TextEncoder().encode(JSON.stringify(manifest, null, 2) + "\n");
+          data = new TextEncoder().encode(
+            JSON.stringify(manifest, null, 2) + "\n",
+          );
         }
         files.push({ name: rel, data });
       }
@@ -92,7 +160,15 @@ function main() {
   walk(EXT_DIR);
   const zip = buildZip(files);
   writeFileSync(OUT, zip);
-  console.log("[build-extension] wrote " + OUT + " (" + zip.length + " bytes, " + files.length + " files)");
+  console.log(
+    "[build-extension] wrote " +
+      OUT +
+      " (" +
+      zip.length +
+      " bytes, " +
+      files.length +
+      " files)",
+  );
 }
 
 main();

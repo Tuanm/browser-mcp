@@ -54,7 +54,10 @@ a CSS selector.
 - **Vault** — `vault`: encrypted in-browser credential store (master
   password → PBKDF2 → AES-256-GCM, stored in `chrome.storage.local`, never
   sent to the gateway). Actions: `init`, `unlock`, `lock`, `status`, `set`,
-  `get`, `list`, `delete`
+  `get`, `list`, `delete`, `fill` (`fill` fills a login form
+  from the vault — the secrets never leave the extension). `auth` also
+  accepts `vault_name` to supply HTTP Basic/Digest credentials from the
+  unlocked vault instead of passing them as tool arguments.
 
 ## Local server
 

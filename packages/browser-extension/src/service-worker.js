@@ -29,14 +29,14 @@ const SESSION_PREFIX = "_x" + Math.random().toString(36).slice(2, 8);
 
 // Toolbar icon reflects connection state: gray (disconnected) or green (connected).
 const ICON_DISCONNECTED = {
-  "16": "icons/app-icon-16.png",
-  "48": "icons/app-icon-48.png",
-  "128": "icons/app-icon-128.png",
+  16: "icons/app-icon-16.png",
+  48: "icons/app-icon-48.png",
+  128: "icons/app-icon-128.png",
 };
 const ICON_CONNECTED = {
-  "16": "icons/connected-16.png",
-  "48": "icons/connected-48.png",
-  "128": "icons/connected-128.png",
+  16: "icons/connected-16.png",
+  48: "icons/connected-48.png",
+  128: "icons/connected-128.png",
 };
 
 async function setActionIcon(connected) {
@@ -176,7 +176,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "get-config" && message.fromOffscreen) {
     chrome.storage.local
       .get(["serverUrl", "extensionId", "deviceId", "authToken"])
-      .then((cfg) => sendResponse({ serverUrl: cfg.serverUrl, extensionId: cfg.extensionId, deviceId: cfg.deviceId, authToken: cfg.authToken }))
+      .then((cfg) =>
+        sendResponse({
+          serverUrl: cfg.serverUrl,
+          extensionId: cfg.extensionId,
+          deviceId: cfg.deviceId,
+          authToken: cfg.authToken,
+        }),
+      )
       .catch(() => sendResponse({}));
     return true;
   }
@@ -188,7 +195,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((err) =>
         sendResponse({
           id: message.id,
-          response: { jsonrpc: "2.0", id: message.id, error: { code: -32000, message: String((err && err.message) || err) } },
+          response: {
+            jsonrpc: "2.0",
+            id: message.id,
+            error: { code: -32000, message: String((err && err.message) || err) },
+          },
         }),
       );
     return true;
@@ -261,22 +272,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     ensureOffscreen().catch(() => {});
     // Mode-aware fallback: with a device ID the extension connects to the
     // code-mcp gateway directly (no local server needed).
-    chrome.storage.local.get(["deviceId", "serverUrl"]).then((cfg) => {
-      const direct = !!cfg.deviceId;
-      setTimeout(() => {
-        sendResponse({
-          connected: false,
-          mode: direct ? "gateway" : "local",
-          lastError: direct
-            ? "Gateway unreachable. Check your Device ID/Token at code-mcp.tuanm.dev."
-            : "Local server unreachable. Start it with: bun browser-mcp.ts (ws://localhost:7777)",
-        });
-      }, 1500);
-    }).catch(() => {
-      setTimeout(() => {
-        sendResponse({ connected: false, mode: "local", lastError: "Local server unreachable. Start it with: bun browser-mcp.ts (ws://localhost:7777)" });
-      }, 1500);
-    });
+    chrome.storage.local
+      .get(["deviceId", "serverUrl"])
+      .then((cfg) => {
+        const direct = !!cfg.deviceId;
+        setTimeout(() => {
+          sendResponse({
+            connected: false,
+            mode: direct ? "gateway" : "local",
+            lastError: direct
+              ? "Gateway unreachable. Check your Device ID/Token at code-mcp.tuanm.dev."
+              : "Local server unreachable. Start it with: bun browser-mcp.ts (ws://localhost:7777)",
+          });
+        }, 1500);
+      })
+      .catch(() => {
+        setTimeout(() => {
+          sendResponse({
+            connected: false,
+            mode: "local",
+            lastError: "Local server unreachable. Start it with: bun browser-mcp.ts (ws://localhost:7777)",
+          });
+        }, 1500);
+      });
     return true;
   }
 
@@ -1352,7 +1370,10 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       const match = int.patterns === null || (int.patterns || []).some((p) => url.includes(p));
       if (match) {
         int.paused.set(params.requestId, { url, method: params.request?.method || "", ts: Date.now() });
-        if (int.paused.size > 50) { const first = int.paused.keys().next().value; int.paused.delete(first); }
+        if (int.paused.size > 50) {
+          const first = int.paused.keys().next().value;
+          int.paused.delete(first);
+        }
         return;
       }
     }
@@ -1420,7 +1441,14 @@ async function handleHistory({ action, tabId, query, url, maxResults }) {
   if (action === "search") {
     if (!query) throw new Error("query is required for history search");
     const items = await chrome.history.search({ text: query, maxResults: Math.min(Number(maxResults) || 50, 200) });
-    return { history: items.map((h) => ({ url: h.url, title: h.title, visit_count: h.visitCount, last_visit_time: h.lastVisitTime })) };
+    return {
+      history: items.map((h) => ({
+        url: h.url,
+        title: h.title,
+        visit_count: h.visitCount,
+        last_visit_time: h.lastVisitTime,
+      })),
+    };
   }
   // Visit timestamps for one URL
   if (action === "visits") {
@@ -1496,7 +1524,8 @@ async function handleFileUpload({ selector, fileId, content, filename, tabId }) 
       // File from the local server (file_id).
       if (!fileId) throw new Error("fileId (or content) is required");
       const { baseUrl, authToken } = await getServerBaseUrl();
-      const fileUrl = `${baseUrl}/browser/files/${fileId}` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
+      const fileUrl =
+        `${baseUrl}/browser/files/${fileId}` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
       let resp;
       try {
         resp = await fetch(fileUrl);
@@ -1768,7 +1797,10 @@ async function handleEmulate({ action, width, height, deviceScaleFactor, isMobil
       if (ov.offline) {
         await ensureCdpDomain(tid, "Network");
         await sendDebuggerCommand(tid, "Network.emulateNetworkConditions", {
-          offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
+          offline: false,
+          latency: 0,
+          downloadThroughput: -1,
+          uploadThroughput: -1,
         }).catch(() => {});
       }
       if (ov.media) await sendDebuggerCommand(tid, "Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
@@ -2128,11 +2160,19 @@ async function handleAuth({ action, username, password, tabId, vaultName }) {
       const origin = vaultOriginFor(auth?.url || "");
       await vaultRequireUnlock();
       const entry = origin && vaultEntries && vaultEntries[origin] && vaultEntries[origin][vaultName];
-      if (!entry) throw new Error("No vault entry '" + vaultName + "' for " + (origin || "unknown origin") + ". Store it with vault action=set, then retry.");
+      if (!entry)
+        throw new Error(
+          "No vault entry '" +
+            vaultName +
+            "' for " +
+            (origin || "unknown origin") +
+            ". Store it with vault action=set, then retry.",
+        );
       if (user === undefined) user = entry.username;
       if (pass === undefined) pass = entry.password;
     }
-    if (user === undefined || pass === undefined) throw new Error("auth provide requires username+password, or vault_name (vault must be unlocked)");
+    if (user === undefined || pass === undefined)
+      throw new Error("auth provide requires username+password, or vault_name (vault must be unlocked)");
     // Remove BEFORE awaiting to prevent timeout from double-continuing
     pendingAuth.delete(rid);
     reqIds.delete(rid);
@@ -2374,11 +2414,9 @@ async function handleCookies({
   throw new Error(`Unknown cookies action: ${action}. Use "getAll", "get", "set", or "remove".`);
 }
 
-
 // ============================================================================
 // Agent-browser port: element discovery + interaction extras
 // ============================================================================
-
 
 // ---- Snapshot page function (SELF-CONTAINED: chrome.scripting serializes only the function, so all helpers are embedded) ----
 
@@ -2386,13 +2424,15 @@ const SNAPSHOT_FN = function (opts) {
   function buildSelector(el, root) {
     if (!el || el === document.documentElement) return "html";
     const testId = el.getAttribute && el.getAttribute("data-testid");
-  if (testId) return '[data-testid="' + CSS.escape(testId) + '"]';
+    if (testId) return '[data-testid="' + CSS.escape(testId) + '"]';
     if (el.id) return "#" + CSS.escape(el.id);
     const path = [];
     let cur = el;
     while (cur && cur !== root && cur !== document.body && path.length < 10) {
       let sel = cur.tagName.toLowerCase();
-      const cls = Array.from(cur.classList || []).filter(function (c) { return c && c.trim(); });
+      const cls = Array.from(cur.classList || []).filter(function (c) {
+        return c && c.trim();
+      });
       if (cls.length) sel += "." + CSS.escape(cls[0]);
       const parent = cur.parentElement;
       if (parent) {
@@ -2420,10 +2460,13 @@ const SNAPSHOT_FN = function (opts) {
     try {
       const labelledby = el.getAttribute("aria-labelledby");
       if (labelledby) {
-        const parts = labelledby.split(/\s+/).map(function (id) {
-          const ref = document.getElementById(id);
-          return ref ? (ref.textContent || "").trim() : "";
-        }).filter(Boolean);
+        const parts = labelledby
+          .split(/\s+/)
+          .map(function (id) {
+            const ref = document.getElementById(id);
+            return ref ? (ref.textContent || "").trim() : "";
+          })
+          .filter(Boolean);
         if (parts.length) return parts.join(" ").slice(0, 120);
       }
       const ariaLabel = el.getAttribute("aria-label");
@@ -2438,7 +2481,11 @@ const SNAPSHOT_FN = function (opts) {
         }
         const wrapLabel = el.closest("label");
         if (wrapLabel && (wrapLabel.textContent || "").trim()) {
-          return wrapLabel.textContent.trim().replace(el.value || "", "").trim().slice(0, 120);
+          return wrapLabel.textContent
+            .trim()
+            .replace(el.value || "", "")
+            .trim()
+            .slice(0, 120);
         }
         if (tag === "input" || tag === "textarea") {
           const ph = el.getAttribute("placeholder");
@@ -2452,7 +2499,9 @@ const SNAPSHOT_FN = function (opts) {
       const txt = (el.textContent || "").trim();
       if (txt) return txt.replace(/\s+/g, " ").slice(0, 120);
       return "";
-    } catch (e) { return ""; }
+    } catch (e) {
+      return "";
+    }
   }
 
   function isVisible(el) {
@@ -2468,8 +2517,23 @@ const SNAPSHOT_FN = function (opts) {
   const seen = new Set();
   const INTERACTIVE_TAGS = new Set(["a", "button", "input", "select", "textarea", "summary", "details", "option"]);
   const INTERACTIVE_ROLES = new Set([
-    "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox", "listbox",
-    "menuitem", "menuitemcheckbox", "menuitemradio", "option", "slider", "spinbutton", "switch", "tab", "treeitem",
+    "button",
+    "link",
+    "textbox",
+    "searchbox",
+    "checkbox",
+    "radio",
+    "combobox",
+    "listbox",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "option",
+    "slider",
+    "spinbutton",
+    "switch",
+    "tab",
+    "treeitem",
   ]);
 
   function roleOf(el) {
@@ -2519,17 +2583,28 @@ const SNAPSHOT_FN = function (opts) {
     const role = roleOf(el);
     const isHeading = /^h[1-6]$/.test(tag);
     const isInteractive = interactive(el);
-    const cursorHit = opts.cursor && !isInteractive && (function () {
-      const cs = getComputedStyle(el);
-      if (cs.cursor !== "pointer") return false;
-      const parent = el.parentElement;
-      if (parent && getComputedStyle(parent).cursor === "pointer") return false;
-      return true;
-    })();
+    const cursorHit =
+      opts.cursor &&
+      !isInteractive &&
+      (function () {
+        const cs = getComputedStyle(el);
+        if (cs.cursor !== "pointer") return false;
+        const parent = el.parentElement;
+        if (parent && getComputedStyle(parent).cursor === "pointer") return false;
+        return true;
+      })();
 
-    if ((isInteractive || cursorHit || (opts.includeHeadings && isHeading && (el.textContent || "").trim())) && isVisible(el)) {
+    if (
+      (isInteractive || cursorHit || (opts.includeHeadings && isHeading && (el.textContent || "").trim())) &&
+      isVisible(el)
+    ) {
       const name = accName(el);
-      const value = el.value !== undefined && el.value !== null ? String(el.value) : (el.selectedOptions && el.selectedOptions[0] ? el.selectedOptions[0].textContent.trim() : "");
+      const value =
+        el.value !== undefined && el.value !== null
+          ? String(el.value)
+          : el.selectedOptions && el.selectedOptions[0]
+            ? el.selectedOptions[0].textContent.trim()
+            : "";
       const entry = {
         role,
         tag,
@@ -2552,14 +2627,22 @@ const SNAPSHOT_FN = function (opts) {
     if (el.tagName === "IFRAME") {
       try {
         const doc = el.contentDocument;
-        if (doc) { for (const k of Array.from(doc.body ? doc.body.children : [])) { if (visit(k)) return true; } }
+        if (doc) {
+          for (const k of Array.from(doc.body ? doc.body.children : [])) {
+            if (visit(k)) return true;
+          }
+        }
       } catch (e) {}
     }
     return false;
   }
 
   const root = opts.scope ? document.querySelector(opts.scope) : document.body;
-  if (root) { for (const k of Array.from(root.children)) { if (visit(k)) break; } }
+  if (root) {
+    for (const k of Array.from(root.children)) {
+      if (visit(k)) break;
+    }
+  }
   return results;
 };
 
@@ -2571,10 +2654,13 @@ const FIND_FN = function (opts) {
     try {
       const labelledby = el.getAttribute("aria-labelledby");
       if (labelledby) {
-        const parts = labelledby.split(/\s+/).map(function (id) {
-          const ref = document.getElementById(id);
-          return ref ? (ref.textContent || "").trim() : "";
-        }).filter(Boolean);
+        const parts = labelledby
+          .split(/\s+/)
+          .map(function (id) {
+            const ref = document.getElementById(id);
+            return ref ? (ref.textContent || "").trim() : "";
+          })
+          .filter(Boolean);
         if (parts.length) return parts.join(" ").slice(0, 120);
       }
       const ariaLabel = el.getAttribute("aria-label");
@@ -2589,7 +2675,11 @@ const FIND_FN = function (opts) {
         }
         const wrapLabel = el.closest("label");
         if (wrapLabel && (wrapLabel.textContent || "").trim()) {
-          return wrapLabel.textContent.trim().replace(el.value || "", "").trim().slice(0, 120);
+          return wrapLabel.textContent
+            .trim()
+            .replace(el.value || "", "")
+            .trim()
+            .slice(0, 120);
         }
         if (tag === "input" || tag === "textarea") {
           const ph = el.getAttribute("placeholder");
@@ -2602,18 +2692,22 @@ const FIND_FN = function (opts) {
       const txt = (el.textContent || "").trim();
       if (txt) return txt.replace(/\s+/g, " ").slice(0, 120);
       return "";
-    } catch (e) { return ""; }
+    } catch (e) {
+      return "";
+    }
   }
 
   function buildSelector(el) {
     const testId = el.getAttribute && el.getAttribute("data-testid");
-  if (testId) return '[data-testid="' + CSS.escape(testId) + '"]';
+    if (testId) return '[data-testid="' + CSS.escape(testId) + '"]';
     if (el.id) return "#" + CSS.escape(el.id);
     const path = [];
     let cur = el;
     while (cur && cur !== document.body && path.length < 10) {
       let sel = cur.tagName.toLowerCase();
-      const cls = Array.from(cur.classList || []).filter(function (c) { return c && c.trim(); });
+      const cls = Array.from(cur.classList || []).filter(function (c) {
+        return c && c.trim();
+      });
       if (cls.length) sel += "." + CSS.escape(cls[0]);
       const parent = cur.parentElement;
       if (parent) {
@@ -2638,7 +2732,10 @@ const FIND_FN = function (opts) {
 
   const out = [];
   const exact = opts.exact === true; // substring by default; exact only when requested
-  function m(s) { if (s == null) return true; return exact ? s === opts[opts.kind] : String(s).toLowerCase().includes(String(opts[opts.kind]).toLowerCase()); }
+  function m(s) {
+    if (s == null) return true;
+    return exact ? s === opts[opts.kind] : String(s).toLowerCase().includes(String(opts[opts.kind]).toLowerCase());
+  }
   const all = document.querySelectorAll("*");
   const cap = Math.min(opts.max || 50, 100);
   for (const el of all) {
@@ -2646,10 +2743,25 @@ const FIND_FN = function (opts) {
     if (el.tagName === "SCRIPT" || el.tagName === "STYLE") continue;
     let hit = false;
     if (opts.kind === "selector" && opts.selector) {
-      try { hit = el.matches(opts.selector); } catch (e) {}
+      try {
+        hit = el.matches(opts.selector);
+      } catch (e) {}
     } else if (opts.kind === "role") {
       const explicit = el.getAttribute("role");
-      const tagRole = { a: "link", button: "button", select: "combobox", textarea: "textbox", input: (el.type === "checkbox" ? "checkbox" : el.type === "radio" ? "radio" : el.type === "range" ? "slider" : "textbox") }[el.tagName.toLowerCase()];
+      const tagRole = {
+        a: "link",
+        button: "button",
+        select: "combobox",
+        textarea: "textbox",
+        input:
+          el.type === "checkbox"
+            ? "checkbox"
+            : el.type === "radio"
+              ? "radio"
+              : el.type === "range"
+                ? "slider"
+                : "textbox",
+      }[el.tagName.toLowerCase()];
       const role = (explicit || tagRole || "").toLowerCase();
       hit = role === String(opts.role).toLowerCase();
       if (hit && opts.name != null) hit = accName(el) === String(opts.name);
@@ -2691,21 +2803,45 @@ async function handleSnapshot({ interactive, cursor, max, includeHeadings, scope
     target: { tabId: tid },
     world: "MAIN",
     func: SNAPSHOT_FN,
-    args: [{ interactive: interactive !== false, cursor: !!cursor, max: Math.min(max || 300, 500), includeHeadings: !!includeHeadings, scope: scope || null }],
+    args: [
+      {
+        interactive: interactive !== false,
+        cursor: !!cursor,
+        max: Math.min(max || 300, 500),
+        includeHeadings: !!includeHeadings,
+        scope: scope || null,
+      },
+    ],
   });
   return { entries: results[0]?.result || [], url: tab.url || "", title: tab.title || "" };
 }
 
 async function handleFind({ role, name, text, label, placeholder, title, testid, selector, exact, max, tabId }) {
   const tid = tabId || (await getActiveTabId());
-  let kind = null, val = null;
-  if (role != null) { kind = "role"; val = role; }
-  else if (text != null) { kind = "text"; val = text; }
-  else if (label != null) { kind = "label"; val = label; }
-  else if (placeholder != null) { kind = "placeholder"; val = placeholder; }
-  else if (title != null) { kind = "title"; val = title; }
-  else if (testid != null) { kind = "testid"; val = testid; }
-  else if (selector != null) { kind = "selector"; val = selector; }
+  let kind = null,
+    val = null;
+  if (role != null) {
+    kind = "role";
+    val = role;
+  } else if (text != null) {
+    kind = "text";
+    val = text;
+  } else if (label != null) {
+    kind = "label";
+    val = label;
+  } else if (placeholder != null) {
+    kind = "placeholder";
+    val = placeholder;
+  } else if (title != null) {
+    kind = "title";
+    val = title;
+  } else if (testid != null) {
+    kind = "testid";
+    val = testid;
+  } else if (selector != null) {
+    kind = "selector";
+    val = selector;
+  }
   if (!kind) throw new Error("find requires one of: role, name, text, label, placeholder, title, testid, selector");
   const results = await chrome.scripting.executeScript({
     target: { tabId: tid },
@@ -2724,10 +2860,14 @@ const GET_FN = function (opts) {
   const el = els[0];
   if (!el) return { exists: false };
   switch (opts.property) {
-    case "text": return { exists: true, text: (el.innerText || el.textContent || "").trim().slice(0, 20000) };
-    case "html": return { exists: true, html: (el.outerHTML || "").slice(0, 50000) };
-    case "value": return { exists: true, value: el.value !== undefined ? String(el.value) : (el.textContent || "").trim() };
-    case "attribute": return { exists: true, value: el.getAttribute ? el.getAttribute(opts.attr) : null };
+    case "text":
+      return { exists: true, text: (el.innerText || el.textContent || "").trim().slice(0, 20000) };
+    case "html":
+      return { exists: true, html: (el.outerHTML || "").slice(0, 50000) };
+    case "value":
+      return { exists: true, value: el.value !== undefined ? String(el.value) : (el.textContent || "").trim() };
+    case "attribute":
+      return { exists: true, value: el.getAttribute ? el.getAttribute(opts.attr) : null };
     case "box": {
       const r = el.getBoundingClientRect();
       return { exists: true, box: { x: r.x, y: r.y, width: r.width, height: r.height } };
@@ -2736,10 +2876,22 @@ const GET_FN = function (opts) {
       const cs = getComputedStyle(el);
       if (opts.styleProperty) return { exists: true, value: cs.getPropertyValue(opts.styleProperty) };
       const styles = {};
-      for (let i = 0; i < cs.length && i < 60; i++) { const p = cs[i]; styles[p] = cs.getPropertyValue(p); }
+      for (let i = 0; i < cs.length && i < 60; i++) {
+        const p = cs[i];
+        styles[p] = cs.getPropertyValue(p);
+      }
       return { exists: true, styles };
     }
-    default: return { exists: true, tag: el.tagName.toLowerCase(), id: el.id || null, className: typeof el.className === "string" ? el.className : "", role: el.getAttribute("role"), text: (el.innerText || "").trim().slice(0, 2000), value: el.value !== undefined ? String(el.value).slice(0, 200) : undefined };
+    default:
+      return {
+        exists: true,
+        tag: el.tagName.toLowerCase(),
+        id: el.id || null,
+        className: typeof el.className === "string" ? el.className : "",
+        role: el.getAttribute("role"),
+        text: (el.innerText || "").trim().slice(0, 2000),
+        value: el.value !== undefined ? String(el.value).slice(0, 200) : undefined,
+      };
   }
 };
 
@@ -2771,10 +2923,22 @@ const IS_FN = function (opts) {
   })();
   const disabled = !!el.disabled || el.getAttribute("aria-disabled") === "true";
   const checked = !!(el.checked !== undefined && el.checked);
-  const editable = !disabled && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) && !el.readOnly;
+  const editable =
+    !disabled && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) && !el.readOnly;
   const readonly = !!el.readOnly || el.getAttribute("aria-readonly") === "true";
   const focused = document.activeElement === el;
-  const state = { exists: true, visible, hidden: !visible, enabled: !disabled, disabled, checked, unchecked: !checked, editable, readonly, focused };
+  const state = {
+    exists: true,
+    visible,
+    hidden: !visible,
+    enabled: !disabled,
+    disabled,
+    checked,
+    unchecked: !checked,
+    editable,
+    readonly,
+    focused,
+  };
   return { exists: true, result: !!state[opts.check] };
 };
 
@@ -2821,8 +2985,20 @@ async function handleCheck({ selector, tabId }) {
   await ensureDebugger(tid);
   const coords = await getElementCenter(tid, selector);
   await moveCursorTo(tid, coords.x, coords.y);
-  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mousePressed", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
-  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mouseReleased", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: coords.x,
+    y: coords.y,
+    button: "left",
+    clickCount: 1,
+  });
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: coords.x,
+    y: coords.y,
+    button: "left",
+    clickCount: 1,
+  });
   return { tabId: tid, checked: true, already: false };
 }
 
@@ -2848,8 +3024,20 @@ async function handleUncheck({ selector, tabId }) {
   await ensureDebugger(tid);
   const coords = await getElementCenter(tid, selector);
   await moveCursorTo(tid, coords.x, coords.y);
-  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mousePressed", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
-  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mouseReleased", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: coords.x,
+    y: coords.y,
+    button: "left",
+    clickCount: 1,
+  });
+  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: coords.x,
+    y: coords.y,
+    button: "left",
+    clickCount: 1,
+  });
   return { tabId: tid, checked: false, already: false };
 }
 
@@ -2891,8 +3079,12 @@ async function handleReload({ tabId, waitFor }) {
   return { tabId: tid, url: tab.url, title: tab.title };
 }
 
-async function handleBack(params) { return handleHistory({ ...params, action: "back" }); }
-async function handleForward(params) { return handleHistory({ ...params, action: "forward" }); }
+async function handleBack(params) {
+  return handleHistory({ ...params, action: "back" });
+}
+async function handleForward(params) {
+  return handleHistory({ ...params, action: "forward" });
+}
 
 async function handleCloseTab({ tabId }) {
   const tid = tabId || (await getActiveTabId());
@@ -2917,7 +3109,14 @@ async function handleWait({ mode, selector, text, url, timeout, state, tabId }) 
     }
     case "url": {
       if (!url) throw new Error("url is required for wait mode=url");
-      const isRegex = (() => { try { new RegExp(url); return true; } catch { return false; } })();
+      const isRegex = (() => {
+        try {
+          new RegExp(url);
+          return true;
+        } catch {
+          return false;
+        }
+      })();
       while (Date.now() - start < maxWait) {
         const tab = await chrome.tabs.get(tid);
         const match = isRegex ? new RegExp(url).test(tab.url || "") : (tab.url || "").includes(url);
@@ -2937,7 +3136,7 @@ async function handleWait({ mode, selector, text, url, timeout, state, tabId }) 
         if (res[0]?.result) return { tabId: tid, text, found: true, elapsed: Date.now() - start };
         await new Promise((r) => setTimeout(r, 250));
       }
-      throw new Error("Text \"" + text + "\" not found within " + maxWait + "ms");
+      throw new Error('Text "' + text + '" not found within ' + maxWait + "ms");
     }
     case "selector": {
       if (!selector) throw new Error("selector is required for wait mode=selector");
@@ -2953,7 +3152,9 @@ async function handleWait({ mode, selector, text, url, timeout, state, tabId }) 
 async function handleHighlight({ selector, duration, tabId }) {
   const tid = tabId || (await getActiveTabId());
   if (!selector) throw new Error("highlight requires a selector");
-  await chrome.tabs.sendMessage(tid, { type: "highlight-element", selector, duration: duration || 2000 }).catch(() => {});
+  await chrome.tabs
+    .sendMessage(tid, { type: "highlight-element", selector, duration: duration || 2000 })
+    .catch(() => {});
   return { tabId: tid, highlighted: selector };
 }
 
@@ -2963,9 +3164,13 @@ const STORAGE_FN = function (opts) {
   const store = opts.type === "session" ? window.sessionStorage : window.localStorage;
   try {
     if (opts.action === "get") {
-      if (opts.key != null) return { exists: store.getItem(opts.key) !== null, key: opts.key, value: store.getItem(opts.key) };
+      if (opts.key != null)
+        return { exists: store.getItem(opts.key) !== null, key: opts.key, value: store.getItem(opts.key) };
       const items = {};
-      for (let i = 0; i < store.length; i++) { const k = store.key(i); items[k] = store.getItem(k); }
+      for (let i = 0; i < store.length; i++) {
+        const k = store.key(i);
+        items[k] = store.getItem(k);
+      }
       return { items, count: store.length };
     }
     if (opts.action === "set") {
@@ -3014,7 +3219,16 @@ const PDF_FORMATS = {
   tabloid: { w: 11, h: 17 },
 };
 
-async function handlePdf({ tabId, format, landscape, printBackground, displayHeaderFooter, headerTemplate, footerTemplate, scale }) {
+async function handlePdf({
+  tabId,
+  format,
+  landscape,
+  printBackground,
+  displayHeaderFooter,
+  headerTemplate,
+  footerTemplate,
+  scale,
+}) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
   const fmt = PDF_FORMATS[String(format || "letter").toLowerCase()] || PDF_FORMATS.letter;
@@ -3041,14 +3255,65 @@ async function handlePdf({ tabId, format, landscape, printBackground, displayHea
 
 const DEVICE_PRESETS = {
   "desktop chrome": { width: 1280, height: 720, dsf: 1, mobile: false, touch: false, ua: null },
-  "iphone 14": { width: 390, height: 844, dsf: 3, mobile: true, touch: true, ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" },
-  "iphone 13": { width: 390, height: 844, dsf: 3, mobile: true, touch: true, ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1" },
-  "pixel 5": { width: 393, height: 851, dsf: 2.75, mobile: true, touch: true, ua: "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36" },
-  "ipad pro": { width: 1024, height: 1366, dsf: 2, mobile: true, touch: true, ua: "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" },
-  "galaxy s21": { width: 360, height: 800, dsf: 3, mobile: true, touch: true, ua: "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36" },
+  "iphone 14": {
+    width: 390,
+    height: 844,
+    dsf: 3,
+    mobile: true,
+    touch: true,
+    ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+  },
+  "iphone 13": {
+    width: 390,
+    height: 844,
+    dsf: 3,
+    mobile: true,
+    touch: true,
+    ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
+  },
+  "pixel 5": {
+    width: 393,
+    height: 851,
+    dsf: 2.75,
+    mobile: true,
+    touch: true,
+    ua: "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36",
+  },
+  "ipad pro": {
+    width: 1024,
+    height: 1366,
+    dsf: 2,
+    mobile: true,
+    touch: true,
+    ua: "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+  },
+  "galaxy s21": {
+    width: 360,
+    height: 800,
+    dsf: 3,
+    mobile: true,
+    touch: true,
+    ua: "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36",
+  },
 };
 
-async function handleSet({ property, width, height, deviceScaleFactor, isMobile, hasTouch, userAgent, deviceName, latitude, longitude, offline, headers, colorScheme, reducedMotion, tabId }) {
+async function handleSet({
+  property,
+  width,
+  height,
+  deviceScaleFactor,
+  isMobile,
+  hasTouch,
+  userAgent,
+  deviceName,
+  latitude,
+  longitude,
+  offline,
+  headers,
+  colorScheme,
+  reducedMotion,
+  tabId,
+}) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
   const prop = (property || "viewport").toLowerCase();
@@ -3064,13 +3329,28 @@ async function handleSet({ property, width, height, deviceScaleFactor, isMobile,
     if (hasTouch !== undefined) {
       await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: !!hasTouch });
     }
-    return { tabId: tid, viewport: { width: Number(width), height: Number(height), deviceScaleFactor: deviceScaleFactor || 1, mobile: !!isMobile, touch: !!hasTouch } };
+    return {
+      tabId: tid,
+      viewport: {
+        width: Number(width),
+        height: Number(height),
+        deviceScaleFactor: deviceScaleFactor || 1,
+        mobile: !!isMobile,
+        touch: !!hasTouch,
+      },
+    };
   }
 
   if (prop === "device") {
     const preset = DEVICE_PRESETS[String(deviceName || "").toLowerCase()];
-    if (!preset) throw new Error("Unknown device: " + deviceName + ". Available: " + Object.keys(DEVICE_PRESETS).join(", "));
-    await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", { width: preset.width, height: preset.height, deviceScaleFactor: preset.dsf, mobile: preset.mobile });
+    if (!preset)
+      throw new Error("Unknown device: " + deviceName + ". Available: " + Object.keys(DEVICE_PRESETS).join(", "));
+    await sendDebuggerCommand(tid, "Emulation.setDeviceMetricsOverride", {
+      width: preset.width,
+      height: preset.height,
+      deviceScaleFactor: preset.dsf,
+      mobile: preset.mobile,
+    });
     await sendDebuggerCommand(tid, "Emulation.setTouchEmulationEnabled", { enabled: preset.touch });
     if (preset.ua) await sendDebuggerCommand(tid, "Emulation.setUserAgentOverride", { userAgent: preset.ua });
     return { tabId: tid, device: String(deviceName), viewport: { width: preset.width, height: preset.height } };
@@ -3078,7 +3358,11 @@ async function handleSet({ property, width, height, deviceScaleFactor, isMobile,
 
   if (prop === "geo" || prop === "geolocation") {
     if (latitude == null || longitude == null) throw new Error("geo requires latitude and longitude");
-    await sendDebuggerCommand(tid, "Emulation.setGeolocationOverride", { latitude: Number(latitude), longitude: Number(longitude), accuracy: 1 });
+    await sendDebuggerCommand(tid, "Emulation.setGeolocationOverride", {
+      latitude: Number(latitude),
+      longitude: Number(longitude),
+      accuracy: 1,
+    });
     const o = tabSetOverrides.get(tid) || {};
     o.geo = true;
     tabSetOverrides.set(tid, o);
@@ -3101,7 +3385,7 @@ async function handleSet({ property, width, height, deviceScaleFactor, isMobile,
   }
 
   if (prop === "headers") {
-    if (!headers || typeof headers !== "object") throw new Error("headers requires an object like {\"X-Key\": \"v\"}");
+    if (!headers || typeof headers !== "object") throw new Error('headers requires an object like {"X-Key": "v"}');
     await ensureCdpDomain(tid, "Network");
     await sendDebuggerCommand(tid, "Network.setExtraHTTPHeaders", { headers });
     return { tabId: tid, headers: Object.keys(headers) };
@@ -3146,7 +3430,8 @@ async function handleWindow({ action, url, windowId }) {
     // Safety: never close the last window — that would quit the whole browser
     // session and disconnect the extension (and the user's other windows).
     const wins = await chrome.windows.getAll();
-    if (wins.length <= 1) throw new Error("Refusing to close the last browser window (would quit the browser). Close tabs instead.");
+    if (wins.length <= 1)
+      throw new Error("Refusing to close the last browser window (would quit the browser). Close tabs instead.");
     await chrome.windows.remove(Number(windowId));
     return { closed: windowId };
   }
@@ -3166,9 +3451,13 @@ async function applyFetchConfig(tabId) {
   if (cfg.patterns && cfg.patterns.length) params.patterns = cfg.patterns.map((p) => ({ urlPattern: p }));
   await sendDebuggerCommand(tabId, "Fetch.enable", params);
   let enabled = cdpDomainEnabled.get(tabId);
-  if (!enabled) { enabled = new Set(); cdpDomainEnabled.set(tabId, enabled); }
+  if (!enabled) {
+    enabled = new Set();
+    cdpDomainEnabled.set(tabId, enabled);
+  }
   enabled.add("Fetch");
-  if (cfg.auth) fetchAuthEnabled.add(tabId); else fetchAuthEnabled.delete(tabId);
+  if (cfg.auth) fetchAuthEnabled.add(tabId);
+  else fetchAuthEnabled.delete(tabId);
 }
 
 async function setFetchAuth(tabId, auth) {
@@ -3207,7 +3496,13 @@ async function handleGroups({ action, tab_ids, group_id, title, color, collapsed
   if (act === "list") {
     const groups = await chrome.tabGroups.query({});
     return {
-      groups: groups.map((g) => ({ id: g.id, title: g.title, color: g.color, collapsed: g.collapsed, windowId: g.windowId })),
+      groups: groups.map((g) => ({
+        id: g.id,
+        title: g.title,
+        color: g.color,
+        collapsed: g.collapsed,
+        windowId: g.windowId,
+      })),
     };
   }
   if (act === "create") {
@@ -3251,7 +3546,10 @@ async function handleGroups({ action, tab_ids, group_id, title, color, collapsed
   if (act === "list_tabs" || act === "tabs") {
     if (!group_id) throw new Error("group_id is required for list_tabs");
     const tabs = await chrome.tabs.query({ groupId: Number(group_id) });
-    return { group_id: Number(group_id), tabs: tabs.map((t) => ({ id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId })) };
+    return {
+      group_id: Number(group_id),
+      tabs: tabs.map((t) => ({ id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId })),
+    };
   }
   throw new Error("Unknown groups action: " + action + ". Use list, create, add, remove, update, or list_tabs.");
 }
@@ -3264,7 +3562,14 @@ function flattenBookmarks(nodes, depth) {
   const out = [];
   for (const n of nodes || []) {
     if (!n) continue;
-    out.push({ id: n.id, title: n.title || "", url: n.url || null, parent_id: n.parentId || null, folder: !n.url, depth });
+    out.push({
+      id: n.id,
+      title: n.title || "",
+      url: n.url || null,
+      parent_id: n.parentId || null,
+      folder: !n.url,
+      depth,
+    });
     if (n.children) out.push(...flattenBookmarks(n.children, depth + 1));
   }
   return out;
@@ -3278,13 +3583,19 @@ async function handleBookmarks({ action, parent_id, title, url, query }) {
   }
   if (act === "create") {
     if (!title) throw new Error("title is required for create");
-    const created = await chrome.bookmarks.create({ parentId: parent_id ? String(parent_id) : undefined, title: String(title), url: url ? String(url) : undefined });
+    const created = await chrome.bookmarks.create({
+      parentId: parent_id ? String(parent_id) : undefined,
+      title: String(title),
+      url: url ? String(url) : undefined,
+    });
     return { bookmark: { id: created.id, title: created.title, url: created.url || null, folder: !created.url } };
   }
   if (act === "search") {
     if (!query) throw new Error("query is required for search");
     const results = await chrome.bookmarks.search(String(query));
-    return { bookmarks: results.slice(0, 50).map((b) => ({ id: b.id, title: b.title, url: b.url || null, folder: !b.url })) };
+    return {
+      bookmarks: results.slice(0, 50).map((b) => ({ id: b.id, title: b.title, url: b.url || null, folder: !b.url })),
+    };
   }
   throw new Error("Unknown bookmarks action: " + action + ". Use tree, create, or search.");
 }
@@ -3308,8 +3619,17 @@ async function handleSession({ action, max_results }) {
   }
   if (act === "restore") {
     const restored = await chrome.sessions.restore();
-    const tab = restored && restored.tab ? { id: restored.tab.id, title: restored.tab.title, url: restored.tab.url, windowId: restored.tab.windowId } : null;
-    const window = restored && restored.window ? { id: restored.window.id, tabs: (restored.window.tabs || []).map((t) => ({ id: t.id, title: t.title, url: t.url })) } : null;
+    const tab =
+      restored && restored.tab
+        ? { id: restored.tab.id, title: restored.tab.title, url: restored.tab.url, windowId: restored.tab.windowId }
+        : null;
+    const window =
+      restored && restored.window
+        ? {
+            id: restored.window.id,
+            tabs: (restored.window.tabs || []).map((t) => ({ id: t.id, title: t.title, url: t.url })),
+          }
+        : null;
     return { restored: { tab, window } };
   }
   throw new Error("Unknown session action: " + action + ". Use recent or restore.");
@@ -3319,9 +3639,33 @@ async function handleSession({ action, max_results }) {
 // Network interception (Fetch.failRequest / Fetch.fulfillRequest)
 // ============================================================================
 
-const FETCH_FAIL_REASONS = ["Failed", "Aborted", "TimedOut", "AccessDenied", "ConnectionClosed", "ConnectionReset", "ConnectionRefused", "ConnectionAborted", "ConnectionFailed", "NameNotResolved", "InternetDisconnected", "AddressUnreachable"];
+const FETCH_FAIL_REASONS = [
+  "Failed",
+  "Aborted",
+  "TimedOut",
+  "AccessDenied",
+  "ConnectionClosed",
+  "ConnectionReset",
+  "ConnectionRefused",
+  "ConnectionAborted",
+  "ConnectionFailed",
+  "NameNotResolved",
+  "InternetDisconnected",
+  "AddressUnreachable",
+];
 
-async function handleIntercept({ action, patterns, request_id, url, status, body, content_type, headers, error_reason, tab_id }) {
+async function handleIntercept({
+  action,
+  patterns,
+  request_id,
+  url,
+  status,
+  body,
+  content_type,
+  headers,
+  error_reason,
+  tab_id,
+}) {
   const tid = tab_id || (await getActiveTabId());
   await ensureDebugger(tid);
 
@@ -3351,7 +3695,8 @@ async function handleIntercept({ action, patterns, request_id, url, status, body
   }
 
   const int = interceptState.get(tid);
-  if (!int || !int.active) throw new Error("Interception is not active on this tab. Call intercept action=enable first.");
+  if (!int || !int.active)
+    throw new Error("Interception is not active on this tab. Call intercept action=enable first.");
 
   if (action === "status") {
     const paused = [];
@@ -3362,7 +3707,10 @@ async function handleIntercept({ action, patterns, request_id, url, status, body
   let rid = request_id;
   if (!rid && url) {
     for (const [r, info] of int.paused) {
-      if (info.url.includes(url)) { rid = r; break; }
+      if (info.url.includes(url)) {
+        rid = r;
+        break;
+      }
     }
   }
   if (!rid) throw new Error("No matching paused request. Use status to list request_ids, or pass url to match.");
@@ -3374,7 +3722,8 @@ async function handleIntercept({ action, patterns, request_id, url, status, body
   }
   if (action === "fail") {
     const reason = error_reason || "Failed";
-    if (!FETCH_FAIL_REASONS.includes(reason)) throw new Error("error_reason must be one of: " + FETCH_FAIL_REASONS.join(", "));
+    if (!FETCH_FAIL_REASONS.includes(reason))
+      throw new Error("error_reason must be one of: " + FETCH_FAIL_REASONS.join(", "));
     await sendDebuggerCommand(tid, "Fetch.failRequest", { requestId: rid, errorReason: reason });
     int.paused.delete(rid);
     return { tab_id: tid, failed: rid, reason };
@@ -3386,7 +3735,10 @@ async function handleIntercept({ action, patterns, request_id, url, status, body
       for (const [k, v] of Object.entries(headers)) respHeaders.push({ name: k, value: String(v) });
     }
     if (content_type) respHeaders.push({ name: "Content-Type", value: content_type });
-    const bodyB64 = typeof body === "string" && /^[A-Za-z0-9+/=]+$/.test(body) && body.length % 4 === 0 ? body : btoa(unescape(encodeURIComponent(String(body || ""))));
+    const bodyB64 =
+      typeof body === "string" && /^[A-Za-z0-9+/=]+$/.test(body) && body.length % 4 === 0
+        ? body
+        : btoa(unescape(encodeURIComponent(String(body || ""))));
     await sendDebuggerCommand(tid, "Fetch.fulfillRequest", {
       requestId: rid,
       responseCode: Number(status),
@@ -3437,7 +3789,10 @@ async function handleHar({ tab_id }) {
     resourceType: l.resourceType || "",
     _error: l.errorText || undefined,
   }));
-  return { count: entries.length, har: { log: { version: "1.2", creator: { name: "browser-mcp", version: "0.2.0" }, entries } } };
+  return {
+    count: entries.length,
+    har: { log: { version: "1.2", creator: { name: "browser-mcp", version: "0.2.0" }, entries } },
+  };
 }
 
 // ============================================================================
@@ -3446,14 +3801,21 @@ async function handleHar({ tab_id }) {
 
 async function handleWs({ action, tab_id, filter, clear }) {
   const tid = tab_id || (await getActiveTabId());
-  if (action === "clear") { wsLogs.delete(tid); return { cleared: true }; }
+  if (action === "clear") {
+    wsLogs.delete(tid);
+    return { cleared: true };
+  }
   await ensureDebugger(tid);
   await ensureCdpDomain(tid, "Network");
   let frames = wsLogs.get(tid) || [];
   if (filter) frames = frames.filter((f) => (f.url || "").toLowerCase().includes(String(filter).toLowerCase()));
   if (clear) wsLogs.delete(tid);
   const out = frames.slice(-100);
-  return { count: out.length, frames: out, note: "WebSocket capture starts from this call - reload/navigate to capture early frames." };
+  return {
+    count: out.length,
+    frames: out,
+    note: "WebSocket capture starts from this call - reload/navigate to capture early frames.",
+  };
 }
 
 // ============================================================================
@@ -3462,10 +3824,30 @@ async function handleWs({ action, tab_id, filter, clear }) {
 
 const THROTTLE_PRESETS = {
   offline: { offline: true },
-  "slow-3g": { offline: false, latency: 2000, downloadThroughput: Math.round(500 * 1024 / 8), uploadThroughput: Math.round(250 * 1024 / 8) },
-  "3g": { offline: false, latency: 500, downloadThroughput: Math.round(1.6 * 1024 * 1024 / 8), uploadThroughput: Math.round(750 * 1024 / 8) },
-  "4g": { offline: false, latency: 150, downloadThroughput: Math.round(9 * 1024 * 1024 / 8), uploadThroughput: Math.round(3.75 * 1024 * 1024 / 8) },
-  wifi: { offline: false, latency: 100, downloadThroughput: Math.round(30 * 1024 * 1024 / 8), uploadThroughput: Math.round(10 * 1024 * 1024 / 8) },
+  "slow-3g": {
+    offline: false,
+    latency: 2000,
+    downloadThroughput: Math.round((500 * 1024) / 8),
+    uploadThroughput: Math.round((250 * 1024) / 8),
+  },
+  "3g": {
+    offline: false,
+    latency: 500,
+    downloadThroughput: Math.round((1.6 * 1024 * 1024) / 8),
+    uploadThroughput: Math.round((750 * 1024) / 8),
+  },
+  "4g": {
+    offline: false,
+    latency: 150,
+    downloadThroughput: Math.round((9 * 1024 * 1024) / 8),
+    uploadThroughput: Math.round((3.75 * 1024 * 1024) / 8),
+  },
+  wifi: {
+    offline: false,
+    latency: 100,
+    downloadThroughput: Math.round((30 * 1024 * 1024) / 8),
+    uploadThroughput: Math.round((10 * 1024 * 1024) / 8),
+  },
 };
 
 async function handleThrottle({ preset, latency, download_throughput, upload_throughput, clear, tab_id }) {
@@ -3473,16 +3855,29 @@ async function handleThrottle({ preset, latency, download_throughput, upload_thr
   await ensureDebugger(tid);
   await ensureCdpDomain(tid, "Network");
   if (clear) {
-    await sendDebuggerCommand(tid, "Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+    await sendDebuggerCommand(tid, "Network.emulateNetworkConditions", {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+    });
     return { tab_id: tid, throttle: "none" };
   }
   let params;
   if (preset) {
     const p = THROTTLE_PRESETS[String(preset).toLowerCase()];
-    if (!p) throw new Error("Unknown throttle preset: " + preset + ". Available: " + Object.keys(THROTTLE_PRESETS).join(", "));
+    if (!p)
+      throw new Error(
+        "Unknown throttle preset: " + preset + ". Available: " + Object.keys(THROTTLE_PRESETS).join(", "),
+      );
     params = { ...p };
   } else if (latency != null || download_throughput != null || upload_throughput != null) {
-    params = { offline: false, latency: Number(latency) || 0, downloadThroughput: download_throughput != null ? Number(download_throughput) : -1, uploadThroughput: upload_throughput != null ? Number(upload_throughput) : -1 };
+    params = {
+      offline: false,
+      latency: Number(latency) || 0,
+      downloadThroughput: download_throughput != null ? Number(download_throughput) : -1,
+      uploadThroughput: upload_throughput != null ? Number(upload_throughput) : -1,
+    };
   } else {
     throw new Error("throttle requires a preset or custom latency/throughput values");
   }
@@ -3501,11 +3896,14 @@ async function handleResources({ action, url, tab_id }) {
   if (act === "list") {
     await ensureCdpDomain(tid, "Runtime");
     const result = await sendDebuggerCommand(tid, "Runtime.evaluate", {
-      expression: 'JSON.stringify(performance.getEntriesByType("resource").slice(-200).map(e => ({ url: e.name, type: e.initiatorType, size: e.transferSize || e.decodedBodySize || 0, duration: Math.round(e.duration) })))',
+      expression:
+        'JSON.stringify(performance.getEntriesByType("resource").slice(-200).map(e => ({ url: e.name, type: e.initiatorType, size: e.transferSize || e.decodedBodySize || 0, duration: Math.round(e.duration) })))',
       returnByValue: true,
     });
     let resources = [];
-    try { resources = JSON.parse(result.result?.value || "[]"); } catch {}
+    try {
+      resources = JSON.parse(result.result?.value || "[]");
+    } catch {}
     return { count: resources.length, resources: resources.slice(0, 100) };
   }
   if (act === "read") {
@@ -3513,10 +3911,20 @@ async function handleResources({ action, url, tab_id }) {
     const logs = networkLogs.get(tid) || [];
     const rec = logs.find((l) => l.url === url);
     if (!rec || !rec.requestId) {
-      return { error: "No captured body for " + url + ". Network capture must be active while the resource loads (enable via network view, then reload)." };
+      return {
+        error:
+          "No captured body for " +
+          url +
+          ". Network capture must be active while the resource loads (enable via network view, then reload).",
+      };
     }
     const body = await sendDebuggerCommand(tid, "Network.getResponseBody", { requestId: rec.requestId });
-    return { url, base64_encoded: !!body.base64Encoded, size: (body.body || "").length, content: String(body.body || "").slice(0, 200000) };
+    return {
+      url,
+      base64_encoded: !!body.base64Encoded,
+      size: (body.body || "").length,
+      content: String(body.body || "").slice(0, 200000),
+    };
   }
   throw new Error("Unknown resources action: " + action + ". Use list or read.");
 }
@@ -3528,12 +3936,14 @@ async function handleResources({ action, url, tab_id }) {
 const coverageState = new Map(); // tabId -> { started: boolean }
 
 function summarizeCoverage(rangesList) {
-  let totalUsed = 0, totalAll = 0;
+  let totalUsed = 0,
+    totalAll = 0;
   const sheets = (rangesList || []).slice(0, 50).map((sheet) => {
     const text = sheet.text || "";
     const used = (sheet.ranges || []).reduce((s, r) => s + (r.endOffset - r.startOffset), 0);
     const pct = text.length > 0 ? Math.round((used / text.length) * 1000) / 10 : 0;
-    totalUsed += used; totalAll += text.length;
+    totalUsed += used;
+    totalAll += text.length;
     return { url: sheet.url || "(inline)", used_chars: used, total_chars: text.length, used_pct: pct };
   });
   return { sheets, overall_used_pct: totalAll > 0 ? Math.round((totalUsed / totalAll) * 1000) / 10 : 0 };
@@ -3608,7 +4018,9 @@ async function handleStyles({ selector, ref, property, tab_id }) {
   const node = await sendDebuggerCommand(tid, "DOM.querySelector", { nodeId: doc.root.nodeId, selector: sel });
   if (!node.nodeId) throw new Error("Element not found: " + sel);
   const computed = await sendDebuggerCommand(tid, "CSS.getComputedStyleForNode", { nodeId: node.nodeId });
-  const matched = await sendDebuggerCommand(tid, "CSS.getMatchedStylesForNode", { nodeId: node.nodeId }).catch(() => ({}));
+  const matched = await sendDebuggerCommand(tid, "CSS.getMatchedStylesForNode", { nodeId: node.nodeId }).catch(
+    () => ({}),
+  );
   const all = computed.computedStyle || [];
   let styles = {};
   for (const s of all) {
@@ -3639,12 +4051,21 @@ async function handleSiteData({ origin, cookies, local_storage, cache, indexed_d
     throw new Error("Invalid origin: " + targetOrigin + ". Provide an http(s) origin or use a real tab.");
   }
   const remove = {};
-  if (cookies || (cookies === undefined && local_storage === undefined && cache === undefined && indexed_db === undefined && service_workers === undefined)) remove.cookies = true;
+  if (
+    cookies ||
+    (cookies === undefined &&
+      local_storage === undefined &&
+      cache === undefined &&
+      indexed_db === undefined &&
+      service_workers === undefined)
+  )
+    remove.cookies = true;
   if (local_storage) remove.localStorage = true;
   if (cache) remove.cache = true;
   if (indexed_db) remove.indexedDB = true;
   if (service_workers) remove.serviceWorkers = true;
-  if (Object.keys(remove).length === 0) throw new Error("Nothing to clear. Pass cookies, local_storage, cache, indexed_db, or service_workers.");
+  if (Object.keys(remove).length === 0)
+    throw new Error("Nothing to clear. Pass cookies, local_storage, cache, indexed_db, or service_workers.");
   await chrome.browsingData.remove({ since: 0, origins: [targetOrigin] }, remove);
   return { origin: targetOrigin, cleared: Object.keys(remove) };
 }
@@ -3661,7 +4082,9 @@ async function handleExtension({ action }) {
   }
   if (act === "reconnect") {
     const cfg = await chrome.storage.local.get(["serverUrl", "extensionId", "deviceId", "authToken"]);
-    chrome.runtime.sendMessage({ type: "reconnect", deviceId: cfg.deviceId, token: cfg.authToken, fromSw: true }).catch(() => {});
+    chrome.runtime
+      .sendMessage({ type: "reconnect", deviceId: cfg.deviceId, token: cfg.authToken, fromSw: true })
+      .catch(() => {});
     return { reconnecting: true };
   }
   if (act === "state") {
@@ -3672,7 +4095,7 @@ async function handleExtension({ action }) {
       version_name: manifest.version_name || manifest.version,
       mode: cfg.deviceId ? "gateway" : "local",
       device_id: cfg.deviceId || null,
-      has_token: !!(cfg.authToken),
+      has_token: !!cfg.authToken,
       offscreen_ready: offscreenReady,
       debugger_attached_tabs: [...debuggerAttached],
       network_capture_tabs: [...networkLogs.keys()],
@@ -3704,23 +4127,35 @@ function safeArgString(val, depth) {
       return "{" + parts.join(", ") + (keys.length > 8 ? ", ..." : "") + "}";
     }
     return String(val).slice(0, 300);
-  } catch (e) { return "[unserializable]"; }
+  } catch (e) {
+    return "[unserializable]";
+  }
 }
 
 function summarizeConsoleArgs(args) {
-  return (args || []).slice(0, 5).map((a) => safeArgString(a && a.value !== undefined ? a.value : a, 0)).join(" ").slice(0, 600);
+  return (args || [])
+    .slice(0, 5)
+    .map((a) => safeArgString(a && a.value !== undefined ? a.value : a, 0))
+    .join(" ")
+    .slice(0, 600);
 }
 
 function pushCapped(map, tabId, entry, cap) {
   let arr = map.get(tabId);
-  if (!arr) { arr = []; map.set(tabId, arr); }
+  if (!arr) {
+    arr = [];
+    map.set(tabId, arr);
+  }
   arr.push(entry);
   if (arr.length > cap) arr.splice(0, arr.length - cap);
 }
 
 async function handleConsole({ action, tabId, filter, types, clear }) {
   const tid = tabId || (await getActiveTabId());
-  if (action === "clear") { consoleLogs.delete(tid); return { cleared: true }; }
+  if (action === "clear") {
+    consoleLogs.delete(tid);
+    return { cleared: true };
+  }
   await ensureDebugger(tid);
   await ensureCdpDomain(tid, "Runtime");
   let logs = consoleLogs.get(tid) || [];
@@ -3732,13 +4167,18 @@ async function handleConsole({ action, tabId, filter, types, clear }) {
   return {
     count: out.length,
     messages: out,
-    note: captured ? "" : "Console capture starts from this call (Runtime domain just enabled) - reload the page to capture early messages.",
+    note: captured
+      ? ""
+      : "Console capture starts from this call (Runtime domain just enabled) - reload the page to capture early messages.",
   };
 }
 
 async function handleErrors({ action, tabId, filter, clear }) {
   const tid = tabId || (await getActiveTabId());
-  if (action === "clear") { pageErrors.delete(tid); return { cleared: true }; }
+  if (action === "clear") {
+    pageErrors.delete(tid);
+    return { cleared: true };
+  }
   await ensureDebugger(tid);
   await ensureCdpDomain(tid, "Runtime");
   let errors = pageErrors.get(tid) || [];
@@ -3749,7 +4189,11 @@ async function handleErrors({ action, tabId, filter, clear }) {
 
 async function handleNetwork({ action, tabId, filter }) {
   const tid = tabId || (await getActiveTabId());
-  if (action === "clear") { networkLogs.delete(tid); inFlightRequests.delete(tid); return { cleared: true }; }
+  if (action === "clear") {
+    networkLogs.delete(tid);
+    inFlightRequests.delete(tid);
+    return { cleared: true };
+  }
   await ensureDebugger(tid);
   await ensureCdpDomain(tid, "Network");
   let logs = networkLogs.get(tid) || [];
@@ -3765,20 +4209,49 @@ async function handleNetwork({ action, tabId, filter }) {
 // CDP event hooks for console/errors/network (called from chrome.debugger.onEvent)
 function handleCaptureEvent(tabId, method, params) {
   if (method === "Runtime.consoleAPICalled") {
-    pushCapped(consoleLogs, tabId, { type: params.type || "log", text: summarizeConsoleArgs(params.args), ts: Date.now() }, 100);
+    pushCapped(
+      consoleLogs,
+      tabId,
+      { type: params.type || "log", text: summarizeConsoleArgs(params.args), ts: Date.now() },
+      100,
+    );
     return;
   }
   if (method === "Runtime.exceptionThrown") {
     const d = params.exceptionDetails || {};
-    const ex = d.exception && d.exception.description ? d.exception.description : (d.text || "Unknown error");
-    pushCapped(pageErrors, tabId, { text: String(ex).slice(0, 500), url: d.url || "", line: d.lineNumber != null ? d.lineNumber : null, column: d.columnNumber != null ? d.columnNumber : null, ts: Date.now() }, 50);
+    const ex = d.exception && d.exception.description ? d.exception.description : d.text || "Unknown error";
+    pushCapped(
+      pageErrors,
+      tabId,
+      {
+        text: String(ex).slice(0, 500),
+        url: d.url || "",
+        line: d.lineNumber != null ? d.lineNumber : null,
+        column: d.columnNumber != null ? d.columnNumber : null,
+        ts: Date.now(),
+      },
+      50,
+    );
     return;
   }
   if (method === "Network.requestWillBeSent") {
     let m = inFlightRequests.get(tabId);
-    if (!m) { m = new Map(); inFlightRequests.set(tabId, m); }
-    m.set(params.requestId, { requestId: params.requestId, url: params.request ? params.request.url || "" : "", method: params.request ? params.request.method || "" : "", resourceType: params.type || "", startedAt: Date.now(), ts: Date.now() });
-    if (m.size > 400) { const first = m.keys().next().value; m.delete(first); }
+    if (!m) {
+      m = new Map();
+      inFlightRequests.set(tabId, m);
+    }
+    m.set(params.requestId, {
+      requestId: params.requestId,
+      url: params.request ? params.request.url || "" : "",
+      method: params.request ? params.request.method || "" : "",
+      resourceType: params.type || "",
+      startedAt: Date.now(),
+      ts: Date.now(),
+    });
+    if (m.size > 400) {
+      const first = m.keys().next().value;
+      m.delete(first);
+    }
     return;
   }
   if (method === "Network.responseReceived") {
@@ -3816,18 +4289,43 @@ function handleCaptureEvent(tabId, method, params) {
   // WebSocket frame capture (Network domain must be enabled)
   if (method === "Network.webSocketCreated" && params.requestId) {
     let m = wsUrls.get(tabId);
-    if (!m) { m = new Map(); wsUrls.set(tabId, m); }
+    if (!m) {
+      m = new Map();
+      wsUrls.set(tabId, m);
+    }
     m.set(params.requestId, params.url || "");
     return;
   }
   if (method === "Network.webSocketFrameSent") {
     const url = (wsUrls.get(tabId) || new Map()).get(params.requestId) || "";
-    pushCapped(wsLogs, tabId, { url, direction: "sent", opcode: params.response?.opcode ?? null, payload: String(params.response?.payloadData ?? "").slice(0, 500), ts: Date.now() }, 200);
+    pushCapped(
+      wsLogs,
+      tabId,
+      {
+        url,
+        direction: "sent",
+        opcode: params.response?.opcode ?? null,
+        payload: String(params.response?.payloadData ?? "").slice(0, 500),
+        ts: Date.now(),
+      },
+      200,
+    );
     return;
   }
   if (method === "Network.webSocketFrameReceived") {
     const url = (wsUrls.get(tabId) || new Map()).get(params.requestId) || "";
-    pushCapped(wsLogs, tabId, { url, direction: "received", opcode: params.response?.opcode ?? null, payload: String(params.response?.payloadData ?? "").slice(0, 500), ts: Date.now() }, 200);
+    pushCapped(
+      wsLogs,
+      tabId,
+      {
+        url,
+        direction: "received",
+        opcode: params.response?.opcode ?? null,
+        payload: String(params.response?.payloadData ?? "").slice(0, 500),
+        ts: Date.now(),
+      },
+      200,
+    );
     return;
   }
 }
@@ -4416,7 +4914,9 @@ function b64decode(str) {
 }
 
 async function vaultDeriveKey(password, saltBytes) {
-  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(String(password)), "PBKDF2", false, ["deriveKey"]);
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(String(password)), "PBKDF2", false, [
+    "deriveKey",
+  ]);
   return crypto.subtle.deriveKey(
     { name: "PBKDF2", salt: saltBytes, iterations: VAULT_ITERATIONS, hash: "SHA-256" },
     material,
@@ -4483,14 +4983,29 @@ function vaultOriginFor(url) {
   try {
     const o = new URL(url).origin;
     return o === "null" ? null : o;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
-async function handleVault({ action, master, origin, name, username, password, url, tab_id, username_selector, password_selector, submit }) {
+async function handleVault({
+  action,
+  master,
+  origin,
+  name,
+  username,
+  password,
+  url,
+  tab_id,
+  username_selector,
+  password_selector,
+  submit,
+}) {
   const act = action || "status";
 
   if (act === "init") {
-    if (!master || String(master).length < 4) throw new Error("master password is required (min 4 chars) for vault init");
+    if (!master || String(master).length < 4)
+      throw new Error("master password is required (min 4 chars) for vault init");
     const { meta } = await vaultLoad();
     if (meta) throw new Error("Vault already initialized. Use action=unlock, or delete the vault data to re-init.");
     const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -4501,7 +5016,11 @@ async function handleVault({ action, master, origin, name, username, password, u
     const metaStore = { v: 1, salt: b64encode(salt), iterations: VAULT_ITERATIONS, createdAt: Date.now() };
     await chrome.storage.local.set({ [VAULT_PREFIX + "meta"]: metaStore });
     await vaultPersist();
-    return { initialized: true, message: "Vault created and unlocked. Store credentials with vault action=set. The master password is not stored anywhere." };
+    return {
+      initialized: true,
+      message:
+        "Vault created and unlocked. Store credentials with vault action=set. The master password is not stored anywhere.",
+    };
   }
 
   if (act === "unlock") {
@@ -4537,16 +5056,23 @@ async function handleVault({ action, master, origin, name, username, password, u
   let targetOrigin = origin;
   if (!targetOrigin && url) targetOrigin = vaultOriginFor(url);
   if (!targetOrigin && tab_id) {
-    try { const tab = await chrome.tabs.get(tab_id); targetOrigin = vaultOriginFor(tab.url || ""); } catch {}
+    try {
+      const tab = await chrome.tabs.get(tab_id);
+      targetOrigin = vaultOriginFor(tab.url || "");
+    } catch {}
   }
   if (!targetOrigin) {
-    try { const tid = await getActiveTabId(); const tab = await chrome.tabs.get(tid); targetOrigin = vaultOriginFor(tab.url || ""); } catch {}
+    try {
+      const tid = await getActiveTabId();
+      const tab = await chrome.tabs.get(tid);
+      targetOrigin = vaultOriginFor(tab.url || "");
+    } catch {}
   }
   if (!targetOrigin) throw new Error("Could not determine origin. Pass origin=, url=, or tab_id=.");
   if (!vaultEntries[targetOrigin]) vaultEntries[targetOrigin] = {};
 
   if (act === "set") {
-    if (!name) throw new Error("name is required for vault set (e.g. name=\"work\" or name=\"personal\")");
+    if (!name) throw new Error('name is required for vault set (e.g. name="work" or name="personal")');
     if (!username && !password) throw new Error("username and/or password is required");
     const existing = vaultEntries[targetOrigin][name] || {};
     vaultEntries[targetOrigin][name] = {
@@ -4562,8 +5088,15 @@ async function handleVault({ action, master, origin, name, username, password, u
   if (act === "get") {
     if (!name) throw new Error("name is required for vault get (use action=list to see names)");
     const entry = vaultEntries[targetOrigin] && vaultEntries[targetOrigin][name];
-    if (!entry) throw new Error("No entry '" + name + "' for " + targetOrigin + ". Use action=list to see stored names.");
-    return { origin: targetOrigin, name, username: entry.username, password: entry.password, url: entry.url || targetOrigin };
+    if (!entry)
+      throw new Error("No entry '" + name + "' for " + targetOrigin + ". Use action=list to see stored names.");
+    return {
+      origin: targetOrigin,
+      name,
+      username: entry.username,
+      password: entry.password,
+      url: entry.url || targetOrigin,
+    };
   }
 
   if (act === "list") {
@@ -4591,7 +5124,8 @@ async function handleVault({ action, master, origin, name, username, password, u
   if (act === "fill") {
     if (!name) throw new Error("name is required for vault fill");
     const entry = vaultEntries[targetOrigin] && vaultEntries[targetOrigin][name];
-    if (!entry) throw new Error("No entry '" + name + "' for " + targetOrigin + ". Use action=list to see stored names.");
+    if (!entry)
+      throw new Error("No entry '" + name + "' for " + targetOrigin + ". Use action=list to see stored names.");
     const tid = tab_id || (await getActiveTabId());
     await ensureDebugger(tid);
     await ensureCdpDomain(tid, "Runtime");
@@ -4611,26 +5145,56 @@ async function handleVault({ action, master, origin, name, username, password, u
       }
       return { user: pos(userEl), pass: pos(passEl), userTag: userEl ? userEl.tagName + (userEl.type ? ":" + userEl.type : "") : null, passTag: passEl ? passEl.tagName + (passEl.type ? ":" + passEl.type : "") : null };
     })()`;
-    const fieldResult = await sendDebuggerCommand(tid, "Runtime.evaluate", { expression: fieldScript, returnByValue: true });
+    const fieldResult = await sendDebuggerCommand(tid, "Runtime.evaluate", {
+      expression: fieldScript,
+      returnByValue: true,
+    });
     const fields = fieldResult.result?.value || {};
     const filled = [];
 
     async function typeInto(pos, text) {
       if (!pos || text === undefined) return false;
       await moveCursorTo(tid, pos.x, pos.y);
-      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mousePressed", x: pos.x, y: pos.y, button: "left", clickCount: 1 });
-      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mouseReleased", x: pos.x, y: pos.y, button: "left", clickCount: 1 });
+      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: pos.x,
+        y: pos.y,
+        button: "left",
+        clickCount: 1,
+      });
+      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: pos.x,
+        y: pos.y,
+        button: "left",
+        clickCount: 1,
+      });
       // Select-all + delete to clear the field, then insert the secret
-      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", modifiers: 2 });
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "a",
+        code: "KeyA",
+        modifiers: 2,
+      });
       await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA" });
-      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyDown", key: "Backspace", code: "Backspace" });
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "Backspace",
+        code: "Backspace",
+      });
       await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace" });
       await sendDebuggerCommand(tid, "Input.insertText", { text: String(text) });
       return true;
     }
 
-    if (entry.username !== undefined && fields.user) { await typeInto(fields.user, entry.username); filled.push("username"); }
-    if (entry.password !== undefined && fields.pass) { await typeInto(fields.pass, entry.password); filled.push("password"); }
+    if (entry.username !== undefined && fields.user) {
+      await typeInto(fields.user, entry.username);
+      filled.push("username");
+    }
+    if (entry.password !== undefined && fields.pass) {
+      await typeInto(fields.pass, entry.password);
+      filled.push("password");
+    }
     if (submit && fields.pass) {
       await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter" });
       await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter" });
@@ -4645,7 +5209,9 @@ async function handleVault({ action, master, origin, name, username, password, u
     };
   }
 
-  throw new Error("Unknown vault action: " + action + ". Use init, unlock, lock, status, set, get, list, delete, or fill.");
+  throw new Error(
+    "Unknown vault action: " + action + ". Use init, unlock, lock, status, set, get, list, delete, or fill.",
+  );
 }
 
 // ============================================================================
@@ -4858,7 +5424,9 @@ async function moveCursorTo(tabId, x, y) {
         resolve();
       });
     });
-  } catch { /* no content script - proceed without visual */ }
+  } catch {
+    /* no content script - proceed without visual */
+  }
 }
 
 /** Show persistent Browser MCP activity cursor during long-running operations (download/upload). */

@@ -212,8 +212,11 @@ async function connectGateway() {
   }
   gatewayRetries++;
   let host = gatewayHost || DEFAULT_GATEWAY;
-  const scheme = /^(localhost|127\.|192\.168\.|10\.|172\.16\.)/.test(host.replace(/^wss?:\/\//, "").split("/")[0]) ? "ws" : "wss";
-  const url = scheme + "://" + host.replace(/^wss?:\/\//, "").replace(/\/$/, "") + "/ws/" + encodeURIComponent(deviceId);
+  const scheme = /^(localhost|127\.|192\.168\.|10\.|172\.16\.)/.test(host.replace(/^wss?:\/\//, "").split("/")[0])
+    ? "ws"
+    : "wss";
+  const url =
+    scheme + "://" + host.replace(/^wss?:\/\//, "").replace(/\/$/, "") + "/ws/" + encodeURIComponent(deviceId);
   console.log("[bmcp-offscreen] Connecting to gateway " + url + " (attempt " + gatewayRetries + ")");
   try {
     gatewayWs = new WebSocket(url);
@@ -229,7 +232,9 @@ async function connectGateway() {
     if (gatewayWatchdogTimer) clearTimeout(gatewayWatchdogTimer);
     gatewayWatchdogTimer = setTimeout(() => {
       console.error("[bmcp-offscreen] Gateway watchdog: no inbound for " + GW_WATCHDOG_MS + "ms");
-      try { gen.close(); } catch {}
+      try {
+        gen.close();
+      } catch {}
     }, GW_WATCHDOG_MS);
   };
 
@@ -243,7 +248,9 @@ async function connectGateway() {
     if (gatewayKeepaliveTimer) clearInterval(gatewayKeepaliveTimer);
     gatewayKeepaliveTimer = setInterval(() => {
       if (gen && gen.readyState === WebSocket.OPEN) {
-        try { gen.send(JSON.stringify({ type: "keepalive" })); } catch {}
+        try {
+          gen.send(JSON.stringify({ type: "keepalive" }));
+        } catch {}
       }
     }, KEEPALIVE_INTERVAL_MS);
   };
@@ -271,11 +278,21 @@ async function connectGateway() {
       // Optional token check: the gateway sends the device token; verify it
       // matches the popup token when one is configured (defense in depth).
       if (authToken && data.token && data.token !== authToken) {
-        gen.send(JSON.stringify({ id: data.id, response: { jsonrpc: "2.0", id: data.id, error: { code: -32001, message: "token mismatch" } } }));
+        gen.send(
+          JSON.stringify({
+            id: data.id,
+            response: { jsonrpc: "2.0", id: data.id, error: { code: -32001, message: "token mismatch" } },
+          }),
+        );
         return;
       }
       try {
-        const response = await chrome.runtime.sendMessage({ source: "offscreen", type: "mcp-request", id: data.id, request: data.request });
+        const response = await chrome.runtime.sendMessage({
+          source: "offscreen",
+          type: "mcp-request",
+          id: data.id,
+          request: data.request,
+        });
         let inner = response && response.response;
         if (inner && inner.id == null) {
           // Notifications have no request id. Strict clients (codex/pi) reject a
@@ -287,7 +304,16 @@ async function connectGateway() {
         }
       } catch (err) {
         if (gen && gen.readyState === WebSocket.OPEN) {
-          gen.send(JSON.stringify({ id: data.id, response: { jsonrpc: "2.0", id: data.id, error: { code: -32000, message: "extension error: " + (err.message || err) } } }));
+          gen.send(
+            JSON.stringify({
+              id: data.id,
+              response: {
+                jsonrpc: "2.0",
+                id: data.id,
+                error: { code: -32000, message: "extension error: " + (err.message || err) },
+              },
+            }),
+          );
         }
       }
     } catch {}
@@ -296,7 +322,9 @@ async function connectGateway() {
 
 function scheduleGatewayReconnect() {
   if (gatewayReconnectTimer) return;
-  const delay = Math.min(GW_MAX_DELAY_MS, GW_BASE_DELAY_MS * Math.pow(2, Math.min(gatewayRetries, 6))) + Math.floor(Math.random() * 500);
+  const delay =
+    Math.min(GW_MAX_DELAY_MS, GW_BASE_DELAY_MS * Math.pow(2, Math.min(gatewayRetries, 6))) +
+    Math.floor(Math.random() * 500);
   console.log("[bmcp-offscreen] Scheduling gateway reconnect in " + delay + "ms");
   gatewayReconnectTimer = setTimeout(() => {
     gatewayReconnectTimer = null;
@@ -305,14 +333,25 @@ function scheduleGatewayReconnect() {
 }
 
 function stopGateway() {
-  if (gatewayWatchdogTimer) { clearTimeout(gatewayWatchdogTimer); gatewayWatchdogTimer = null; }
-  if (gatewayKeepaliveTimer) { clearInterval(gatewayKeepaliveTimer); gatewayKeepaliveTimer = null; }
-  if (gatewayReconnectTimer) { clearTimeout(gatewayReconnectTimer); gatewayReconnectTimer = null; }
+  if (gatewayWatchdogTimer) {
+    clearTimeout(gatewayWatchdogTimer);
+    gatewayWatchdogTimer = null;
+  }
+  if (gatewayKeepaliveTimer) {
+    clearInterval(gatewayKeepaliveTimer);
+    gatewayKeepaliveTimer = null;
+  }
+  if (gatewayReconnectTimer) {
+    clearTimeout(gatewayReconnectTimer);
+    gatewayReconnectTimer = null;
+  }
   if (gatewayWs) {
     gatewayWs.onclose = null;
     gatewayWs.onerror = null;
     gatewayWs.onmessage = null;
-    try { gatewayWs.close(); } catch {}
+    try {
+      gatewayWs.close();
+    } catch {}
     gatewayWs = null;
   }
 }
@@ -369,7 +408,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       mode,
       extensionId,
       deviceId,
-      wsState: mode === "gateway" ? (gatewayWs ? gatewayWs.readyState : "no-gw-ws") : (ws ? ws.readyState : "no-ws"),
+      wsState: mode === "gateway" ? (gatewayWs ? gatewayWs.readyState : "no-gw-ws") : ws ? ws.readyState : "no-ws",
       connectAttempts,
       lastError,
     };
@@ -411,24 +450,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.token !== undefined) authToken = message.token || null;
     if (message.deviceId !== undefined) deviceId = message.deviceId || null;
     if (ws) {
-        ws.onclose = null;
-        ws.onerror = null;
-        ws.onmessage = null;
-        ws.close();
-        ws = null;
-      }
-      stopHeartbeat();
-      stopGateway();
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      connect()
-        .then(() => sendResponse({ ok: true }))
-        .catch((err) => {
-          console.error("[bmcp-offscreen] reconnect failed:", err);
-          sendResponse({ ok: true }); // still ok — reconnect will auto-retry
-        });
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close();
+      ws = null;
+    }
+    stopHeartbeat();
+    stopGateway();
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    connect()
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => {
+        console.error("[bmcp-offscreen] reconnect failed:", err);
+        sendResponse({ ok: true }); // still ok — reconnect will auto-retry
+      });
     return true; // async response
   }
 
@@ -468,7 +507,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!response.ok) throw new Error("Cannot read file: " + filePath);
         const blob = await response.blob();
         const cap = maxBytes || 512 * 1024;
-        if (blob.size > cap) throw new Error("File too large for inline read (" + blob.size + " bytes, max " + cap + ")");
+        if (blob.size > cap)
+          throw new Error("File too large for inline read (" + blob.size + " bytes, max " + cap + ")");
         const arrayBuffer = await blob.arrayBuffer();
         const bytes = new Uint8Array(arrayBuffer);
         const parts = [];

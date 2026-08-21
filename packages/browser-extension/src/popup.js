@@ -72,7 +72,11 @@ function checkStatus() {
       setStatus(false, "Disconnected (no response - retrying)");
       return;
     }
-    setStatus(response?.connected || false, response?.lastError ? "Disconnected: " + response.lastError : "", response?.mode);
+    setStatus(
+      response?.connected || false,
+      response?.lastError ? "Disconnected: " + response.lastError : "",
+      response?.mode,
+    );
   });
 }
 
@@ -140,7 +144,11 @@ chrome.runtime.onMessage.addListener((message) => {
 
 function setStatus(connected, detail, mode) {
   dot.className = connected ? "dot on" : "dot off";
-  statusText.textContent = connected ? (mode === "gateway" ? "Connected (gateway)" : "Connected") : (detail || "Disconnected");
+  statusText.textContent = connected
+    ? mode === "gateway"
+      ? "Connected (gateway)"
+      : "Connected"
+    : detail || "Disconnected";
   connectBtn.textContent = connected ? "Disconnect" : "Connect";
   connectBtn.classList.toggle("off", connected);
   connectBtn.dataset.connected = connected ? "true" : "false";
