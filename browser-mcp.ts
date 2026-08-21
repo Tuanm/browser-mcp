@@ -1051,6 +1051,7 @@ const tools: Record<string, ToolDef> = {
       action: { type: "string", description: '"status" (check for pending auth), "provide" (supply credentials), or "cancel"', enum: ["status", "provide", "cancel"] },
       username: { type: "string", description: "Username for authentication (required for 'provide')" },
       password: { type: "string", description: "Password for authentication (required for 'provide')" },
+      vault_name: { type: "string", description: "Vault entry name to pull credentials from (unlocked vault; alternative to username+password)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action"],
@@ -1911,20 +1912,23 @@ const tools: Record<string, ToolDef> = {
 
   vault: {
     description:
-      "Encrypted in-browser credential store (like a password manager). Actions: init (create vault with master password), unlock (master), lock, status, set (origin/name/username/password/url), get (origin/name - returns credentials), list, delete. Credentials are AES-256-GCM encrypted with a PBKDF2-derived key; never stored or transmitted in plaintext.",
+      "Encrypted in-browser credential store (like a password manager). Actions: init (create vault with master password), unlock (master), lock, status, set (origin/name/username/password/url), get (origin/name - returns credentials), list, delete, fill (fill a login form on the current page from the vault - credentials never leave the extension).",
     parameters: {
-      action: { type: "string", description: "init, unlock, lock, status, set, get, list, or delete", enum: ["init", "unlock", "lock", "status", "set", "get", "list", "delete"] },
+      action: { type: "string", description: "init, unlock, lock, status, set, get, list, delete, or fill", enum: ["init", "unlock", "lock", "status", "set", "get", "list", "delete", "fill"] },
       master: { type: "string", description: "Master password for init/unlock (never stored)" },
       origin: { type: "string", description: "Site origin (defaults to current tab's origin)" },
       name: { type: "string", description: "Entry name, e.g. \"work\" or \"personal\"" },
       username: { type: "string", description: "Username for set" },
       password: { type: "string", description: "Password for set" },
       url: { type: "string", description: "Optional URL for the entry" },
+      username_selector: { type: "string", description: "CSS selector for the username field (fill only; defaults to auto-detect)" },
+      password_selector: { type: "string", description: "CSS selector for the password field (fill only; defaults to auto-detect)" },
+      submit: { type: "boolean", description: "Press Enter after filling (fill only)" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action"],
     handler: async (args) => {
-      try { const result = await sendBrowserCommand("vault", { action: args.action, master: args.master, origin: args.origin, name: args.name, username: args.username, password: args.password, url: args.url, tabId: args.tab_id }); return outJson(result); }
+      try { const result = await sendBrowserCommand("vault", { action: args.action, master: args.master, origin: args.origin, name: args.name, username: args.username, password: args.password, url: args.url, usernameSelector: args.username_selector, passwordSelector: args.password_selector, submit: args.submit, tabId: args.tab_id }); return outJson(result); }
       catch (e) { return outError(e); }
     },
   },

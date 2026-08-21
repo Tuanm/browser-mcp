@@ -330,10 +330,10 @@ export function createMcpHandler(dispatch) {
     required: ["action"],
     run: async (a) => { const r = await dispatch("download", { action: a.action, timeout: a.timeout }); return { content: textBlocks(jsonOut(r)) }; } },
   { name: "auth",
-    description: "Handle HTTP Basic/Digest authentication popups. Actions: status, provide, cancel.",
-    parameters: { action: { type: "string", enum: ["status", "provide", "cancel"] }, username: { type: "string" }, password: { type: "string" }, tab_id: { type: "number" } },
+    description: "Handle HTTP Basic/Digest authentication popups. Actions: status, provide, cancel. provide accepts username+password, or vault_name to pull credentials from the unlocked vault (never crosses the gateway).",
+    parameters: { action: { type: "string", enum: ["status", "provide", "cancel"] }, username: { type: "string" }, password: { type: "string" }, vault_name: { type: "string" }, tab_id: { type: "number" } },
     required: ["action"],
-    run: async (a) => { const r = await dispatch("auth", { action: a.action, username: a.username, password: a.password, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+    run: async (a) => { const r = await dispatch("auth", { action: a.action, username: a.username, password: a.password, vaultName: a.vault_name, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
   { name: "store",
     description: "Store and retrieve data/scripts per-website in extension storage. Actions: set, get, list, delete, clear.",
     parameters: { action: { type: "string", enum: ["set", "get", "list", "delete", "clear"] }, key: { type: "string" }, value: { type: "string" }, description: { type: "string" }, tab_id: { type: "number" } },
@@ -450,10 +450,10 @@ export function createMcpHandler(dispatch) {
     run: async (a) => { const r = await dispatch("extension", { action: a.action || "state" }); return { content: textBlocks(jsonOut(r)) }; } },
 
   { name: "vault",
-    description: "Encrypted in-browser credential store (like a password manager). Actions: init (create vault with master password), unlock (master), lock, status, set (origin/name/username/password/url), get (origin/name - returns credentials), list, delete. Credentials are AES-256-GCM encrypted with a PBKDF2-derived key; never stored or transmitted in plaintext.",
-    parameters: { action: { type: "string", enum: ["init", "unlock", "lock", "status", "set", "get", "list", "delete"] }, master: { type: "string" }, origin: { type: "string" }, name: { type: "string" }, username: { type: "string" }, password: { type: "string" }, url: { type: "string" }, tab_id: { type: "number" } },
+    description: "Encrypted in-browser credential store (like a password manager). Actions: init (create vault with master password), unlock (master), lock, status, set (origin/name/username/password/url), get (origin/name - returns credentials), list, delete, fill (fill a login form on the current page from the vault - credentials never leave the extension).",
+    parameters: { action: { type: "string", enum: ["init", "unlock", "lock", "status", "set", "get", "list", "delete", "fill"] }, master: { type: "string" }, origin: { type: "string" }, name: { type: "string" }, username: { type: "string" }, password: { type: "string" }, url: { type: "string" }, username_selector: { type: "string" }, password_selector: { type: "string" }, submit: { type: "boolean" }, tab_id: { type: "number" } },
     required: ["action"],
-    run: async (a) => { const r = await dispatch("vault", { action: a.action, master: a.master, origin: a.origin, name: a.name, username: a.username, password: a.password, url: a.url, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+    run: async (a) => { const r = await dispatch("vault", { action: a.action, master: a.master, origin: a.origin, name: a.name, username: a.username, password: a.password, url: a.url, usernameSelector: a.username_selector, passwordSelector: a.password_selector, submit: a.submit, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
   ];
 
   async function handle(request) {

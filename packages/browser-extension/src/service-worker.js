@@ -2099,7 +2099,7 @@ async function handleDownload({ action, timeout }) {
 
 // --- HTTP Authentication ---
 
-async function handleAuth({ action, username, password, tabId }) {
+async function handleAuth({ action, username, password, tabId, vaultName }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
   // Fetch domain needed for HTTP auth interception (managed via fetch config so
@@ -2120,6 +2120,19 @@ async function handleAuth({ action, username, password, tabId }) {
     if (!reqIds || reqIds.size === 0) throw new Error("No pending auth request on this tab");
     const rid = reqIds.values().next().value;
     const auth = pendingAuth.get(rid);
+    // Resolve credentials from the vault when vault_name is given - the password
+    // never crosses the gateway; it goes straight from the vault to the browser.
+    let user = username;
+    let pass = password;
+    if (vaultName && (user === undefined || pass === undefined)) {
+      const origin = vaultOriginFor(auth?.url || "");
+      await vaultRequireUnlock();
+      const entry = origin && vaultEntries && vaultEntries[origin] && vaultEntries[origin][vaultName];
+      if (!entry) throw new Error("No vault entry '" + vaultName + "' for " + (origin || "unknown origin") + ". Store it with vault action=set, then retry.");
+      if (user === undefined) user = entry.username;
+      if (pass === undefined) pass = entry.password;
+    }
+    if (user === undefined || pass === undefined) throw new Error("auth provide requires username+password, or vault_name (vault must be unlocked)");
     // Remove BEFORE awaiting to prevent timeout from double-continuing
     pendingAuth.delete(rid);
     reqIds.delete(rid);
@@ -2128,11 +2141,11 @@ async function handleAuth({ action, username, password, tabId }) {
       requestId: rid,
       authChallengeResponse: {
         response: "ProvideCredentials",
-        username: username || "",
-        password: password || "",
+        username: user || "",
+        password: pass || "",
       },
     });
-    return { tabId: tid, authenticated: true, url: auth?.url };
+    return { tabId: tid, authenticated: true, url: auth?.url, via: vaultName ? "vault" : "inline" };
   }
 
   if (action === "cancel") {
@@ -4473,7 +4486,7 @@ function vaultOriginFor(url) {
   } catch { return null; }
 }
 
-async function handleVault({ action, master, origin, name, username, password, url, tab_id }) {
+async function handleVault({ action, master, origin, name, username, password, url, tab_id, username_selector, password_selector, submit }) {
   const act = action || "status";
 
   if (act === "init") {
@@ -4572,7 +4585,67 @@ async function handleVault({ action, master, origin, name, username, password, u
     return { origin: targetOrigin, name, deleted: false };
   }
 
-  throw new Error("Unknown vault action: " + action + ". Use init, unlock, lock, status, set, get, list, or delete.");
+  // ---- vault fill: fill a login form directly from the vault ----
+  // Credentials are resolved inside the extension and typed via CDP; the
+  // secrets never appear in the tool result or cross the gateway.
+  if (act === "fill") {
+    if (!name) throw new Error("name is required for vault fill");
+    const entry = vaultEntries[targetOrigin] && vaultEntries[targetOrigin][name];
+    if (!entry) throw new Error("No entry '" + name + "' for " + targetOrigin + ". Use action=list to see stored names.");
+    const tid = tab_id || (await getActiveTabId());
+    await ensureDebugger(tid);
+    await ensureCdpDomain(tid, "Runtime");
+
+    // Locate username/password fields (explicit selectors win; else auto-detect).
+    const fieldScript = `(function() {
+      const selUser = ${JSON.stringify(username_selector || null)};
+      const selPass = ${JSON.stringify(password_selector || null)};
+      function q(s) { try { return document.querySelector(s); } catch { return null; } }
+      const userEl = selUser ? q(selUser) : (q('input[type="email"]') || q('input[name*="user" i]') || q('input[name*="login" i]') || q('input[id*="user" i]') || q('input[autocomplete="username"]') || q('input[type="text"]'));
+      const passEl = selPass ? q(selPass) : (q('input[type="password"]') || q('input[name*="pass" i]') || q('input[id*="pass" i]'));
+      function pos(el) {
+        if (!el) return null;
+        if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(true); else el.scrollIntoView({ block: "center" });
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+      }
+      return { user: pos(userEl), pass: pos(passEl), userTag: userEl ? userEl.tagName + (userEl.type ? ":" + userEl.type : "") : null, passTag: passEl ? passEl.tagName + (passEl.type ? ":" + passEl.type : "") : null };
+    })()`;
+    const fieldResult = await sendDebuggerCommand(tid, "Runtime.evaluate", { expression: fieldScript, returnByValue: true });
+    const fields = fieldResult.result?.value || {};
+    const filled = [];
+
+    async function typeInto(pos, text) {
+      if (!pos || text === undefined) return false;
+      await moveCursorTo(tid, pos.x, pos.y);
+      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mousePressed", x: pos.x, y: pos.y, button: "left", clickCount: 1 });
+      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mouseReleased", x: pos.x, y: pos.y, button: "left", clickCount: 1 });
+      // Select-all + delete to clear the field, then insert the secret
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", modifiers: 2 });
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA" });
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyDown", key: "Backspace", code: "Backspace" });
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace" });
+      await sendDebuggerCommand(tid, "Input.insertText", { text: String(text) });
+      return true;
+    }
+
+    if (entry.username !== undefined && fields.user) { await typeInto(fields.user, entry.username); filled.push("username"); }
+    if (entry.password !== undefined && fields.pass) { await typeInto(fields.pass, entry.password); filled.push("password"); }
+    if (submit && fields.pass) {
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter" });
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter" });
+      filled.push("submit");
+    }
+    return {
+      origin: targetOrigin,
+      name,
+      filled,
+      fields: { username: fields.userTag || null, password: fields.passTag || null },
+      note: "Credentials filled from the vault - they never left the extension or crossed the gateway.",
+    };
+  }
+
+  throw new Error("Unknown vault action: " + action + ". Use init, unlock, lock, status, set, get, list, delete, or fill.");
 }
 
 // ============================================================================
