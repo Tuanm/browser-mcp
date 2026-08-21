@@ -100,6 +100,7 @@ chrome.debugger.onDetach.addListener((source) => {
     fetchAuthEnabled.delete(source.tabId);
     wsLogs.delete(source.tabId);
     wsUrls.delete(source.tabId);
+    cancelAgentUiHide(source.tabId);
   }
 });
 
@@ -5478,10 +5479,42 @@ async function resolveElementCoords(tabId, selector) {
 // Agent Activity Indicator
 // ============================================================================
 
+/**
+ * The agent cursor + glow overlay stay visible across ALL steps of an agent
+ * run. Hiding is idle-based: after the last command completes, we wait
+ * CURSOR_IDLE_HIDE_MS of no further commands before fading the UI out. If the
+ * next command arrives sooner, the pending hide is cancelled and the cursor
+ * simply glides from its current (old) position to the new target - no flash.
+ */
+const CURSOR_IDLE_HIDE_MS = 15000; // 15s of inactivity -> hide the agent cursor/overlay
+const agentUiHideTimers = new Map(); // tabId -> timeout id
+
+function scheduleAgentUiHide(tabId) {
+  if (agentUiHideTimers.has(tabId)) clearTimeout(agentUiHideTimers.get(tabId));
+  agentUiHideTimers.set(
+    tabId,
+    setTimeout(() => {
+      agentUiHideTimers.delete(tabId);
+      chrome.tabs.sendMessage(tabId, { type: "hide-agent-overlay" }).catch(() => {});
+      chrome.tabs.sendMessage(tabId, { type: "hide-activity-cursor" }).catch(() => {});
+    }, CURSOR_IDLE_HIDE_MS),
+  );
+}
+
+function cancelAgentUiHide(tabId) {
+  const t = agentUiHideTimers.get(tabId);
+  if (t) {
+    clearTimeout(t);
+    agentUiHideTimers.delete(tabId);
+  }
+}
+
 async function showAgentIndicator(tabId) {
   const count = (activeTabCommands.get(tabId) || 0) + 1;
   activeTabCommands.set(tabId, count);
   if (count === 1) {
+    // A new command arrives: cancel any pending idle-hide so the cursor stays.
+    cancelAgentUiHide(tabId);
     // Ensure content script is injected, then send session prefix & show overlay
     await chrome.scripting
       .executeScript({
@@ -5501,8 +5534,9 @@ function hideAgentIndicator(tabId) {
   activeTabCommands.set(tabId, count);
   if (count === 0) {
     activeTabCommands.delete(tabId);
-    chrome.tabs.sendMessage(tabId, { type: "hide-agent-overlay" }).catch(() => {});
-    chrome.tabs.sendMessage(tabId, { type: "hide-activity-cursor" }).catch(() => {});
+    // Don't hide immediately - keep the cursor visible so the next action can
+    // glide from the old position. Hide only after an idle gap.
+    scheduleAgentUiHide(tabId);
   }
 }
 
@@ -5645,4 +5679,5 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   fetchAuthEnabled.delete(tabId);
   wsLogs.delete(tabId);
   wsUrls.delete(tabId);
+  cancelAgentUiHide(tabId);
 });

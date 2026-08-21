@@ -40,12 +40,9 @@ if (!window[Symbol.for("_x7cs")]) {
       clearTimeout(fadeTimer);
       fadeTimer = null;
     }
-    if (autoHideTimer) clearTimeout(autoHideTimer);
-    autoHideTimer = setTimeout(() => {
-      autoHideTimer = null;
-      overlayCount = 0;
-      hideAgentOverlay();
-    }, 5000);
+    // No auto-hide here: the service worker owns the hide lifecycle via an
+    // idle timer (hide-agent-overlay after inactivity), so the glow stays
+    // visible across multi-step agent runs instead of flashing every 5s.
     if (overlayEl) {
       overlayEl.style.opacity = "1";
       return;
@@ -224,6 +221,8 @@ if (!window[Symbol.for("_x7cs")]) {
     try {
       const cursor = ensurePersistentCursor();
       cursor.style.display = "block";
+      cursor.style.opacity = "1";
+      cursor.style.transition = "none";
       cursor.style.animation = "none";
       if (cursorAnimId) {
         cancelAnimationFrame(cursorAnimId);
@@ -251,6 +250,8 @@ if (!window[Symbol.for("_x7cs")]) {
     try {
       const cursor = ensurePersistentCursor();
       cursor.style.display = "block";
+      cursor.style.opacity = "1";
+      cursor.style.transition = "none";
       cursor.style.animation = "none";
       if (cursorX == null) {
         cursor.style.transition = "none";
@@ -262,10 +263,20 @@ if (!window[Symbol.for("_x7cs")]) {
     } catch {}
   }
 
-  /** Hide the persistent pointer when the agent session ends. */
+  /** Hide the persistent pointer after an idle gap (graceful fade). */
   function hideActivityCursor() {
     try {
-      if (persistentCursorEl) persistentCursorEl.style.display = "none";
+      if (!persistentCursorEl) return;
+      if (cursorAnimId) {
+        cancelAnimationFrame(cursorAnimId);
+        cursorAnimId = null;
+      }
+      const el = persistentCursorEl;
+      el.style.transition = "opacity 0.25s ease-out";
+      el.style.opacity = "0";
+      setTimeout(() => {
+        if (persistentCursorEl === el) el.style.display = "none";
+      }, 260);
     } catch {}
   }
 
