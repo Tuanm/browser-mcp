@@ -1194,100 +1194,158 @@ async function handleDrag({ fromSelector, fromX, fromY, toSelector, toX, toY, ta
 
 // --- Keypress ---
 
+// CDP key codes + char text for US layout (mirrors Playwright's usKeyboardLayout
+// so apps that check event.keyCode / event.which actually see the key press -
+// e.g. Slack's composer ignores Enter when keyCode is 0).
+const KEY_PRESS_MAP = {
+  enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
+  tab: { key: "Tab", code: "Tab", keyCode: 9, text: "\t" },
+  escape: { key: "Escape", code: "Escape", keyCode: 27 },
+  backspace: { key: "Backspace", code: "Backspace", keyCode: 8 },
+  delete: { key: "Delete", code: "Delete", keyCode: 46 },
+  arrowup: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+  arrowdown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+  arrowleft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+  arrowright: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+  home: { key: "Home", code: "Home", keyCode: 36 },
+  end: { key: "End", code: "End", keyCode: 35 },
+  pageup: { key: "PageUp", code: "PageUp", keyCode: 33 },
+  pagedown: { key: "PageDown", code: "PageDown", keyCode: 34 },
+  space: { key: " ", code: "Space", keyCode: 32, text: " " },
+  0: { key: "0", code: "Digit0", keyCode: 48, text: "0" },
+  1: { key: "1", code: "Digit1", keyCode: 49, text: "1" },
+  2: { key: "2", code: "Digit2", keyCode: 50, text: "2" },
+  3: { key: "3", code: "Digit3", keyCode: 51, text: "3" },
+  4: { key: "4", code: "Digit4", keyCode: 52, text: "4" },
+  5: { key: "5", code: "Digit5", keyCode: 53, text: "5" },
+  6: { key: "6", code: "Digit6", keyCode: 54, text: "6" },
+  7: { key: "7", code: "Digit7", keyCode: 55, text: "7" },
+  8: { key: "8", code: "Digit8", keyCode: 56, text: "8" },
+  9: { key: "9", code: "Digit9", keyCode: 57, text: "9" },
+  "-": { key: "-", code: "Minus", keyCode: 189, text: "-" },
+  "=": { key: "=", code: "Equal", keyCode: 187, text: "=" },
+  "[": { key: "[", code: "BracketLeft", keyCode: 219, text: "[" },
+  "]": { key: "]", code: "BracketRight", keyCode: 221, text: "]" },
+  "\\": { key: "\\", code: "Backslash", keyCode: 220, text: "\\" },
+  ";": { key: ";", code: "Semicolon", keyCode: 186, text: ";" },
+  "'": { key: "'", code: "Quote", keyCode: 222, text: "'" },
+  "`": { key: "`", code: "Backquote", keyCode: 192, text: "`" },
+  ",": { key: ",", code: "Comma", keyCode: 188, text: "," },
+  ".": { key: ".", code: "Period", keyCode: 190, text: "." },
+  "/": { key: "/", code: "Slash", keyCode: 191, text: "/" },
+  "!": { key: "!", code: "Digit1", keyCode: 49, shift: true, text: "!" },
+  "@": { key: "@", code: "Digit2", keyCode: 50, shift: true, text: "@" },
+  "#": { key: "#", code: "Digit3", keyCode: 51, shift: true, text: "#" },
+  $: { key: "$", code: "Digit4", keyCode: 52, shift: true, text: "$" },
+  "%": { key: "%", code: "Digit5", keyCode: 53, shift: true, text: "%" },
+  "^": { key: "^", code: "Digit6", keyCode: 54, shift: true, text: "^" },
+  "&": { key: "&", code: "Digit7", keyCode: 55, shift: true, text: "&" },
+  "*": { key: "*", code: "Digit8", keyCode: 56, shift: true, text: "*" },
+  "(": { key: "(", code: "Digit9", keyCode: 57, shift: true, text: "(" },
+  ")": { key: ")", code: "Digit0", keyCode: 48, shift: true, text: ")" },
+  _: { key: "_", code: "Minus", keyCode: 189, shift: true, text: "_" },
+  "+": { key: "+", code: "Equal", keyCode: 187, shift: true, text: "+" },
+  "{": { key: "{", code: "BracketLeft", keyCode: 219, shift: true, text: "{" },
+  "}": { key: "}", code: "BracketRight", keyCode: 221, shift: true, text: "}" },
+  "|": { key: "|", code: "Backslash", keyCode: 220, shift: true, text: "|" },
+  ":": { key: ":", code: "Semicolon", keyCode: 186, shift: true, text: ":" },
+  '"': { key: '"', code: "Quote", keyCode: 222, shift: true, text: '"' },
+  "~": { key: "~", code: "Backquote", keyCode: 192, shift: true, text: "~" },
+  "<": { key: "<", code: "Comma", keyCode: 188, shift: true, text: "<" },
+  ">": { key: ">", code: "Period", keyCode: 190, shift: true, text: ">" },
+  "?": { key: "?", code: "Slash", keyCode: 191, shift: true, text: "?" },
+  f1: { key: "F1", code: "F1", keyCode: 112 },
+  f2: { key: "F2", code: "F2", keyCode: 113 },
+  f3: { key: "F3", code: "F3", keyCode: 114 },
+  f4: { key: "F4", code: "F4", keyCode: 115 },
+  f5: { key: "F5", code: "F5", keyCode: 116 },
+  f6: { key: "F6", code: "F6", keyCode: 117 },
+  f7: { key: "F7", code: "F7", keyCode: 118 },
+  f8: { key: "F8", code: "F8", keyCode: 119 },
+  f9: { key: "F9", code: "F9", keyCode: 120 },
+  f10: { key: "F10", code: "F10", keyCode: 121 },
+  f11: { key: "F11", code: "F11", keyCode: 122 },
+  f12: { key: "F12", code: "F12", keyCode: 123 },
+};
+
+/** Resolve any key (named or single char) into {key, code, keyCode, text, shift}. */
+function resolvePressKey(k) {
+  const lower = String(k).toLowerCase();
+  const named = KEY_PRESS_MAP[lower];
+  if (named) return named;
+  // Single letters: KeyA-KeyZ; uppercase implies Shift (keyCode stays 65-90).
+  if (/^[a-z]$/i.test(k)) {
+    const upper = k.toUpperCase();
+    const isUpper = k === upper;
+    return { key: k, code: "Key" + upper, keyCode: upper.charCodeAt(0), text: k, shift: isUpper };
+  }
+  // Unknown: best-effort char event.
+  return {
+    key: k,
+    code: k,
+    keyCode: typeof k === "string" && k.length === 1 ? k.charCodeAt(0) : 0,
+    text: typeof k === "string" && k.length === 1 ? k : undefined,
+  };
+}
+
 async function handleKeypress({ key, modifiers, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
-  const modifierFlags =
-    (modifiers?.includes("alt") ? 1 : 0) |
-    (modifiers?.includes("ctrl") ? 2 : 0) |
-    (modifiers?.includes("meta") ? 4 : 0) |
-    (modifiers?.includes("shift") ? 8 : 0);
+  const mods = modifiers || [];
+  let modifierFlags =
+    (mods.includes("alt") ? 1 : 0) |
+    (mods.includes("ctrl") ? 2 : 0) |
+    (mods.includes("meta") ? 4 : 0) |
+    (mods.includes("shift") ? 8 : 0);
 
-  // Map common key names to CDP key/code
-  const keyMap = {
-    enter: { key: "Enter", code: "Enter" },
-    tab: { key: "Tab", code: "Tab" },
-    escape: { key: "Escape", code: "Escape" },
-    backspace: { key: "Backspace", code: "Backspace" },
-    delete: { key: "Delete", code: "Delete" },
-    arrowup: { key: "ArrowUp", code: "ArrowUp" },
-    arrowdown: { key: "ArrowDown", code: "ArrowDown" },
-    arrowleft: { key: "ArrowLeft", code: "ArrowLeft" },
-    arrowright: { key: "ArrowRight", code: "ArrowRight" },
-    home: { key: "Home", code: "Home" },
-    end: { key: "End", code: "End" },
-    pageup: { key: "PageUp", code: "PageUp" },
-    pagedown: { key: "PageDown", code: "PageDown" },
-    space: { key: " ", code: "Space" },
-    // Digits
-    0: { key: "0", code: "Digit0" },
-    1: { key: "1", code: "Digit1" },
-    2: { key: "2", code: "Digit2" },
-    3: { key: "3", code: "Digit3" },
-    4: { key: "4", code: "Digit4" },
-    5: { key: "5", code: "Digit5" },
-    6: { key: "6", code: "Digit6" },
-    7: { key: "7", code: "Digit7" },
-    8: { key: "8", code: "Digit8" },
-    9: { key: "9", code: "Digit9" },
-    // Special characters
-    "-": { key: "-", code: "Minus" },
-    "=": { key: "=", code: "Equal" },
-    "[": { key: "[", code: "BracketLeft" },
-    "]": { key: "]", code: "BracketRight" },
-    "\\": { key: "\\", code: "Backslash" },
-    ";": { key: ";", code: "Semicolon" },
-    "'": { key: "'", code: "Quote" },
-    "`": { key: "`", code: "Backquote" },
-    ",": { key: ",", code: "Comma" },
-    ".": { key: ".", code: "Period" },
-    "/": { key: "/", code: "Slash" },
-    // Function keys
-    f1: { key: "F1", code: "F1" },
-    f2: { key: "F2", code: "F2" },
-    f3: { key: "F3", code: "F3" },
-    f4: { key: "F4", code: "F4" },
-    f5: { key: "F5", code: "F5" },
-    f6: { key: "F6", code: "F6" },
-    f7: { key: "F7", code: "F7" },
-    f8: { key: "F8", code: "F8" },
-    f9: { key: "F9", code: "F9" },
-    f10: { key: "F10", code: "F10" },
-    f11: { key: "F11", code: "F11" },
-    f12: { key: "F12", code: "F12" },
-  };
+  const mapped = resolvePressKey(key);
+  if (mapped.shift) modifierFlags |= 8; // implicit Shift for uppercase/shifted symbols
 
-  // For single letters, use KeyA-KeyZ; for unmapped, use key as code
-  function resolveKey(k) {
-    const lower = k.toLowerCase();
-    if (keyMap[lower]) return keyMap[lower];
-    if (/^[a-z]$/i.test(k)) return { key: k, code: `Key${k.toUpperCase()}` };
-    return { key: k, code: k };
-  }
-
-  const mapped = resolveKey(key);
-
-  await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-    type: "keyDown",
+  // Ctrl/Alt/Meta shortcuts (Ctrl+A select-all, Ctrl+Enter send, ...) never
+  // produce a character. Dispatch rawKeyDown without text so the page's
+  // keydown handler sees ctrlKey + keyCode and performs the shortcut instead
+  // of inserting the letter.
+  const hasModifier = !!(modifierFlags & (1 | 2 | 4)); // alt | ctrl | meta
+  const hasText = !hasModifier && mapped.text !== undefined && mapped.text !== null;
+  const base = {
     key: mapped.key,
     code: mapped.code,
+    keyCode: mapped.keyCode,
+    windowsVirtualKeyCode: mapped.keyCode,
+    nativeVirtualKeyCode: mapped.keyCode,
     modifiers: modifierFlags,
-  });
+  };
+
+  // Dispatch like a real keyboard: keyDown with text inserts the character
+  // (no separate char event - that would double-insert), rawKeyDown for
+  // shortcuts/non-printing keys, then keyUp.
+  if (hasText) {
+    await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+      ...base,
+      type: "keyDown",
+      text: mapped.text,
+      unmodifiedText: mapped.text,
+    });
+  } else {
+    await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { ...base, type: "rawKeyDown" });
+  }
   await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
     type: "keyUp",
     key: mapped.key,
     code: mapped.code,
+    keyCode: mapped.keyCode,
+    windowsVirtualKeyCode: mapped.keyCode,
+    nativeVirtualKeyCode: mapped.keyCode,
     modifiers: modifierFlags,
   });
 
   return {
     tabId: tid,
     key: mapped.key,
-    modifiers: modifiers || [],
+    modifiers: mods,
   };
 }
-
 // --- Wait For Element ---
 
 async function handleWaitFor({ selector, tabId, timeout, visible, pierce }) {
