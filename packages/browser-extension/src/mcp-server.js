@@ -1480,9 +1480,12 @@ export function createMcpHandler(dispatch) {
     {
       name: "record",
       description:
-        "Record the browser. Actions: start (record a tab - no prompt, no picker), window (record a window/screen - Chrome requires the user to pick a source in the share dialog once), status (is recording, how long/size), stop (finish + save straight to the user's Downloads - no dialog; save_as=true opts into a Save As dialog; when a local server is configured also returns a file_id for the agent). Recordings are WebM; saved via chrome.downloads.",
+        "Record the browser. Actions: start (record a tab - no prompt, no picker), window/screen (Chrome share dialog - required by the browser), status, stop (save to Downloads, no dialog). Multi-tab session: session_start (begin ONE continuous recording), tab (tab_id - switch which tab is recorded into the same session; each tab needs the one-time toolbar invocation), session_stop (finish the combined session recording). save_as=true opts into Save As. WebM, saved via chrome.downloads.",
       parameters: {
-        action: { type: "string", enum: ["start", "window", "screen", "status", "stop"] },
+        action: {
+          type: "string",
+          enum: ["start", "window", "screen", "status", "stop", "session_start", "tab", "session_stop"],
+        },
         tab_id: { type: "number" },
         include_audio: { type: "boolean" },
         save_as: { type: "boolean" },

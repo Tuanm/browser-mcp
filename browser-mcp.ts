@@ -3328,8 +3328,8 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       action: {
         type: "string",
-        description: "start, window, screen, status, or stop",
-        enum: ["start", "window", "screen", "status", "stop"],
+        description: "start, window, screen, status, stop, session_start, tab, or session_stop",
+        enum: ["start", "window", "screen", "status", "stop", "session_start", "tab", "session_stop"],
       },
       tab_id: { type: "number", description: "Tab to record (start only; default: active tab)" },
       include_audio: { type: "boolean", description: "Capture tab audio (default: true)" },

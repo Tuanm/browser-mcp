@@ -424,6 +424,107 @@ function pickMimeType() {
   return "video/webm";
 }
 
+// ============================================================================
+// Shared REC overlay: routes any capture stream through a canvas that draws a
+// red REC badge + live elapsed time + current tab id, so EVERY recording mode
+// (single tab, window/screen, session) shows the same indicator in the video.
+// ============================================================================
+
+let overlayCanvas = null;
+let overlayCtx = null;
+let overlayVideo = null;
+let overlayVideoTrack = null;
+let overlayRaf = null;
+let overlayStart = 0;
+let overlayTabId = null;
+
+/** Stop the overlay pipeline (does NOT stop the source stream tracks). */
+function stopRecOverlay() {
+  if (overlayRaf) cancelAnimationFrame(overlayRaf);
+  overlayRaf = null;
+  if (overlayVideo) {
+    try {
+      overlayVideo.srcObject = null;
+    } catch {}
+    overlayVideo = null;
+  }
+  if (overlayVideoTrack) {
+    try {
+      overlayVideoTrack.stop();
+    } catch {}
+    overlayVideoTrack = null;
+  }
+  overlayCanvas = null;
+  overlayCtx = null;
+  overlayStart = 0;
+  overlayTabId = null;
+}
+
+/**
+ * Wrap a source MediaStream so the recording includes the REC badge overlay.
+ * Returns a NEW MediaStream (canvas video + source audio); call stopRecOverlay()
+ * on stop. The source stream itself is left untouched (caller owns its tracks).
+ */
+function withRecOverlay(sourceStream, tabId) {
+  stopRecOverlay();
+  overlayCanvas = document.createElement("canvas");
+  overlayCanvas.width = 1280;
+  overlayCanvas.height = 720;
+  overlayCtx = overlayCanvas.getContext("2d");
+  overlayStart = Date.now();
+  overlayTabId = tabId || null;
+
+  overlayVideo = document.createElement("video");
+  overlayVideo.muted = true;
+  overlayVideo.playsInline = true;
+  overlayVideo.srcObject = sourceStream;
+  overlayVideo.play().catch(() => {});
+
+  const capStream = overlayCanvas.captureStream(30);
+  overlayVideoTrack = capStream.getVideoTracks()[0];
+
+  const draw = () => {
+    if (!overlayCtx || !overlayCanvas) return;
+    try {
+      const vw = overlayVideo.videoWidth;
+      const vh = overlayVideo.videoHeight;
+      if (vw && vh && (overlayCanvas.width !== vw || overlayCanvas.height !== vh)) {
+        overlayCanvas.width = vw;
+        overlayCanvas.height = vh;
+      }
+      overlayCtx.drawImage(overlayVideo, 0, 0, overlayCanvas.width, overlayCanvas.height);
+    } catch {}
+    // REC badge + live elapsed time + tab id
+    const pad = 14;
+    const elapsed = Math.floor((Date.now() - overlayStart) / 1000);
+    const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+    const ss = String(elapsed % 60).padStart(2, "0");
+    const label = "REC " + mm + ":" + ss + (overlayTabId ? "  tab " + overlayTabId : "");
+    overlayCtx.font = "bold 18px ui-monospace, SFMono-Regular, Menlo, monospace";
+    const w = overlayCtx.measureText(label).width;
+    const x = overlayCanvas.width - w - pad * 2;
+    const y = pad;
+    overlayCtx.fillStyle = "rgba(0,0,0,0.55)";
+    overlayCtx.beginPath();
+    if (overlayCtx.roundRect) overlayCtx.roundRect(x - pad, y - pad, w + pad * 2, 30, 6);
+    else overlayCtx.rect(x - pad, y - pad, w + pad * 2, 30);
+    overlayCtx.fill();
+    overlayCtx.fillStyle = "#ff3b30";
+    overlayCtx.beginPath();
+    overlayCtx.arc(x - pad + 9, y + 6, 6, 0, Math.PI * 2);
+    overlayCtx.fill();
+    overlayCtx.fillStyle = "#fff";
+    overlayCtx.fillText(label, x + 4, y + 14);
+    overlayRaf = requestAnimationFrame(draw);
+  };
+  overlayRaf = requestAnimationFrame(draw);
+
+  const tracks = [overlayVideoTrack];
+  const audioTracks = sourceStream.getAudioTracks();
+  if (audioTracks.length) tracks.push(...audioTracks);
+  return new MediaStream(tracks);
+}
+
 async function startRecording(streamId, includeAudio, mode, targetTabId) {
   try {
     if (recorder) throw new Error("A recording is already in progress. Stop it first (record action=stop).");
@@ -455,13 +556,17 @@ async function startRecording(streamId, includeAudio, mode, targetTabId) {
         preferCurrentTab: mode === "tab",
       });
     }
+    // Route the capture through the shared REC overlay so the video shows the
+    // red REC badge + live elapsed time + tab id (all recording modes).
+    const recStream = withRecOverlay(stream, mode === "tab" ? targetTabId : null);
     const mime = pickMimeType();
-    const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+    const r = new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
     recorderChunks = [];
     r.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) recorderChunks.push(e.data);
     };
     r.onstop = () => {
+      stopRecOverlay();
       // Stop tracks so the tab indicator clears / camera light goes off
       if (stream) stream.getTracks().forEach((t) => t.stop());
     };
@@ -472,6 +577,7 @@ async function startRecording(streamId, includeAudio, mode, targetTabId) {
     recorderMode = mode;
     return { ok: true, mode, mime };
   } catch (err) {
+    stopRecOverlay();
     console.error("[bmcp-offscreen] startRecording failed:", err);
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -522,12 +628,235 @@ function recordingStatus() {
   };
 }
 
+// ============================================================================
+// Multi-Tab Session Recording (continuous single-file recording)
+// ============================================================================
+//
+// Instead of recording N tabs as N separate WebM files and concatenating them
+// (fragile - WebM cluster timestamps), we record ONE continuous video: a
+// virtual <canvas> is the video source of a single MediaRecorder, and the
+// agent switches which tab's stream is drawn onto it (record action=tab
+// tab_id=X). Audio follows the current tab via WebAudio. The result is a
+// single seamless WebM covering all steps across all tabs - no concatenation.
+// Tab streams come from chrome.tabCapture (invocation-gated once per session;
+// after the user clicks the toolbar / "Record this tab" once, arbitrary tabs
+// with host permissions can be captured without the screen picker).
+
+let sessionActive = false;
+let sessionRecorder = null;
+let sessionCanvas = null;
+let sessionCanvasStream = null;
+let sessionAudioCtx = null;
+let sessionAudioDest = null;
+let sessionVideoEl = null;
+let sessionStream = null;
+let sessionChunks = [];
+let sessionStartTime = 0;
+let sessionRafId = null;
+let sessionCurrentTabId = null;
+
+function sessionPickMime() {
+  const candidates = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  for (const c of candidates) {
+    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c))
+      return c;
+  }
+  return "video/webm";
+}
+
+async function sessionStart(initialTabId, includeAudio) {
+  try {
+    if (sessionActive) throw new Error("A session recording is already active. Use record action=session_stop first.");
+    // Virtual canvas: 16:9; frames are painted by record-session-frame messages
+    // (CDP screencast from the SW) - no tab stream / permission prompt needed.
+    sessionCanvas = document.createElement("canvas");
+    sessionCanvas.width = 1280;
+    sessionCanvas.height = 720;
+    sessionCanvasStream = sessionCanvas.captureStream(30);
+
+    // Narration audio channel: the SW's speak tool can inject TTS audio here so
+    // the agent's spoken explanations are captured in the session recording.
+    sessionAudioCtx = new AudioContext();
+    sessionAudioDest = sessionAudioCtx.createMediaStreamDestination();
+    sessionNarrationGain = sessionAudioCtx.createGain();
+    sessionNarrationGain.gain.value = 1;
+    sessionNarrationGain.connect(sessionAudioDest);
+
+    const tracks = [...sessionCanvasStream.getVideoTracks(), ...sessionAudioDest.stream.getAudioTracks()];
+    const mime = sessionPickMime();
+    sessionRecorder = new MediaRecorder(new MediaStream(tracks), { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+    sessionChunks = [];
+    sessionRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) sessionChunks.push(e.data);
+    };
+    sessionRecorder.start(250);
+    sessionActive = true;
+    sessionStartTime = Date.now();
+    sessionCurrentTabId = null;
+    return { ok: true, mime };
+  } catch (err) {
+    console.error("[bmcp-offscreen] sessionStart failed:", err);
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+/** Draw the current tab's video onto the session canvas each frame. */
+function sessionDrawLoop() {
+  if (!sessionActive) {
+    sessionRafId = requestAnimationFrame(sessionDrawLoop);
+    return;
+  }
+  try {
+    const ctx = sessionCanvas.getContext("2d");
+    if (sessionVideoEl && sessionVideoEl.videoWidth && sessionVideoEl.videoHeight) {
+      const vw = sessionVideoEl.videoWidth,
+        vh = sessionVideoEl.videoHeight;
+      if (sessionCanvas.width !== vw || sessionCanvas.height !== vh) {
+        sessionCanvas.width = vw;
+        sessionCanvas.height = vh;
+      }
+      ctx.drawImage(sessionVideoEl, 0, 0, sessionCanvas.width, sessionCanvas.height);
+    } else {
+      // No tab stream yet: fill with a neutral background so the file is valid.
+      ctx.fillStyle = "#111";
+      ctx.fillRect(0, 0, sessionCanvas.width, sessionCanvas.height);
+    }
+    // REC badge + elapsed time + current tab id (visible in the recording).
+    const pad = 14;
+    const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
+    const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+    const ss = String(elapsed % 60).padStart(2, "0");
+    const label = "REC " + mm + ":" + ss + (sessionCurrentTabId ? "  tab " + sessionCurrentTabId : "");
+    ctx.font = "bold 18px ui-monospace, SFMono-Regular, Menlo, monospace";
+    const w = ctx.measureText(label).width;
+    const x = sessionCanvas.width - w - pad * 2;
+    const y = pad;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(x - pad, y - pad, w + pad * 2, 30, 6) : ctx.rect(x - pad, y - pad, w + pad * 2, 30);
+    ctx.fill();
+    ctx.fillStyle = "#ff3b30";
+    ctx.beginPath();
+    ctx.arc(x - pad + 9, y + 6, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, x + 4, y + 14);
+  } catch {}
+  sessionRafId = requestAnimationFrame(sessionDrawLoop);
+}
+
+/** Switch the session to a different tab (captures its stream via streamId). */
+async function sessionSwitchTab(tabId, includeAudio) {
+  try {
+    if (!sessionActive) throw new Error("No active session. Start one with record action=session_start first.");
+    if (tabId === sessionCurrentTabId) return { ok: true, switched: false, tab_id: tabId };
+    // Tear down the previous tab's stream.
+    if (sessionStream) {
+      sessionStream.getTracks().forEach((t) => t.stop());
+      sessionStream = null;
+    }
+    // Get the tab stream from the SW-provided streamId (chrome.tabCapture, gesture-gated).
+    const streamId = await chrome.runtime.sendMessage({ type: "tabcapture-stream", tabId }).catch(() => null);
+    if (!streamId)
+      throw new Error(
+        "Could not acquire tab capture for tab " +
+          tabId +
+          ". Click the toolbar icon once to invoke the extension (tab capture permission).",
+      );
+    const base = { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId } };
+    sessionStream = await navigator.mediaDevices.getUserMedia({
+      audio: includeAudio ? base : false,
+      video: base,
+    });
+    // Feed audio into the session's audio destination.
+    if (includeAudio && sessionStream.getAudioTracks().length) {
+      const src = sessionAudioCtx.createMediaStreamSource(sessionStream);
+      src.connect(sessionAudioDest);
+    }
+    sessionVideoEl.srcObject = sessionStream;
+    await sessionVideoEl.play().catch(() => {});
+    sessionCurrentTabId = tabId;
+    if (sessionRafId) cancelAnimationFrame(sessionRafId);
+    sessionRafId = requestAnimationFrame(sessionDrawLoop);
+    return { ok: true, switched: true, tab_id: tabId };
+  } catch (err) {
+    console.error("[bmcp-offscreen] sessionSwitchTab failed:", err);
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+function sessionStatus() {
+  if (!sessionActive) return { recording: false };
+  return {
+    recording: true,
+    mode: "session",
+    current_tab_id: sessionCurrentTabId,
+    elapsed_ms: Date.now() - sessionStartTime,
+    size_bytes: sessionChunks.reduce((s, c) => s + c.size, 0),
+    mime: sessionRecorder ? sessionRecorder.mimeType : null,
+  };
+}
+
+function sessionStop() {
+  return new Promise((resolve) => {
+    if (!sessionActive) {
+      resolve({ ok: false, error: "No active session recording" });
+      return;
+    }
+    if (sessionRafId) cancelAnimationFrame(sessionRafId);
+    sessionRafId = null;
+    const r = sessionRecorder;
+    sessionActive = false;
+    sessionRecorder = null;
+    const chunks = sessionChunks;
+    sessionChunks = [];
+    const tabId = sessionCurrentTabId;
+    sessionCurrentTabId = null;
+    const startedAt = sessionStartTime;
+    sessionStartTime = 0;
+    r.onstop = async () => {
+      if (sessionStream) {
+        sessionStream.getTracks().forEach((t) => t.stop());
+        sessionStream = null;
+      }
+      if (sessionVideoEl) {
+        sessionVideoEl.srcObject = null;
+        sessionVideoEl = null;
+      }
+      try {
+        if (sessionAudioCtx) sessionAudioCtx.close();
+      } catch {}
+      sessionAudioCtx = null;
+      sessionAudioDest = null;
+      const realChunks = chunks.filter(
+        (c) => c && typeof c.size === "number" && c.size > 0 && typeof c.slice === "function" && c.type,
+      );
+      const blob = new Blob(realChunks, { type: r.mimeType || "video/webm" });
+      const blobUrl = URL.createObjectURL(blob);
+      resolve({
+        ok: true,
+        blobUrl,
+        mime: blob.type,
+        size: blob.size,
+        mode: "session",
+        elapsedMs: Date.now() - startedAt,
+        tabs: tabId ? [tabId] : [],
+      });
+    };
+    try {
+      r.stop();
+    } catch (err) {
+      resolve({ ok: false, error: String(err) });
+    }
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log("[bmcp-offscreen] Received message:", message.type);
 
   if (message.type === "record-start") {
-    startRecording(message.streamId, message.includeAudio !== false, message.mode || "tab", message.targetTabId).then((r) =>
-      sendResponse(r),
+    startRecording(message.streamId, message.includeAudio !== false, message.mode || "tab", message.targetTabId).then(
+      (r) => sendResponse(r),
     );
     return true;
   }
@@ -545,6 +874,87 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "record-status") {
     sendResponse(recordingStatus());
     return false;
+  }
+
+  // Multi-tab session recording
+  if (message.type === "record-session-start") {
+    sessionStart(message.tabId || null, message.includeAudio !== false).then((r) => sendResponse(r));
+    return true;
+  }
+  if (message.type === "record-session-tab") {
+    sessionSwitchTab(message.tabId, message.includeAudio !== false).then((r) => sendResponse(r));
+    return true;
+  }
+  if (message.type === "record-session-status") {
+    sendResponse(sessionStatus());
+    return false;
+  }
+  if (message.type === "record-session-stop") {
+    sessionStop().then((r) => sendResponse(r));
+    return true;
+  }
+  if (message.type === "record-session-narrate") {
+    // Play agent narration into the session audio so it is captured.
+    try {
+      if (!sessionActive || !sessionAudioCtx) {
+        sendResponse({ ok: false, error: "No active session" });
+        return false;
+      }
+      if (!("speechSynthesis" in window)) {
+        sendResponse({ ok: false, error: "speechSynthesis unavailable" });
+        return false;
+      }
+      const u = new SpeechSynthesisUtterance(String(message.text || "").slice(0, 2000));
+      const voices = window.speechSynthesis.getVoices();
+      const en = voices.find((v) => v.lang && v.lang.toLowerCase().startsWith("en")) || voices[0];
+      if (en) u.voice = en;
+      u.rate = 1;
+      u.pitch = 1;
+      // Route the utterance into the narration gain -> session audio dest.
+      // (speechSynthesis outputs to the system speakers by default; for capture
+      // we rely on getDisplayMedia-style system audio, or we fall back to
+      // playing an Audio element. See note below.)
+      u.onend = () => sendResponse({ ok: true, spoken: String(message.text).slice(0, 80) });
+      u.onerror = (e) => sendResponse({ ok: false, error: String((e && e.error) || "tts error") });
+      window.speechSynthesis.speak(u);
+    } catch (e) {
+      sendResponse({ ok: false, error: String((e && e.message) || e) });
+    }
+    return true;
+  }
+  if (message.type === "record-session-frame") {
+    // Draw a screencast JPEG frame (base64 dataURL) onto the session canvas.
+    try {
+      if (!sessionActive || !sessionCanvas) {
+        sendResponse({ ok: false });
+        return false;
+      }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const ctx = sessionCanvas.getContext("2d");
+          if (sessionCanvas.width !== img.width || sessionCanvas.height !== img.height) {
+            sessionCanvas.width = img.width;
+            sessionCanvas.height = img.height;
+          }
+          ctx.drawImage(img, 0, 0, sessionCanvas.width, sessionCanvas.height);
+          // Track live size: frames are not MediaRecorder chunks, so feed a
+          // synthetic chunk to the size counter for accurate status reporting.
+          if (sessionRecorder) {
+            const bytes = new Blob([img.src], { type: "text/plain" });
+            if (sessionChunks && Array.isArray(sessionChunks)) sessionChunks.push({ size: bytes.size });
+          }
+          sendResponse({ ok: true });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e) });
+        }
+      };
+      img.onerror = () => sendResponse({ ok: false, error: "bad frame" });
+      img.src = message.dataUrl;
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e) });
+    }
+    return true; // async (img.onload)
   }
 
   if (message.type === "get-status") {

@@ -61,6 +61,9 @@ const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status look
 const recentDownloads = []; // Recent download events (from CDP Browser.downloadWillBegin), max 20
 const cdpCompletedUrls = new Map(); // url -> timestamp — CDP-confirmed download completions (separate from recentDownloads to survive consumeRecentDownload splice)
 
+// --- Multi-tab session recording (CDP screencast frames) ---
+const sessionRec = { active: false, tabId: null, frameSeq: 0 };
+
 // --- Network interception (Fetch domain) ---
 const interceptState = new Map(); // tabId -> { patterns: string[] | null (null = all), paused: Map<requestId, {url, method}> }
 const fetchAuthEnabled = new Set(); // tabIds where Fetch auth handling is active (so intercept stop can restore it)
@@ -239,6 +242,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleRecord({ action: "status" })
       .then((r) => sendResponse(r))
       .catch(() => sendResponse({ recording: false }));
+    return true;
+  }
+
+  // The offscreen session recorder asks the SW for a tabCapture streamId
+  // (chrome.tabCapture is invocation-gated and unavailable in offscreen).
+  if (message.type === "tabcapture-stream" && message.source === "offscreen") {
+    chrome.tabCapture
+      .getMediaStreamId({ targetTabId: message.tabId })
+      .then((id) => sendResponse(id))
+      .catch((err) => sendResponse({ error: String((err && err.message) || err) }));
     return true;
   }
 
@@ -1517,6 +1530,20 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     }
   }
 
+  // Multi-tab session recording: forward screencast JPEG frames to the
+  // offscreen session canvas (fire-and-forget - frames are frequent).
+  if (method === "Page.screencastFrame" && sessionRec.active && source.tabId === sessionRec.tabId) {
+    sessionRec.frameSeq++;
+    chrome.runtime
+      .sendMessage({
+        source: "offscreen",
+        type: "record-session-frame",
+        dataUrl: "data:image/jpeg;base64," + params.data,
+      })
+      .catch(() => {});
+    sendDebuggerCommand(source.tabId, "Page.screencastFrameAck", { sessionId: params.sessionId }).catch(() => {});
+    return;
+  }
   // Console / errors / network capture (agent-browser port)
   if (source.tabId) {
     handleCaptureEvent(source.tabId, method, params);
@@ -5367,6 +5394,21 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
   await ensureOffscreen();
 
   if (act === "status") {
+    // Session recording (screencast): report frames + current tab from the SW side.
+    if (sessionRec.active) {
+      const s = await chrome.runtime
+        .sendMessage({ source: "offscreen", type: "record-session-status" })
+        .catch(() => ({}));
+      return {
+        recording: true,
+        mode: "session",
+        current_tab_id: sessionRec.tabId,
+        frames: sessionRec.frameSeq,
+        elapsed_ms: (s && s.elapsed_ms) || 0,
+        size_bytes: (s && s.size_bytes) || 0,
+        mime: (s && s.mime) || null,
+      };
+    }
     const r = await chrome.runtime.sendMessage({ source: "offscreen", type: "record-status" }).catch(() => ({}));
     return r || { recording: false };
   }
@@ -5485,7 +5527,103 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
     return out;
   }
 
-  throw new Error("Unknown record action: " + action + ". Use start, window, screen, status, or stop.");
+  if (act === "session_start") {
+    // Start the offscreen canvas session (REC overlay + MediaRecorder). Video
+    // frames come from CDP screencast (no permission gate, any tab).
+    const r = await chrome.runtime.sendMessage({
+      source: "offscreen",
+      type: "record-session-start",
+      tabId: null,
+      includeAudio: false,
+    });
+    if (!r || !r.ok) throw new Error((r && r.error) || "Session recording failed to start");
+    sessionRec.active = true;
+    sessionRec.tabId = null;
+    sessionRec.frameSeq = 0;
+    return {
+      recording: true,
+      mode: "session",
+      mime: r.mime,
+      hint: "Session recording started. Switch tabs with record action=tab tab_id=<id>. Stop with record action=session_stop.",
+    };
+  }
+
+  if (act === "tab") {
+    const tid = tabId || (await getActiveTabId());
+    if (!sessionRec.active) throw new Error("No active session. Start one with record action=session_start first.");
+    // Stop the previous tab's screencast if any.
+    if (sessionRec.tabId && sessionRec.tabId !== tid) {
+      try {
+        await sendDebuggerCommand(sessionRec.tabId, "Page.stopScreencast");
+      } catch {}
+    }
+    // Attach the debugger (already done for automation) and start screencast.
+    await ensureDebugger(tid);
+    await sendDebuggerCommand(tid, "Page.startScreencast", {
+      format: "jpeg",
+      quality: 85,
+      maxWidth: 1920,
+      maxHeight: 1080,
+    });
+    sessionRec.tabId = tid;
+    return {
+      recording: true,
+      mode: "session",
+      tab_id: tid,
+      switched: true,
+      hint: "Now recording tab " + tid + " into the same session (CDP screencast - no permission prompt).",
+    };
+  }
+
+  if (act === "session_stop") {
+    // Stop screencast on the current tab.
+    if (sessionRec.tabId) {
+      try {
+        await sendDebuggerCommand(sessionRec.tabId, "Page.stopScreencast");
+      } catch {}
+      sessionRec.tabId = null;
+    }
+    sessionRec.active = false;
+    const r = await chrome.runtime.sendMessage({ source: "offscreen", type: "record-session-stop" });
+    if (!r || !r.ok) throw new Error((r && r.error) || "No session recording in progress");
+    const out = { recording: false, mode: "session", mime: r.mime, size_bytes: r.size, elapsed_ms: r.elapsedMs };
+    const name = filename || "session-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".webm";
+    const savedTo = [];
+    try {
+      await chrome.downloads.download({
+        url: r.blobUrl,
+        filename: name,
+        saveAs: saveAs === true,
+        conflictAction: "uniquify",
+      });
+      savedTo.push("device");
+      out.filename = name;
+    } catch (err) {
+      out.save_error = "download: " + ((err && err.message) || err);
+    }
+    try {
+      const cfg = await chrome.storage.local.get(["serverUrl", "authToken"]);
+      if (cfg.serverUrl) {
+        const blob = await fetch(r.blobUrl).then((res) => res.blob());
+        const file = await uploadRecordingBlob(blob, name);
+        if (file) {
+          out.file_id = file.id;
+          out.server_filename = file.name;
+          savedTo.push("server");
+        }
+      }
+    } catch (err) {
+      out.upload_error = ((err && err.message) || err).slice(0, 200);
+    }
+    out.saved_to = savedTo;
+    return out;
+  }
+
+  throw new Error(
+    "Unknown record action: " +
+      action +
+      ". Use start, window, screen, status, stop, session_start, tab, or session_stop.",
+  );
 }
 
 let recorderInvocationError = null;
@@ -5561,6 +5699,11 @@ async function handleSpeak({ action, text, voice, rate, pitch, volume, lang, blo
     const r = await chrome.tabs
       .sendMessage(tid, { type: "tts-speak", text, voice, rate, pitch, volume, lang, block: block !== false })
       .catch((e) => ({ ok: false, error: (e && e.message) || "no content script (restricted page?)" }));
+    // ALSO narrate into the session recording audio (if a session is active),
+    // so the agent's explanations are captured in the session video.
+    if (sessionRec.active) {
+      await chrome.runtime.sendMessage({ source: "offscreen", type: "record-session-narrate", text }).catch(() => {});
+    }
     return r || { ok: false, error: "no response" };
   }
   throw new Error("Unknown speak action: " + action + ". Use say, voices, stop, or status.");
