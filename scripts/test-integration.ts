@@ -19,9 +19,7 @@ function ok(name: string, cond: boolean, detail?: string) {
     console.log("  PASS " + name);
   } else {
     failures++;
-    console.log(
-      "  FAIL " + name + (detail ? " :: " + String(detail).slice(0, 400) : ""),
-    );
+    console.log("  FAIL " + name + (detail ? " :: " + String(detail).slice(0, 400) : ""));
   }
 }
 
@@ -44,16 +42,7 @@ const filesDir = ROOT + "/.test-files";
 rmSync(filesDir, { recursive: true, force: true });
 mkdirSync(filesDir, { recursive: true });
 const serverA = spawn(
-  [
-    "bun",
-    ROOT + "/browser-mcp.ts",
-    "--port",
-    "7779",
-    "--bind",
-    "127.0.0.1",
-    "--files-dir",
-    filesDir,
-  ],
+  ["bun", ROOT + "/browser-mcp.ts", "--port", "7779", "--bind", "127.0.0.1", "--files-dir", filesDir],
   { stdout: "pipe", stderr: "pipe" },
 );
 await sleep(1200);
@@ -79,20 +68,12 @@ ok(
 );
 
 r = await mcpCall(A, { jsonrpc: "2.0", id: 2, method: "ping" });
-ok(
-  "ping",
-  r.json?.result && typeof r.json.result === "object",
-  JSON.stringify(r.json),
-);
+ok("ping", r.json?.result && typeof r.json.result === "object", JSON.stringify(r.json));
 
 // Notifications (no id): the local server answers with 204 No Content
 // (spec-correct) - strict clients like codex/pi reject a response body.
 r = await mcpCall(A, { jsonrpc: "2.0", method: "notifications/initialized" });
-ok(
-  "notification 204 no content",
-  r.status === 204,
-  "status " + r.status + " body " + JSON.stringify(r.json),
-);
+ok("notification 204 no content", r.status === 204, "status " + r.status + " body " + JSON.stringify(r.json));
 
 r = await mcpCall(A, { jsonrpc: "2.0", id: 3, method: "tools/list" });
 ok(
@@ -103,13 +84,10 @@ ok(
 const names = (r.json?.result?.tools ?? []).map((t: any) => t.name);
 ok("has navigate", names.includes("navigate"));
 ok("has file_read", names.includes("file_read"));
-const navSchema = (r.json?.result?.tools ?? []).find(
-  (t: any) => t.name === "navigate",
-);
+const navSchema = (r.json?.result?.tools ?? []).find((t: any) => t.name === "navigate");
 ok(
   "navigate inputSchema",
-  navSchema?.inputSchema?.type === "object" &&
-    navSchema.inputSchema.required?.includes("url"),
+  navSchema?.inputSchema?.type === "object" && navSchema.inputSchema.required?.includes("url"),
 );
 
 r = await mcpCall(A, {
@@ -120,8 +98,7 @@ r = await mcpCall(A, {
 });
 ok(
   "status disconnected (status query, not error)",
-  r.json?.result?.isError !== true &&
-    (r.json?.result?.content?.[0]?.text ?? "").includes('"connected": false'),
+  r.json?.result?.isError !== true && (r.json?.result?.content?.[0]?.text ?? "").includes('"connected": false'),
   JSON.stringify(r.json?.result),
 );
 
@@ -131,18 +108,10 @@ r = await mcpCall(A, {
   method: "tools/call",
   params: { name: "tabs", arguments: {} },
 });
-ok(
-  "tabs no extension -> error",
-  r.json?.result?.isError === true,
-  JSON.stringify(r.json?.result),
-);
+ok("tabs no extension -> error", r.json?.result?.isError === true, JSON.stringify(r.json?.result));
 
 r = await mcpCall(A, { jsonrpc: "2.0", id: 6, method: "unknown_method" });
-ok(
-  "unknown method -> -32601",
-  r.json?.error?.code === -32601,
-  JSON.stringify(r.json),
-);
+ok("unknown method -> -32601", r.json?.error?.code === -32601, JSON.stringify(r.json));
 
 console.log("\n== CSRF origin gate on /mcp ==");
 r = await fetch(A + "/mcp", {
@@ -176,32 +145,19 @@ ok("preflight evil origin -> 403", r.status === 403, "status=" + r.status);
 
 console.log("\n== Files ==");
 const form = new FormData();
-form.append(
-  "file",
-  new Blob(["hello browser-mcp"], { type: "text/plain" }),
-  "greeting.txt",
-);
+form.append("file", new Blob(["hello browser-mcp"], { type: "text/plain" }), "greeting.txt");
 r = await fetch(A + "/files/upload", { method: "POST", body: form });
 const up = await r.json();
 ok(
   "upload returns file_id",
-  r.status === 200 &&
-    up?.ok === true &&
-    /^[a-f0-9]{12}$/.test(up.file?.id ?? ""),
+  r.status === 200 && up?.ok === true && /^[a-f0-9]{12}$/.test(up.file?.id ?? ""),
   JSON.stringify(up),
 );
 const fileId = up.file?.id ?? "";
 
 r = await fetch(A + "/files/" + fileId);
-ok(
-  "download roundtrip",
-  r.status === 200 && (await r.text()) === "hello browser-mcp",
-  "status=" + r.status,
-);
-ok(
-  "download disposition",
-  (r.headers.get("content-disposition") ?? "").includes("greeting.txt"),
-);
+ok("download roundtrip", r.status === 200 && (await r.text()) === "hello browser-mcp", "status=" + r.status);
+ok("download disposition", (r.headers.get("content-disposition") ?? "").includes("greeting.txt"));
 
 r = await mcpCall(A, {
   jsonrpc: "2.0",
@@ -216,11 +172,7 @@ ok(
 );
 
 r = await fetch(A + "/files/../../etc/passwd");
-ok(
-  "path traversal rejected",
-  r.status === 400 || r.status === 404,
-  "status=" + r.status,
-);
+ok("path traversal rejected", r.status === 400 || r.status === 404, "status=" + r.status);
 
 console.log("\n== Extension bridge (mock extension) ==");
 
@@ -288,9 +240,7 @@ extWs.addEventListener("message", (ev: any) => {
           id: data.id,
           result: {
             tabId: 7,
-            dataUrl:
-              "data:image/jpeg;base64," +
-              Buffer.from("fakejpeg").toString("base64"),
+            dataUrl: "data:image/jpeg;base64," + Buffer.from("fakejpeg").toString("base64"),
           },
         }),
       );
@@ -301,8 +251,7 @@ extWs.addEventListener("message", (ev: any) => {
           result: { stored: true, key: data.params?.key },
         }),
       );
-    else if (data.method === "execute")
-      extWs.send(JSON.stringify({ id: data.id, result: { value: 42 } }));
+    else if (data.method === "execute") extWs.send(JSON.stringify({ id: data.id, result: { value: 42 } }));
     else if (data.method === "snapshot")
       extWs.send(
         JSON.stringify({
@@ -385,19 +334,14 @@ extWs.addEventListener("message", (ev: any) => {
           },
         }),
       );
-    else if (
-      data.method === "reload" ||
-      data.method === "back" ||
-      data.method === "forward"
-    )
+    else if (data.method === "reload" || data.method === "back" || data.method === "forward")
       extWs.send(
         JSON.stringify({
           id: data.id,
           result: { tabId: 7, url: "https://example.com", title: "Example" },
         }),
       );
-    else if (data.method === "close")
-      extWs.send(JSON.stringify({ id: data.id, result: { closed: 7 } }));
+    else if (data.method === "close") extWs.send(JSON.stringify({ id: data.id, result: { closed: 7 } }));
     else if (data.method === "storage")
       extWs.send(
         JSON.stringify({
@@ -428,8 +372,7 @@ extWs.addEventListener("message", (ev: any) => {
           },
         }),
       );
-    else if (data.method === "highlight")
-      extWs.send(JSON.stringify({ id: data.id, result: { tabId: 7 } }));
+    else if (data.method === "highlight") extWs.send(JSON.stringify({ id: data.id, result: { tabId: 7 } }));
     else if (data.method === "window")
       extWs.send(
         JSON.stringify({
@@ -507,11 +450,7 @@ extWs.addEventListener("message", (ev: any) => {
 // status now connected
 r = await fetch(A + "/health");
 const health = await r.json();
-ok(
-  "health extensionConnected",
-  health.extensionConnected === true,
-  JSON.stringify(health),
-);
+ok("health extensionConnected", health.extensionConnected === true, JSON.stringify(health));
 
 // navigate through the bridge
 r = await mcpCall(A, {
@@ -528,9 +467,7 @@ ok(
 );
 ok(
   "bridge received navigate command",
-  commands.some(
-    (c) => c.method === "navigate" && c.params.url === "https://example.com",
-  ),
+  commands.some((c) => c.method === "navigate" && c.params.url === "https://example.com"),
 );
 
 // tabs through the bridge
@@ -586,9 +523,7 @@ r = await mcpCall(A, {
 const snapText = r.json?.result?.content?.[0]?.text ?? "";
 ok(
   "snapshot assigns refs",
-  snapText.includes("[ref=e1]") &&
-    snapText.includes("[ref=e2]") &&
-    snapText.includes("[ref=e3]"),
+  snapText.includes("[ref=e1]") && snapText.includes("[ref=e2]") && snapText.includes("[ref=e3]"),
   snapText.slice(0, 200),
 );
 ok(
@@ -612,9 +547,7 @@ ok(
 ok(
   "ref resolved to selector",
   commands.some((c) => c.method === "click" && c.params.selector === "#name"),
-  JSON.stringify(
-    commands.filter((c) => c.method === "click").map((c) => c.params),
-  ),
+  JSON.stringify(commands.filter((c) => c.method === "click").map((c) => c.params)),
 );
 
 // stale ref error
@@ -626,8 +559,7 @@ r = await mcpCall(A, {
 });
 ok(
   "stale ref -> helpful error",
-  r.json?.result?.isError === true &&
-    /Run snapshot again/.test(r.json?.result?.content?.[0]?.text ?? ""),
+  r.json?.result?.isError === true && /Run snapshot again/.test(r.json?.result?.content?.[0]?.text ?? ""),
   JSON.stringify(r.json?.result?.content?.[0]?.text),
 );
 
@@ -764,10 +696,7 @@ r = await mcpCall(A, {
   method: "tools/call",
   params: { name: "highlight", arguments: { ref: "e1" } },
 });
-ok(
-  "highlight",
-  (r.json?.result?.content?.[0]?.text ?? "").includes("highlighted"),
-);
+ok("highlight", (r.json?.result?.content?.[0]?.text ?? "").includes("highlighted"));
 
 // storage / pdf / set / window
 r = await mcpCall(A, {
@@ -812,10 +741,7 @@ r = await mcpCall(A, {
   method: "tools/call",
   params: { name: "window", arguments: { action: "list" } },
 });
-ok(
-  "window list",
-  (r.json?.result?.content?.[0]?.text ?? "").includes("Mock Tab"),
-);
+ok("window list", (r.json?.result?.content?.[0]?.text ?? "").includes("Mock Tab"));
 
 // console / errors / network
 r = await mcpCall(A, {
@@ -824,10 +750,7 @@ r = await mcpCall(A, {
   method: "tools/call",
   params: { name: "console", arguments: { action: "view" } },
 });
-ok(
-  "console",
-  (r.json?.result?.content?.[0]?.text ?? "").includes("hello from page"),
-);
+ok("console", (r.json?.result?.content?.[0]?.text ?? "").includes("hello from page"));
 r = await mcpCall(A, {
   jsonrpc: "2.0",
   id: 41,
@@ -841,10 +764,7 @@ r = await mcpCall(A, {
   method: "tools/call",
   params: { name: "network", arguments: { action: "view" } },
 });
-ok(
-  "network",
-  (r.json?.result?.content?.[0]?.text ?? "").includes("example.com/api"),
-);
+ok("network", (r.json?.result?.content?.[0]?.text ?? "").includes("example.com/api"));
 
 // new tool names are shortened
 r = await mcpCall(A, { jsonrpc: "2.0", id: 43, method: "tools/list" });
@@ -901,29 +821,22 @@ ok(
       .filter((t) => !allNames.includes(t))
       .join(","),
 );
+// dialog tool exposes status (JS dialog inspection) + click passthrough of dialog_opened
+const dialogTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "dialog");
+ok("dialog schema has status action", !!dialogTool?.inputSchema?.properties?.action?.enum?.includes("status"));
 // vault schema exposes action enum
-const vaultTool = (r.json?.result?.tools ?? []).find(
-  (x: any) => x.name === "vault",
-);
-ok(
-  "vault schema has action enum",
-  !!vaultTool?.inputSchema?.properties?.action?.enum?.includes("unlock"),
-);
+const vaultTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "vault");
+ok("vault schema has action enum", !!vaultTool?.inputSchema?.properties?.action?.enum?.includes("unlock"));
 // ref param injected into click schema
 const clickTool = allNames.length ? null : null;
-const schemaTool = (r.json?.result?.tools ?? []).find(
-  (x: any) => x.name === "click",
-);
+const schemaTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "click");
 ok("click schema has ref", !!schemaTool?.inputSchema?.properties?.ref);
 
 // extension disconnect -> pending cleanup
 extWs.close();
 await sleep(300);
 r = await fetch(A + "/health");
-ok(
-  "health extensionDisconnected after close",
-  (await r.json()).extensionConnected === false,
-);
+ok("health extensionDisconnected after close", (await r.json()).extensionConnected === false);
 
 serverA.kill();
 
@@ -975,11 +888,7 @@ ok("mcp with bearer token -> 200", r.status === 200);
 const extNoToken = await fetch(B + "/browser/ws?extId=mock2", {
   headers: { origin: "chrome-extension://abcdefgh" },
 });
-ok(
-  "ws without extension token -> 401",
-  extNoToken.status === 401,
-  "status=" + extNoToken.status,
-);
+ok("ws without extension token -> 401", extNoToken.status === 401, "status=" + extNoToken.status);
 const extWrongToken = await fetch(B + "/browser/ws?extId=mock2&token=wrong", {
   headers: { origin: "chrome-extension://abcdefgh" },
 });
@@ -992,10 +901,9 @@ ok("browser files upload without token -> 401", r.status === 401);
 
 // Popup gateway flow: extension connects with deviceId + token (the token serves BOTH the
 // extension channel AND becomes the /mcp auth token the gateway forwards).
-const popupWs = new WebSocket(
-  "ws://127.0.0.1:7781/browser/ws?extId=mock3&deviceId=dev-popup&token=extsekrit",
-  { headers: { origin: "chrome-extension://abcdefgh" } },
-);
+const popupWs = new WebSocket("ws://127.0.0.1:7781/browser/ws?extId=mock3&deviceId=dev-popup&token=extsekrit", {
+  headers: { origin: "chrome-extension://abcdefgh" },
+});
 const popupOpen = await new Promise<boolean>((resolve) => {
   const to = setTimeout(() => resolve(false), 3000);
   popupWs.addEventListener("open", () => {
@@ -1006,11 +914,7 @@ const popupOpen = await new Promise<boolean>((resolve) => {
 ok("popup WS connects (token satisfies extension channel)", popupOpen === true);
 await sleep(300);
 r = await mcpCall(B, { jsonrpc: "2.0", id: 90, method: "tools/list" });
-ok(
-  "popup token gates /mcp (no token -> 401)",
-  r.status === 401,
-  "status=" + r.status,
-);
+ok("popup token gates /mcp (no token -> 401)", r.status === 401, "status=" + r.status);
 r = await fetch(B + "/mcp?token=extsekrit", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -1022,11 +926,7 @@ r = await fetch(B + "/mcp?token=sekrit", {
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ jsonrpc: "2.0", id: 92, method: "ping" }),
 });
-ok(
-  "CLI --token no longer accepted once popup token set",
-  r.status === 401,
-  "status=" + r.status,
-);
+ok("CLI --token no longer accepted once popup token set", r.status === 401, "status=" + r.status);
 popupWs.close();
 serverB.kill();
 
@@ -1068,8 +968,7 @@ const gwServer = Bun.serve({
             body: JSON.stringify(data.request),
           });
           const resp = await res.json();
-          gwForwardOk =
-            gwForwardOk || resp?.result?.serverInfo?.name === "browser-mcp";
+          gwForwardOk = gwForwardOk || resp?.result?.serverInfo?.name === "browser-mcp";
           ws.send(JSON.stringify({ id: data.id, response: resp }));
         })();
       }
@@ -1101,9 +1000,7 @@ await sleep(1500);
 
 // client connects to the gateway WS and sends an MCP request through it
 const gwClient = new WebSocket("ws://127.0.0.1:7780/ws/test-device");
-await new Promise<void>((resolve) =>
-  gwClient.addEventListener("open", () => resolve()),
-);
+await new Promise<void>((resolve) => gwClient.addEventListener("open", () => resolve()));
 gwClient.send(JSON.stringify({ type: "register", deviceId: "test-device" }));
 gwClient.send(
   JSON.stringify({
@@ -1136,11 +1033,5 @@ gwClient.close();
 gwServer.stop(true);
 serverC.kill();
 
-console.log(
-  "\n========== RESULTS: " +
-    passed +
-    " passed, " +
-    failures +
-    " failed ==========",
-);
+console.log("\n========== RESULTS: " + passed + " passed, " + failures + " failed ==========");
 process.exit(failures > 0 ? 1 : 0);

@@ -168,7 +168,15 @@ export function createMcpHandler(dispatch) {
           intercept_file_chooser: a.intercept_file_chooser,
           stealth: a.stealth,
         });
-        return { content: textBlocks(jsonOut({ clicked: true, element: r.element, tab_id: r.tabId })) };
+        const out = { clicked: true, element: r.element, tab_id: r.tabId };
+        if (r.dialog_opened) {
+          out.dialog_opened = true;
+          out.dialog = r.dialog || null;
+          out.hint = r.hint || "A JS dialog is open. Use the dialog tool (status/accept/dismiss) to continue.";
+        }
+        if (r.download_triggered) out.download_triggered = r.download_triggered;
+        if (r.file_chooser_opened) out.file_chooser_opened = r.file_chooser_opened;
+        return { content: textBlocks(jsonOut(out)) };
       },
     },
 
@@ -259,6 +267,20 @@ export function createMcpHandler(dispatch) {
         if (!code) throw new Error("Either code or script_id is required");
         if (!a.script_id) code = "(async()=>{" + code + "})()";
         const r = await dispatch("execute", { code, tabId: a.tab_id, frameId: a.frame_id, stealth: a.stealth });
+        if (r && r.dialog_opened) {
+          return {
+            content: textBlocks(
+              jsonOut({
+                value: null,
+                dialog_opened: true,
+                dialog: r.dialog || null,
+                hint:
+                  r.hint ||
+                  "The executed script opened a JS dialog. Use the dialog tool (status/accept/dismiss) to continue.",
+              }),
+            ),
+          };
+        }
         return { content: textBlocks(r && r.value !== undefined ? jsonOut(r.value) : "(undefined)") };
       },
     },
@@ -411,9 +433,10 @@ export function createMcpHandler(dispatch) {
 
     {
       name: "dialog",
-      description: "Handle a JavaScript dialog (accept/dismiss, optional prompt_text).",
+      description:
+        "Handle a JavaScript dialog. Actions: status (inspect an open dialog without dismissing), accept (OK/Enter, optional prompt_text for prompt dialogs), dismiss (Cancel).",
       parameters: {
-        action: { type: "string", enum: ["accept", "dismiss"] },
+        action: { type: "string", enum: ["status", "accept", "dismiss"] },
         prompt_text: { type: "string" },
         tab_id: { type: "number" },
       },
@@ -424,11 +447,12 @@ export function createMcpHandler(dispatch) {
           promptText: a.prompt_text,
           tabId: a.tab_id,
         });
-        return {
-          content: textBlocks(
-            jsonOut({ handled: r.handled, type: r.type, dialog_message: r.dialogMessage, tab_id: r.tabId }),
-          ),
-        };
+        const out = { handled: r.handled, type: r.type, tab_id: r.tabId };
+        if (r.dialogMessage !== undefined) out.dialog_message = r.dialogMessage;
+        if (r.message !== undefined) out.message = r.message;
+        if (r.pending !== undefined) out.pending = r.pending;
+        if (r.default_prompt !== undefined) out.default_prompt = r.default_prompt;
+        return { content: textBlocks(jsonOut(out)) };
       },
     },
 

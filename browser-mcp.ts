@@ -24,14 +24,7 @@
  */
 
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 // ============================================================================
@@ -66,19 +59,15 @@ const token: string | undefined = (args.token as string) || undefined;
  * it on /browser/ws and /browser/files/* (?token=). Defense in depth on top of
  * the mandatory chrome-extension:// Origin check.
  */
-const extensionToken: string | undefined =
-  (args["extension-token"] as string) || undefined;
+const extensionToken: string | undefined = (args["extension-token"] as string) || undefined;
 /** Gateway domain (e.g. gateway.example.workers.dev). */
 const gatewayDomain: string | undefined = (args.gateway as string) || undefined;
 /** Device id for the gateway connection. */
 const deviceId: string | undefined = (args.id as string) || undefined;
 /** Directory containing the unpacked extension (for /extension zip). */
-const extDir: string =
-  (args["ext-dir"] as string) ??
-  resolve(import.meta.dir, "packages", "browser-extension");
+const extDir: string = (args["ext-dir"] as string) ?? resolve(import.meta.dir, "packages", "browser-extension");
 /** Where agent/extension files are stored. */
-const filesDir: string =
-  (args["files-dir"] as string) ?? resolve(import.meta.dir, "files");
+const filesDir: string = (args["files-dir"] as string) ?? resolve(import.meta.dir, "files");
 /** DEV ONLY: skip the chrome-extension:// Origin check on /browser/ws. Never use on a shared machine. */
 const allowAnyOrigin = args["allow-any-origin"] === true;
 
@@ -148,11 +137,8 @@ function loadFileIndex(): void {
   for (const f of readdirSync(filesDir)) {
     if (!f.endsWith(".json")) continue;
     try {
-      const meta = JSON.parse(
-        readFileSync(join(filesDir, f), "utf8"),
-      ) as StoredFile;
-      if (meta?.id && meta?.path && existsSync(meta.path))
-        fileIndex.set(meta.id, meta);
+      const meta = JSON.parse(readFileSync(join(filesDir, f), "utf8")) as StoredFile;
+      if (meta?.id && meta?.path && existsSync(meta.path)) fileIndex.set(meta.id, meta);
     } catch {}
   }
 }
@@ -185,10 +171,7 @@ cleanupTimer.unref();
 // Auth helpers
 // ============================================================================
 
-function checkTokenValue(
-  given: string | null | undefined,
-  expected: string | undefined,
-): boolean {
+function checkTokenValue(given: string | null | undefined, expected: string | undefined): boolean {
   if (!expected) return true; // no auth configured
   if (!given) return false;
   const a = Buffer.from(given);
@@ -226,14 +209,9 @@ function checkExtensionOrigin(req: Request): { ok: boolean; reason?: string } {
   if (!origin)
     return {
       ok: false,
-      reason:
-        "missing Origin header (extensions always send chrome-extension://)",
+      reason: "missing Origin header (extensions always send chrome-extension://)",
     };
-  if (
-    origin.startsWith("chrome-extension://") ||
-    origin.startsWith("moz-extension://")
-  )
-    return { ok: true };
+  if (origin.startsWith("chrome-extension://") || origin.startsWith("moz-extension://")) return { ok: true };
   return { ok: false, reason: `origin not allowed: ${origin.slice(0, 64)}` };
 }
 
@@ -315,19 +293,10 @@ function resolveRefArg(args: Record<string, any>): string | undefined {
   const ref = args?.ref;
   if (ref == null) return undefined;
   const m = String(ref).match(/^@?(e\d+)$/);
-  if (!m)
-    throw new Error(
-      'Invalid ref format: "' +
-        ref +
-        '". Refs look like "e3" or "@e3" (from snapshot).',
-    );
+  if (!m) throw new Error('Invalid ref format: "' + ref + '". Refs look like "e3" or "@e3" (from snapshot).');
   const entry = refCache.get(m[1]);
   if (!entry)
-    throw new Error(
-      'Ref "' +
-        ref +
-        '" not found or stale (page changed). Run snapshot again to refresh refs.',
-    );
+    throw new Error('Ref "' + ref + '" not found or stale (page changed). Run snapshot again to refresh refs.');
   return entry.selector;
 }
 
@@ -351,15 +320,11 @@ const REF_SUPPORTING = new Set([
 
 const REF_PARAM = {
   type: "string",
-  description:
-    "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+  description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
 };
 
 /** Resolve refs in a tool-call's arguments before dispatch (mutates args when needed). */
-function resolveArgsRefs(
-  name: string,
-  args: Record<string, any>,
-): Record<string, any> {
+function resolveArgsRefs(name: string, args: Record<string, any>): Record<string, any> {
   if (!args) return args;
   if (REF_SUPPORTING.has(name) && args.ref != null) {
     const sel = resolveRefArg(args);
@@ -389,18 +354,13 @@ function resolveArgsRefs(
 
 /** Resolve a tab id from the server's own status (for get url/title without a bridge round-trip). */
 async function activeTabIdFallback(): Promise<number> {
-  throw new Error(
-    "get url/title requires the extension (use tabs to list tabs first)",
-  );
+  throw new Error("get url/title requires the extension (use tabs to list tabs first)");
 }
 
 /** Fetch a tab from the extension (used by get url/title). */
-async function fetchTab(
-  tabId: number,
-): Promise<{ url: string; title: string }> {
+async function fetchTab(tabId: number): Promise<{ url: string; title: string }> {
   const res = await sendBrowserCommand("tabs", { action: "list" });
-  const tab =
-    (res?.tabs || []).find((t: any) => t.id === tabId) || (res?.tabs || [])[0];
+  const tab = (res?.tabs || []).find((t: any) => t.id === tabId) || (res?.tabs || [])[0];
   if (!tab) throw new Error("No tab found");
   return { url: tab.url || "", title: tab.title || "" };
 }
@@ -493,9 +453,7 @@ function handleBrowserWsOpen(ws: any): void {
   // gateway client (code-mcp style: the gateway forwards ?token= to local /mcp).
   if (ws.data.token) {
     if (token && token !== ws.data.token) {
-      console.warn(
-        "[browser-mcp] Popup token differs from --token; using the popup token for /mcp auth",
-      );
+      console.warn("[browser-mcp] Popup token differs from --token; using the popup token for /mcp auth");
     }
     effectiveToken = ws.data.token;
   }
@@ -510,14 +468,8 @@ function handleBrowserWsOpen(ws: any): void {
     }
     startGatewayClient(ws.data.deviceId);
   }
-  const linkInfo = ws.data.deviceId
-    ? " device=" +
-      ws.data.deviceId +
-      (effectiveToken ? " (auth)" : " (NO AUTH)")
-    : "";
-  console.log(
-    `[browser-mcp] Extension connected: ${extId} (${connections.size} total)${linkInfo}`,
-  );
+  const linkInfo = ws.data.deviceId ? " device=" + ws.data.deviceId + (effectiveToken ? " (auth)" : " (NO AUTH)") : "";
+  console.log(`[browser-mcp] Extension connected: ${extId} (${connections.size} total)${linkInfo}`);
 }
 
 function handleBrowserWsClose(ws: any): void {
@@ -529,14 +481,10 @@ function handleBrowserWsClose(ws: any): void {
     if (p.extensionId === extId) {
       clearTimeout(p.timer);
       pendingRequests.delete(id);
-      p.reject(
-        new Error(`Browser extension disconnected during '${p.method}'`),
-      );
+      p.reject(new Error(`Browser extension disconnected during '${p.method}'`));
     }
   }
-  console.log(
-    `[browser-mcp] Extension disconnected: ${extId} (${connections.size} total)`,
-  );
+  console.log(`[browser-mcp] Extension disconnected: ${extId} (${connections.size} total)`);
 }
 
 function handleBrowserWsMessage(ws: any, message: string | Buffer): void {
@@ -562,9 +510,7 @@ function handleBrowserWsMessage(ws: any, message: string | Buffer): void {
     pendingRequests.delete(data.id);
     clearTimeout(pending.timer);
     if (data.error) {
-      pending.reject(
-        new Error(data.error.message || JSON.stringify(data.error)),
-      );
+      pending.reject(new Error(data.error.message || JSON.stringify(data.error)));
     } else {
       pending.resolve(data.result);
     }
@@ -599,18 +545,11 @@ function sendBrowserCommand(
   }
   const id = `req_${++requestCounter}_${randomBytes(4).toString("hex")}`;
   const extId = ws.data.extensionId;
-  const timeoutMs = Math.min(
-    opts?.timeoutMs || COMMAND_TIMEOUTS[method] || DEFAULT_TIMEOUT_MS,
-    maxBridgeTimeout,
-  );
+  const timeoutMs = Math.min(opts?.timeoutMs || COMMAND_TIMEOUTS[method] || DEFAULT_TIMEOUT_MS, maxBridgeTimeout);
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingRequests.delete(id);
-      reject(
-        new Error(
-          `Browser command '${method}' timed out after ${Math.round(timeoutMs / 1000)}s`,
-        ),
-      );
+      reject(new Error(`Browser command '${method}' timed out after ${Math.round(timeoutMs / 1000)}s`));
     }, timeoutMs);
     pendingRequests.set(id, {
       resolve,
@@ -624,11 +563,7 @@ function sendBrowserCommand(
     } catch (err: any) {
       clearTimeout(timer);
       pendingRequests.delete(id);
-      reject(
-        err instanceof Error
-          ? err
-          : new Error("Failed to send browser command"),
-      );
+      reject(err instanceof Error ? err : new Error("Failed to send browser command"));
     }
   });
 }
@@ -657,26 +592,19 @@ function textBlocks(text: string): any[] {
 /** JSON-stringify a result, truncating long text. */
 function jsonOut(v: any): string {
   if (typeof v === "string")
-    return v.length > MAX_TEXT_OUTPUT
-      ? v.slice(0, MAX_TEXT_OUTPUT) + "\n\n... (truncated)"
-      : v;
+    return v.length > MAX_TEXT_OUTPUT ? v.slice(0, MAX_TEXT_OUTPUT) + "\n\n... (truncated)" : v;
   let s: string;
   try {
     s = JSON.stringify(v, null, 2);
   } catch {
     s = String(v);
   }
-  return s.length > MAX_TEXT_OUTPUT
-    ? s.slice(0, MAX_TEXT_OUTPUT) + "\n\n... (truncated)"
-    : s;
+  return s.length > MAX_TEXT_OUTPUT ? s.slice(0, MAX_TEXT_OUTPUT) + "\n\n... (truncated)" : s;
 }
 
 /** bridge_timeout (seconds) -> ms override, capped by server limits. */
 function bridgeTimeoutMs(args: Record<string, any>): number | undefined {
-  const t =
-    typeof args.bridge_timeout === "number"
-      ? args.bridge_timeout * 1000
-      : undefined;
+  const t = typeof args.bridge_timeout === "number" ? args.bridge_timeout * 1000 : undefined;
   return t;
 }
 
@@ -701,11 +629,7 @@ const tools: Record<string, ToolDef> = {
         connected,
         extensions: connections.size,
         message: connected
-          ? "Browser extension connected (" +
-            connections.size +
-            " instance" +
-            (connections.size > 1 ? "s" : "") +
-            ")."
+          ? "Browser extension connected (" + connections.size + " instance" + (connections.size > 1 ? "s" : "") + ")."
           : "No browser extension connected. Install and enable the Browser MCP extension, then click the toolbar icon and Connect.",
       });
     },
@@ -727,8 +651,7 @@ const tools: Record<string, ToolDef> = {
       },
       bridge_timeout: {
         type: "number",
-        description:
-          "Override server-side timeout in seconds (default: 60, max: 120). Use for slow-loading pages.",
+        description: "Override server-side timeout in seconds (default: 60, max: 120). Use for slow-loading pages.",
       },
     },
     required: ["url"],
@@ -774,8 +697,7 @@ const tools: Record<string, ToolDef> = {
       },
       full_page: {
         type: "boolean",
-        description:
-          "Capture full scrollable page instead of viewport (default: false)",
+        description: "Capture full scrollable page instead of viewport (default: false)",
       },
       stealth: {
         type: "boolean",
@@ -792,13 +714,10 @@ const tools: Record<string, ToolDef> = {
           fullPage: args.full_page,
           stealth: args.stealth,
         });
-        if (!result.dataUrl)
-          return outError(new Error("No screenshot data returned"));
+        if (!result.dataUrl) return outError(new Error("No screenshot data returned"));
         const m = result.dataUrl.match(/^data:(image\/[\w+.-]+);base64,(.*)$/);
         const mimeType = m ? m[1] : "image/jpeg";
-        const base64 = m
-          ? m[2]
-          : result.dataUrl.replace(/^data:image\/\w+;base64,/, "");
+        const base64 = m ? m[2] : result.dataUrl.replace(/^data:image\/\w+;base64,/, "");
         const bytes = Math.floor((base64.length * 3) / 4);
         if (bytes <= MAX_SCREENSHOT_IMAGE_BYTES) {
           return {
@@ -848,8 +767,7 @@ const tools: Record<string, ToolDef> = {
       tab_id: { type: "number", description: "Target tab ID (optional)" },
       button: {
         type: "string",
-        description:
-          '"left" (default) for normal click, "right" for context menu, "middle" for new-tab link open',
+        description: '"left" (default) for normal click, "right" for context menu, "middle" for new-tab link open',
         enum: ["left", "right", "middle"],
       },
       click_count: {
@@ -859,8 +777,7 @@ const tools: Record<string, ToolDef> = {
       },
       pierce: {
         type: "boolean",
-        description:
-          "Pierce shadow DOM and iframes to find the element (default: false)",
+        description: "Pierce shadow DOM and iframes to find the element (default: false)",
       },
       intercept_file_chooser: {
         type: "boolean",
@@ -876,9 +793,7 @@ const tools: Record<string, ToolDef> = {
     required: [],
     handler: async (args) => {
       if (!args.selector && (args.x === undefined || args.y === undefined))
-        return outError(
-          new Error("Provide either a CSS selector or x,y coordinates"),
-        );
+        return outError(new Error("Provide either a CSS selector or x,y coordinates"));
       try {
         const result = await sendBrowserCommand("click", {
           selector: args.selector,
@@ -891,17 +806,19 @@ const tools: Record<string, ToolDef> = {
           intercept_file_chooser: args.intercept_file_chooser,
           stealth: args.stealth,
         });
-        return outJson({
+        const out: Record<string, unknown> = {
           clicked: true,
           element: result.element || args.selector || `(${args.x}, ${args.y})`,
           tab_id: result.tabId,
-          ...(result.download_triggered && {
-            download_triggered: result.download_triggered,
-          }),
-          ...(result.file_chooser_opened && {
-            file_chooser_opened: result.file_chooser_opened,
-          }),
-        });
+        };
+        if (result.download_triggered) out.download_triggered = result.download_triggered;
+        if (result.file_chooser_opened) out.file_chooser_opened = result.file_chooser_opened;
+        if (result.dialog_opened) {
+          out.dialog_opened = true;
+          out.dialog = result.dialog || null;
+          out.hint = result.hint || "A JS dialog is open. Use the dialog tool (status/accept/dismiss) to continue.";
+        }
+        return outJson(out);
       } catch (e) {
         return outError(e);
       }
@@ -916,8 +833,7 @@ const tools: Record<string, ToolDef> = {
       text: { type: "string", description: "Text to type" },
       selector: {
         type: "string",
-        description:
-          "CSS selector of input element (optional - types into focused element)",
+        description: "CSS selector of input element (optional - types into focused element)",
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
       clear_first: {
@@ -930,8 +846,7 @@ const tools: Record<string, ToolDef> = {
       },
       pierce: {
         type: "boolean",
-        description:
-          "Pierce shadow DOM and iframes to find the element (default: false)",
+        description: "Pierce shadow DOM and iframes to find the element (default: false)",
       },
       stealth: {
         type: "boolean",
@@ -976,8 +891,7 @@ const tools: Record<string, ToolDef> = {
       },
       selector: {
         type: "string",
-        description:
-          "CSS selector to scope extraction (optional - uses whole page)",
+        description: "CSS selector to scope extraction (optional - uses whole page)",
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
       frame_id: {
@@ -986,8 +900,7 @@ const tools: Record<string, ToolDef> = {
       },
       bridge_timeout: {
         type: "number",
-        description:
-          "Override server-side timeout in seconds (default: 30, max: 120). Use for heavy pages.",
+        description: "Override server-side timeout in seconds (default: 30, max: 120). Use for heavy pages.",
       },
     },
     required: ["mode"],
@@ -1016,8 +929,7 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       action: {
         type: "string",
-        description:
-          '"list" (default) - shows all tabs; "close" - close a tab; "activate" - bring a tab to foreground',
+        description: '"list" (default) - shows all tabs; "close" - close a tab; "activate" - bring a tab to foreground',
         enum: ["list", "close", "activate"],
       },
       tab_id: {
@@ -1028,10 +940,7 @@ const tools: Record<string, ToolDef> = {
     required: [],
     handler: async (args) => {
       const action = args.action || "list";
-      if (
-        (action === "close" || action === "activate") &&
-        args.tab_id === undefined
-      )
+      if ((action === "close" || action === "activate") && args.tab_id === undefined)
         return outError(new Error(`tab_id is required for "${action}" action`));
       try {
         const result = await sendBrowserCommand("tabs", {
@@ -1055,8 +964,7 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       code: {
         type: "string",
-        description:
-          "JavaScript code to execute in the page context (omit if using script_id)",
+        description: "JavaScript code to execute in the page context (omit if using script_id)",
       },
       script_id: {
         type: "string",
@@ -1071,8 +979,7 @@ const tools: Record<string, ToolDef> = {
       tab_id: { type: "number", description: "Target tab ID (optional)" },
       frame_id: {
         type: "string",
-        description:
-          "Frame ID for frame-targeted execution (use frames to list frames)",
+        description: "Frame ID for frame-targeted execution (use frames to list frames)",
       },
       stealth: {
         type: "boolean",
@@ -1081,8 +988,7 @@ const tools: Record<string, ToolDef> = {
       },
       bridge_timeout: {
         type: "number",
-        description:
-          "Override server-side timeout in seconds (default: 60, max: 120). Use for long-running scripts.",
+        description: "Override server-side timeout in seconds (default: 60, max: 120). Use for long-running scripts.",
       },
     },
     required: [],
@@ -1120,10 +1026,7 @@ const tools: Record<string, ToolDef> = {
           }
           code = `(async function(){const __args=${argsJson};${storedScript}})()`;
         }
-        if (!code)
-          return outError(
-            new Error("Either 'code' or 'script_id' is required."),
-          );
+        if (!code) return outError(new Error("Either 'code' or 'script_id' is required."));
         if (!args.script_id) code = `(async()=>{${code}})()`;
         const result = await sendBrowserCommand(
           "execute",
@@ -1135,6 +1038,20 @@ const tools: Record<string, ToolDef> = {
           },
           { timeoutMs: bridgeTimeoutMs(args) },
         );
+        if (result && result.dialog_opened) {
+          return {
+            blocks: textBlocks(
+              jsonOut({
+                value: null,
+                dialog_opened: true,
+                dialog: result.dialog || null,
+                hint:
+                  result.hint ||
+                  "The executed script opened a JS dialog. Use the dialog tool (status/accept/dismiss) to continue.",
+              }),
+            ),
+          };
+        }
         let output =
           result.value !== undefined
             ? typeof result.value === "string"
@@ -1177,8 +1094,7 @@ const tools: Record<string, ToolDef> = {
       tab_id: { type: "number", description: "Target tab ID (optional)" },
       stealth: {
         type: "boolean",
-        description:
-          "Use stealth mode. Uses window.scrollBy() via chrome.scripting instead of CDP mouseWheel events.",
+        description: "Use stealth mode. Uses window.scrollBy() via chrome.scripting instead of CDP mouseWheel events.",
       },
     },
     required: [],
@@ -1218,8 +1134,7 @@ const tools: Record<string, ToolDef> = {
       tab_id: { type: "number", description: "Target tab ID (optional)" },
       pierce: {
         type: "boolean",
-        description:
-          "Pierce shadow DOM and iframes to find the element (default: false)",
+        description: "Pierce shadow DOM and iframes to find the element (default: false)",
       },
       stealth: {
         type: "boolean",
@@ -1230,9 +1145,7 @@ const tools: Record<string, ToolDef> = {
     required: [],
     handler: async (args) => {
       if (!args.selector && (args.x === undefined || args.y === undefined))
-        return outError(
-          new Error("Provide either a CSS selector or x,y coordinates"),
-        );
+        return outError(new Error("Provide either a CSS selector or x,y coordinates"));
       try {
         const result = await sendBrowserCommand("hover", {
           selector: args.selector,
@@ -1261,8 +1174,7 @@ const tools: Record<string, ToolDef> = {
       y: { type: "number", description: "Target Y coordinate" },
       steps: {
         type: "number",
-        description:
-          "Number of intermediate movement steps (default: 1). Use higher values for smoother travel.",
+        description: "Number of intermediate movement steps (default: 1). Use higher values for smoother travel.",
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -1317,26 +1229,15 @@ const tools: Record<string, ToolDef> = {
       tab_id: { type: "number", description: "Target tab ID (optional)" },
       steps: {
         type: "number",
-        description:
-          "Number of intermediate move steps (default: 10). More steps = smoother drag.",
+        description: "Number of intermediate move steps (default: 10). More steps = smoother drag.",
       },
     },
     required: [],
     handler: async (args) => {
-      if (
-        !args.from_selector &&
-        (args.from_x === undefined || args.from_y === undefined)
-      )
-        return outError(
-          new Error("Provide from_selector or from_x/from_y coordinates"),
-        );
-      if (
-        !args.to_selector &&
-        (args.to_x === undefined || args.to_y === undefined)
-      )
-        return outError(
-          new Error("Provide to_selector or to_x/to_y coordinates"),
-        );
+      if (!args.from_selector && (args.from_x === undefined || args.from_y === undefined))
+        return outError(new Error("Provide from_selector or from_x/from_y coordinates"));
+      if (!args.to_selector && (args.to_x === undefined || args.to_y === undefined))
+        return outError(new Error("Provide to_selector or to_x/to_y coordinates"));
       try {
         const result = await sendBrowserCommand("drag", {
           fromSelector: args.from_selector,
@@ -1372,8 +1273,7 @@ const tools: Record<string, ToolDef> = {
       modifiers: {
         type: "array",
         items: { type: "string" },
-        description:
-          'Modifier keys to hold: "ctrl", "shift", "alt", "meta", or combinations like ["ctrl", "shift"]',
+        description: 'Modifier keys to hold: "ctrl", "shift", "alt", "meta", or combinations like ["ctrl", "shift"]',
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
       stealth: {
@@ -1427,11 +1327,7 @@ const tools: Record<string, ToolDef> = {
     },
     required: ["selector"],
     handler: async (args) => {
-      if (
-        args.value === undefined &&
-        args.text === undefined &&
-        args.index === undefined
-      )
+      if (args.value === undefined && args.text === undefined && args.index === undefined)
         return outError(new Error("Provide value, text, or index to select"));
       try {
         const result = await sendBrowserCommand("select", {
@@ -1456,12 +1352,12 @@ const tools: Record<string, ToolDef> = {
 
   dialog: {
     description:
-      'Handle a JavaScript dialog (alert, confirm, or prompt). Must be called after a dialog appears. Use action "accept" to click OK or "dismiss" to click Cancel.',
+      'Handle a JavaScript dialog (alert, confirm, or prompt). Actions: "status" (inspect an open dialog without dismissing), "accept" (click OK, optional prompt_text for prompt dialogs), or "dismiss" (click Cancel).',
     parameters: {
       action: {
         type: "string",
         description: '"accept" (click OK, default) or "dismiss" (click Cancel)',
-        enum: ["accept", "dismiss"],
+        enum: ["status", "accept", "dismiss"],
       },
       prompt_text: {
         type: "string",
@@ -1477,12 +1373,16 @@ const tools: Record<string, ToolDef> = {
           promptText: args.prompt_text,
           tabId: args.tab_id,
         });
-        return outJson({
+        const out: Record<string, unknown> = {
           handled: result.handled,
           type: result.type,
-          dialog_message: result.dialogMessage,
           tab_id: result.tabId,
-        });
+        };
+        if (result.dialogMessage !== undefined) out.dialog_message = result.dialogMessage;
+        if (result.message !== undefined) out.message = result.message;
+        if (result.pending !== undefined) out.pending = result.pending;
+        if (result.default_prompt !== undefined) out.default_prompt = result.default_prompt;
+        return outJson(out);
       } catch (e) {
         return outError(e);
       }
@@ -1502,18 +1402,15 @@ const tools: Record<string, ToolDef> = {
       },
       file_id: {
         type: "string",
-        description:
-          "File ID from a previous upload (POST /files/upload) or from file_read/download",
+        description: "File ID from a previous upload (POST /files/upload) or from file_read/download",
       },
       content: {
         type: "string",
-        description:
-          "Base64-encoded file content (alternative to file_id for remote agents). Max ~20 MiB decoded.",
+        description: "Base64-encoded file content (alternative to file_id for remote agents). Max ~20 MiB decoded.",
       },
       filename: {
         type: "string",
-        description:
-          "Filename used when content is provided (e.g. 'report.pdf')",
+        description: "Filename used when content is provided (e.g. 'report.pdf')",
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -1529,17 +1426,10 @@ const tools: Record<string, ToolDef> = {
                 `Inline content too large (${(buf.length / 1024 / 1024).toFixed(1)} MiB). Max 20 MiB - upload via POST /files/upload instead.`,
               ),
             );
-          const f = saveFile(
-            String(args.filename || "upload.bin"),
-            buf,
-            "application/octet-stream",
-          );
+          const f = saveFile(String(args.filename || "upload.bin"), buf, "application/octet-stream");
           fileId = f.id;
         }
-        if (!fileId)
-          return outError(
-            new Error("file_id is required (or provide content+filename)"),
-          );
+        if (!fileId) return outError(new Error("file_id is required (or provide content+filename)"));
         const result = await sendBrowserCommand("file_upload", {
           selector: args.selector,
           fileId,
@@ -1599,8 +1489,7 @@ const tools: Record<string, ToolDef> = {
       end_y: { type: "number", description: "End Y coordinate for swipe" },
       scale: {
         type: "number",
-        description:
-          "Scale factor for pinch gesture (e.g., 0.5 = zoom out, 2.0 = zoom in)",
+        description: "Scale factor for pinch gesture (e.g., 0.5 = zoom out, 2.0 = zoom in)",
       },
       duration: {
         type: "number",
@@ -1611,9 +1500,7 @@ const tools: Record<string, ToolDef> = {
     required: ["action"],
     handler: async (args) => {
       if (!args.selector && (args.x === undefined || args.y === undefined))
-        return outError(
-          new Error("Provide either selector or x,y coordinates"),
-        );
+        return outError(new Error("Provide either selector or x,y coordinates"));
       try {
         const result = await sendBrowserCommand("touch", {
           action: args.action,
@@ -1639,16 +1526,14 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       action: {
         type: "string",
-        description:
-          '"set" (default) to apply emulation, or "clear" to reset to defaults',
+        description: '"set" (default) to apply emulation, or "clear" to reset to defaults',
         enum: ["set", "clear"],
       },
       width: { type: "number", description: "Viewport width in pixels" },
       height: { type: "number", description: "Viewport height in pixels" },
       device_scale_factor: {
         type: "number",
-        description:
-          "Device pixel ratio (default: 1, use 2 for retina, 3 for high-DPI mobile)",
+        description: "Device pixel ratio (default: 1, use 2 for retina, 3 for high-DPI mobile)",
       },
       is_mobile: {
         type: "boolean",
@@ -1690,14 +1575,12 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       action: {
         type: "string",
-        description:
-          '"list" (recent downloads), "wait" (wait for next download), or "latest" (most recent completed)',
+        description: '"list" (recent downloads), "wait" (wait for next download), or "latest" (most recent completed)',
         enum: ["list", "wait", "latest"],
       },
       timeout: {
         type: "number",
-        description:
-          "Max wait time in ms for 'wait' action (default: 30000, max: 120000)",
+        description: "Max wait time in ms for 'wait' action (default: 30000, max: 120000)",
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -1721,8 +1604,7 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       action: {
         type: "string",
-        description:
-          '"status" (check for pending auth), "provide" (supply credentials), or "cancel"',
+        description: '"status" (check for pending auth), "provide" (supply credentials), or "cancel"',
         enum: ["status", "provide", "cancel"],
       },
       username: {
@@ -1735,8 +1617,7 @@ const tools: Record<string, ToolDef> = {
       },
       vault_name: {
         type: "string",
-        description:
-          "Vault entry name to pull credentials from (unlocked vault; alternative to username+password)",
+        description: "Vault entry name to pull credentials from (unlocked vault; alternative to username+password)",
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -1773,15 +1654,13 @@ const tools: Record<string, ToolDef> = {
       },
       origin: {
         type: "string",
-        description:
-          "Origin to set permission for (default: current page origin)",
+        description: "Origin to set permission for (default: current page origin)",
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
     required: ["action", "permissions"],
     handler: async (args) => {
-      if (!args.permissions?.length)
-        return outError(new Error("permissions array is required"));
+      if (!args.permissions?.length) return outError(new Error("permissions array is required"));
       try {
         const result = await sendBrowserCommand("permissions", {
           action: args.action,
@@ -1816,13 +1695,11 @@ const tools: Record<string, ToolDef> = {
       },
       value: {
         type: "string",
-        description:
-          "Value to store (required for set; for scripts this is the JS code)",
+        description: "Value to store (required for set; for scripts this is the JS code)",
       },
       description: {
         type: "string",
-        description:
-          "Human-readable description of the stored item (optional, recommended for scripts)",
+        description: "Human-readable description of the stored item (optional, recommended for scripts)",
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -1850,14 +1727,12 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       action: {
         type: "string",
-        description:
-          '"getAll" (list cookies for url/domain), "get" (one cookie by name), "set", or "remove"',
+        description: '"getAll" (list cookies for url/domain), "get" (one cookie by name), "set", or "remove"',
         enum: ["getAll", "get", "set", "remove"],
       },
       url: {
         type: "string",
-        description:
-          "URL scope for cookie operations (optional - inferred from active tab)",
+        description: "URL scope for cookie operations (optional - inferred from active tab)",
       },
       domain: {
         type: "string",
@@ -1884,8 +1759,7 @@ const tools: Record<string, ToolDef> = {
       },
       tab_id: {
         type: "number",
-        description:
-          "Target tab ID (optional, used to infer URL if not provided)",
+        description: "Target tab ID (optional, used to infer URL if not provided)",
       },
     },
     required: ["action"],
@@ -1929,10 +1803,7 @@ const tools: Record<string, ToolDef> = {
       } catch {
         return outError(new Error("File missing on disk: " + args.file_id));
       }
-      if (
-        size > MAX_FILE_READ_TEXT &&
-        !(f.mimetype.startsWith("image/") && size <= MAX_FILE_READ_IMAGE)
-      ) {
+      if (size > MAX_FILE_READ_TEXT && !(f.mimetype.startsWith("image/") && size <= MAX_FILE_READ_IMAGE)) {
         return outJson({
           file_id: f.id,
           name: f.name,
@@ -1955,10 +1826,7 @@ const tools: Record<string, ToolDef> = {
         /^(text\/|application\/(json|xml|javascript|typescript|x-javascript|x-www-form-urlencoded)|image\/svg\+xml)/.test(
           f.mimetype,
         );
-      if (
-        f.mimetype.startsWith("image/") &&
-        bytes.length <= MAX_FILE_READ_IMAGE
-      ) {
+      if (f.mimetype.startsWith("image/") && bytes.length <= MAX_FILE_READ_IMAGE) {
         return {
           blocks: [
             {
@@ -1970,9 +1838,7 @@ const tools: Record<string, ToolDef> = {
         };
       }
       if (bytes.length <= 50_000) {
-        const body = isText
-          ? new TextDecoder().decode(bytes)
-          : Buffer.from(bytes).toString("base64");
+        const body = isText ? new TextDecoder().decode(bytes) : Buffer.from(bytes).toString("base64");
         return {
           blocks: textBlocks(
             jsonOut({
@@ -1986,9 +1852,7 @@ const tools: Record<string, ToolDef> = {
         };
       }
       if (bytes.length <= MAX_FILE_READ_TEXT) {
-        const body = isText
-          ? new TextDecoder().decode(bytes)
-          : Buffer.from(bytes).toString("base64");
+        const body = isText ? new TextDecoder().decode(bytes) : Buffer.from(bytes).toString("base64");
         return {
           blocks: textBlocks(
             "file_id: " +
@@ -2038,8 +1902,7 @@ const tools: Record<string, ToolDef> = {
       },
       cursor: {
         type: "boolean",
-        description:
-          "Also include cursor:pointer elements without ARIA roles (default: false)",
+        description: "Also include cursor:pointer elements without ARIA roles (default: false)",
       },
       include_headings: {
         type: "boolean",
@@ -2081,8 +1944,7 @@ const tools: Record<string, ToolDef> = {
           let line = e.role || e.tag;
           if (e.name) line += ' "' + String(e.name).slice(0, 80) + '"';
           line += " [ref=" + ref + "]";
-          if (e.value !== undefined)
-            line += ' [value="' + String(e.value).slice(0, 60) + '"]';
+          if (e.value !== undefined) line += ' [value="' + String(e.value).slice(0, 60) + '"]';
           if (e.checked !== undefined) line += " [checked=" + e.checked + "]";
           if (e.href) line += " -> " + String(e.href).slice(0, 200);
           if (e.level) line += " [level=" + e.level + "]";
@@ -2119,13 +1981,11 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       role: {
         type: "string",
-        description:
-          "ARIA role to match: button, link, textbox, checkbox, radio, combobox, heading, ...",
+        description: "ARIA role to match: button, link, textbox, checkbox, radio, combobox, heading, ...",
       },
       name: {
         type: "string",
-        description:
-          "Accessible name to match (used together with role, exact match)",
+        description: "Accessible name to match (used together with role, exact match)",
       },
       text: { type: "string", description: "Visible text substring to match" },
       label: {
@@ -2141,8 +2001,7 @@ const tools: Record<string, ToolDef> = {
       },
       exact: {
         type: "boolean",
-        description:
-          "Exact string match (default: true for name, false for substrings)",
+        description: "Exact string match (default: true for name, false for substrings)",
       },
       max: {
         type: "number",
@@ -2177,23 +2036,14 @@ const tools: Record<string, ToolDef> = {
             name: m.name || "",
             ts: Date.now(),
           });
-          let line =
-            (m.role || m.tag) +
-            ' "' +
-            String(m.name || m.text || "").slice(0, 60) +
-            '" [ref=' +
-            ref +
-            "]";
-          if (m.value)
-            line += ' [value="' + String(m.value).slice(0, 40) + '"]';
+          let line = (m.role || m.tag) + ' "' + String(m.name || m.text || "").slice(0, 60) + '" [ref=' + ref + "]";
+          if (m.value) line += ' [value="' + String(m.value).slice(0, 40) + '"]';
           if (m.href) line += " -> " + String(m.href).slice(0, 150);
           lines.push(line);
         }
         let body = lines.map((l) => "  " + l).join("\n");
         if (body.length > 50_000)
-          body =
-            body.slice(0, 50_000) +
-            "\n... (results truncated - add more specific criteria)";
+          body = body.slice(0, 50_000) + "\n... (results truncated - add more specific criteria)";
         return {
           blocks: textBlocks(
             "found " +
@@ -2215,24 +2065,12 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       property: {
         type: "string",
-        description:
-          "What to get: text, html, value, attribute, url, title, count, box, styles",
-        enum: [
-          "text",
-          "html",
-          "value",
-          "attribute",
-          "url",
-          "title",
-          "count",
-          "box",
-          "styles",
-        ],
+        description: "What to get: text, html, value, attribute, url, title, count, box, styles",
+        enum: ["text", "html", "value", "attribute", "url", "title", "count", "box", "styles"],
       },
       ref: {
         type: "string",
-        description:
-          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+        description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
       },
       selector: {
         type: "string",
@@ -2259,12 +2097,7 @@ const tools: Record<string, ToolDef> = {
             blocks: textBlocks(args.property === "url" ? tab.url : tab.title),
           };
         }
-        if (!sel)
-          return outError(
-            new Error(
-              "get requires ref or selector for property=" + args.property,
-            ),
-          );
+        if (!sel) return outError(new Error("get requires ref or selector for property=" + args.property));
         const result = await sendBrowserCommand("get_element", {
           selector: sel,
           property: args.property,
@@ -2272,29 +2105,11 @@ const tools: Record<string, ToolDef> = {
           styleProperty: args.style_property || null,
           tabId: args.tab_id,
         });
-        if (
-          result &&
-          typeof result === "object" &&
-          "exists" in result &&
-          !result.exists
-        )
+        if (result && typeof result === "object" && "exists" in result && !result.exists)
           return outError(new Error("Element not found: " + sel));
-        const keys = [
-          "exists",
-          "tag",
-          "id",
-          "className",
-          "role",
-          "text",
-          "value",
-          "count",
-          "box",
-          "styles",
-          "html",
-        ];
+        const keys = ["exists", "tag", "id", "className", "role", "text", "value", "count", "box", "styles", "html"];
         const compact: Record<string, any> = {};
-        for (const k of keys)
-          if (result && result[k] !== undefined) compact[k] = result[k];
+        for (const k of keys) if (result && result[k] !== undefined) compact[k] = result[k];
         return outJson(compact);
       } catch (e) {
         return outError(e);
@@ -2309,22 +2124,11 @@ const tools: Record<string, ToolDef> = {
       check: {
         type: "string",
         description: "State to check",
-        enum: [
-          "visible",
-          "hidden",
-          "enabled",
-          "disabled",
-          "checked",
-          "unchecked",
-          "editable",
-          "readonly",
-          "focused",
-        ],
+        enum: ["visible", "hidden", "enabled", "disabled", "checked", "unchecked", "editable", "readonly", "focused"],
       },
       ref: {
         type: "string",
-        description:
-          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+        description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
       },
       selector: {
         type: "string",
@@ -2356,8 +2160,7 @@ const tools: Record<string, ToolDef> = {
       text: { type: "string", description: "Text to fill" },
       ref: {
         type: "string",
-        description:
-          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+        description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
       },
       selector: {
         type: "string",
@@ -2392,13 +2195,11 @@ const tools: Record<string, ToolDef> = {
   },
 
   check: {
-    description:
-      "Check a checkbox or radio button. No-op if already checked. Target with ref or selector.",
+    description: "Check a checkbox or radio button. No-op if already checked. Target with ref or selector.",
     parameters: {
       ref: {
         type: "string",
-        description:
-          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+        description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
       },
       selector: {
         type: "string",
@@ -2427,13 +2228,11 @@ const tools: Record<string, ToolDef> = {
   },
 
   uncheck: {
-    description:
-      "Uncheck a checkbox or radio button. No-op if already unchecked. Target with ref or selector.",
+    description: "Uncheck a checkbox or radio button. No-op if already unchecked. Target with ref or selector.",
     parameters: {
       ref: {
         type: "string",
-        description:
-          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+        description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
       },
       selector: {
         type: "string",
@@ -2445,8 +2244,7 @@ const tools: Record<string, ToolDef> = {
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        if (!sel)
-          return outError(new Error("uncheck requires ref or selector"));
+        if (!sel) return outError(new Error("uncheck requires ref or selector"));
         const result = await sendBrowserCommand("uncheck", {
           selector: sel,
           tabId: args.tab_id,
@@ -2463,13 +2261,11 @@ const tools: Record<string, ToolDef> = {
   },
 
   focus: {
-    description:
-      "Focus an element. Scrolls it into view first. Target with ref or selector.",
+    description: "Focus an element. Scrolls it into view first. Target with ref or selector.",
     parameters: {
       ref: {
         type: "string",
-        description:
-          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+        description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
       },
       selector: {
         type: "string",
@@ -2499,8 +2295,7 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       ref: {
         type: "string",
-        description:
-          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+        description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
       },
       selector: {
         type: "string",
@@ -2641,14 +2436,12 @@ const tools: Record<string, ToolDef> = {
       },
       type: {
         type: "string",
-        description:
-          "local (localStorage, default) or session (sessionStorage)",
+        description: "local (localStorage, default) or session (sessionStorage)",
         enum: ["local", "session"],
       },
       key: {
         type: "string",
-        description:
-          "Storage key (required for set/remove; optional for get - returns all if omitted)",
+        description: "Storage key (required for set/remove; optional for get - returns all if omitted)",
       },
       value: {
         type: "string",
@@ -2666,8 +2459,7 @@ const tools: Record<string, ToolDef> = {
           value: args.value,
           tabId: args.tab_id,
         });
-        if (result && typeof result === "object" && result.error)
-          return outError(new Error(String(result.error)));
+        if (result && typeof result === "object" && result.error) return outError(new Error(String(result.error)));
         return outJson(result);
       } catch (e) {
         return outError(e);
@@ -2681,8 +2473,7 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       format: {
         type: "string",
-        description:
-          "Paper format: letter (default), a4, a3, a5, legal, tabloid",
+        description: "Paper format: letter (default), a4, a3, a5, legal, tabloid",
         enum: ["letter", "a4", "a3", "a5", "legal", "tabloid"],
       },
       landscape: {
@@ -2713,22 +2504,13 @@ const tools: Record<string, ToolDef> = {
         });
         if (!result?.data) return outError(new Error("No PDF data returned"));
         const buf = Buffer.from(result.data, "base64");
-        const file = saveFile(
-          "page-" + Date.now() + ".pdf",
-          buf,
-          "application/pdf",
-        );
+        const file = saveFile("page-" + Date.now() + ".pdf", buf, "application/pdf");
         return outJson({
           file_id: file.id,
           filename: file.name,
           size: file.size,
           tab_id: result.tabId,
-          message:
-            "PDF exported. Fetch via GET http://localhost:" +
-            port +
-            "/files/" +
-            file.id +
-            " or file_read.",
+          message: "PDF exported. Fetch via GET http://localhost:" + port + "/files/" + file.id + " or file_read.",
         });
       } catch (e) {
         return outError(e);
@@ -2742,8 +2524,7 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       property: {
         type: "string",
-        description:
-          "What to set: viewport, device, geo, offline, headers, media",
+        description: "What to set: viewport, device, geo, offline, headers, media",
         enum: ["viewport", "device", "geo", "offline", "headers", "media"],
       },
       width: {
@@ -2779,8 +2560,7 @@ const tools: Record<string, ToolDef> = {
       },
       headers: {
         type: "object",
-        description:
-          'Extra HTTP headers, e.g. {"X-Custom": "v"} (property=headers)',
+        description: 'Extra HTTP headers, e.g. {"X-Custom": "v"} (property=headers)',
       },
       color_scheme: {
         type: "string",
@@ -2788,8 +2568,7 @@ const tools: Record<string, ToolDef> = {
       },
       reduced_motion: {
         type: "string",
-        description:
-          "prefers-reduced-motion: reduce or no-preference (property=media)",
+        description: "prefers-reduced-motion: reduce or no-preference (property=media)",
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -2825,8 +2604,7 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       ref: {
         type: "string",
-        description:
-          "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
+        description: "Element ref from snapshot (e.g. 'e3' or '@e3'). Alternative to selector.",
       },
       selector: {
         type: "string",
@@ -2842,8 +2620,7 @@ const tools: Record<string, ToolDef> = {
     handler: async (args) => {
       try {
         const sel = args.ref ? resolveRefArg(args) : args.selector;
-        if (!sel)
-          return outError(new Error("highlight requires ref or selector"));
+        if (!sel) return outError(new Error("highlight requires ref or selector"));
         const result = await sendBrowserCommand("highlight", {
           selector: sel,
           duration: args.duration,
@@ -2905,8 +2682,7 @@ const tools: Record<string, ToolDef> = {
       types: {
         type: "array",
         items: { type: "string" },
-        description:
-          "Message types to include: log, error, warn, info, debug, ...",
+        description: "Message types to include: log, error, warn, info, debug, ...",
       },
       clear: { type: "boolean", description: "Clear messages after viewing" },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
@@ -3007,14 +2783,12 @@ const tools: Record<string, ToolDef> = {
       text: { type: "string", description: "Text to wait for (mode=text)" },
       ref: {
         type: "string",
-        description:
-          "Element ref from snapshot (mode=selector, alternative to selector)",
+        description: "Element ref from snapshot (mode=selector, alternative to selector)",
       },
       selector: { type: "string", description: "CSS selector (mode=selector)" },
       state: {
         type: "string",
-        description:
-          "Load state for mode=load: load (default) or domcontentloaded",
+        description: "Load state for mode=load: load (default) or domcontentloaded",
         enum: ["load", "domcontentloaded"],
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
@@ -3022,10 +2796,7 @@ const tools: Record<string, ToolDef> = {
     required: [],
     handler: async (args) => {
       try {
-        const sel =
-          args.mode === "selector" && args.ref
-            ? resolveRefArg(args)
-            : args.selector;
+        const sel = args.mode === "selector" && args.ref ? resolveRefArg(args) : args.selector;
         const result = await sendBrowserCommand("wait", {
           mode: args.mode || "timeout",
           selector: sel,
@@ -3104,8 +2875,7 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       action: {
         type: "string",
-        description:
-          "list (default), create, add, remove, update, or list_tabs",
+        description: "list (default), create, add, remove, update, or list_tabs",
         enum: ["list", "create", "add", "remove", "update", "list_tabs"],
       },
       tab_ids: {
@@ -3120,8 +2890,7 @@ const tools: Record<string, ToolDef> = {
       title: { type: "string", description: "Group title" },
       color: {
         type: "string",
-        description:
-          "grey, blue, red, yellow, green, pink, purple, cyan, or orange",
+        description: "grey, blue, red, yellow, green, pink, purple, cyan, or orange",
       },
       collapsed: {
         type: "boolean",
@@ -3228,14 +2997,12 @@ const tools: Record<string, ToolDef> = {
       },
       url: {
         type: "string",
-        description:
-          "Alternative to request_id: URL substring of the paused request",
+        description: "Alternative to request_id: URL substring of the paused request",
       },
       status: { type: "number", description: "HTTP status for fulfill" },
       body: {
         type: "string",
-        description:
-          "Response body for fulfill (plain text; base64 strings are passed through)",
+        description: "Response body for fulfill (plain text; base64 strings are passed through)",
       },
       content_type: {
         type: "string",
@@ -3403,8 +3170,7 @@ const tools: Record<string, ToolDef> = {
       },
       wait_ms: {
         type: "number",
-        description:
-          "Wait before measuring for report (default 1000, max 10000)",
+        description: "Wait before measuring for report (default 1000, max 10000)",
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -3439,8 +3205,7 @@ const tools: Record<string, ToolDef> = {
       states: {
         type: "array",
         items: { type: "string" },
-        description:
-          'Pseudo-classes to force, e.g. ["hover"] (default: ["hover"])',
+        description: 'Pseudo-classes to force, e.g. ["hover"] (default: ["hover"])',
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -3563,19 +3328,8 @@ const tools: Record<string, ToolDef> = {
     parameters: {
       action: {
         type: "string",
-        description:
-          "init, unlock, lock, status, set, get, list, delete, or fill",
-        enum: [
-          "init",
-          "unlock",
-          "lock",
-          "status",
-          "set",
-          "get",
-          "list",
-          "delete",
-          "fill",
-        ],
+        description: "init, unlock, lock, status, set, get, list, delete, or fill",
+        enum: ["init", "unlock", "lock", "status", "set", "get", "list", "delete", "fill"],
       },
       master: {
         type: "string",
@@ -3594,13 +3348,11 @@ const tools: Record<string, ToolDef> = {
       url: { type: "string", description: "Optional URL for the entry" },
       username_selector: {
         type: "string",
-        description:
-          "CSS selector for the username field (fill only; defaults to auto-detect)",
+        description: "CSS selector for the username field (fill only; defaults to auto-detect)",
       },
       password_selector: {
         type: "string",
-        description:
-          "CSS selector for the password field (fill only; defaults to auto-detect)",
+        description: "CSS selector for the password field (fill only; defaults to auto-detect)",
       },
       submit: {
         type: "boolean",
@@ -3645,11 +3397,7 @@ async function handle(msg: Json): Promise<Json | null> {
     error: { code, message },
   });
 
-  if (
-    params !== undefined &&
-    params !== null &&
-    (typeof params !== "object" || Array.isArray(params))
-  ) {
+  if (params !== undefined && params !== null && (typeof params !== "object" || Array.isArray(params))) {
     return err(-32602, "Invalid params: expected object");
   }
   try {
@@ -3673,14 +3421,12 @@ async function handle(msg: Json): Promise<Json | null> {
             if (!props.from_ref)
               props.from_ref = {
                 ...REF_PARAM,
-                description:
-                  "Element ref for drag source (alternative to from_selector)",
+                description: "Element ref for drag source (alternative to from_selector)",
               };
             if (!props.to_ref)
               props.to_ref = {
                 ...REF_PARAM,
-                description:
-                  "Element ref for drag target (alternative to to_selector)",
+                description: "Element ref for drag target (alternative to to_selector)",
               };
           }
           return {
@@ -3729,10 +3475,7 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Max-Age": "86400",
 };
 
-function contentDisposition(
-  type: "attachment" | "inline",
-  filename: string,
-): string {
+function contentDisposition(type: "attachment" | "inline", filename: string): string {
   const safe = filename.replace(/[\r\n"]/g, "_").replace(/[^\x20-\x7E]/g, "_");
   return type + '; filename="' + safe + '"';
 }
@@ -3740,38 +3483,21 @@ function contentDisposition(
 async function handleFileUpload(req: Request): Promise<Response> {
   const declaredLen = Number(req.headers.get("content-length") ?? "0");
   if (Number.isFinite(declaredLen) && declaredLen > MAX_FILE_BYTES) {
-    return Response.json(
-      { ok: false, error: "upload exceeds " + MAX_FILE_BYTES + " bytes" },
-      { status: 413 },
-    );
+    return Response.json({ ok: false, error: "upload exceeds " + MAX_FILE_BYTES + " bytes" }, { status: 413 });
   }
   let form: FormData;
   try {
     form = await req.formData();
   } catch (e: any) {
-    return Response.json(
-      { ok: false, error: "bad form: " + (e?.message ?? e) },
-      { status: 400 },
-    );
+    return Response.json({ ok: false, error: "bad form: " + (e?.message ?? e) }, { status: 400 });
   }
   const f = form.get("file");
-  if (!(f instanceof File))
-    return Response.json(
-      { ok: false, error: "missing 'file' field" },
-      { status: 400 },
-    );
+  if (!(f instanceof File)) return Response.json({ ok: false, error: "missing 'file' field" }, { status: 400 });
   if (f.size > MAX_FILE_BYTES) {
-    return Response.json(
-      { ok: false, error: "file too large (max " + MAX_FILE_BYTES + " bytes)" },
-      { status: 413 },
-    );
+    return Response.json({ ok: false, error: "file too large (max " + MAX_FILE_BYTES + " bytes)" }, { status: 413 });
   }
   const buf = new Uint8Array(await f.arrayBuffer());
-  const stored = saveFile(
-    f.name || "upload.bin",
-    buf,
-    f.type || "application/octet-stream",
-  );
+  const stored = saveFile(f.name || "upload.bin", buf, f.type || "application/octet-stream");
   return Response.json({
     ok: true,
     file: {
@@ -3785,22 +3511,14 @@ async function handleFileUpload(req: Request): Promise<Response> {
 }
 
 function handleFileDownload(id: string, inline: boolean): Response | null {
-  if (!FILE_ID_PATTERN.test(id))
-    return Response.json(
-      { ok: false, error: "invalid file id" },
-      { status: 400 },
-    );
+  if (!FILE_ID_PATTERN.test(id)) return Response.json({ ok: false, error: "invalid file id" }, { status: 400 });
   const f = getFile(id);
-  if (!f || !existsSync(f.path))
-    return Response.json({ ok: false, error: "not found" }, { status: 404 });
+  if (!f || !existsSync(f.path)) return Response.json({ ok: false, error: "not found" }, { status: 404 });
   const blob = Bun.file(f.path);
   return new Response(blob, {
     headers: {
       "Content-Type": f.mimetype,
-      "Content-Disposition": contentDisposition(
-        inline ? "inline" : "attachment",
-        f.name,
-      ),
+      "Content-Disposition": contentDisposition(inline ? "inline" : "attachment", f.name),
       "Content-Length": String(f.size),
       "Referrer-Policy": "no-referrer",
     },
@@ -3826,8 +3544,7 @@ function renderStatusPage(): string {
       (gw.deviceId ? " (device " + gw.deviceId + ")" : "") +
       "</div>";
   } else {
-    gwHtml =
-      '<div>Gateway: <span class="bad">not configured</span> (start with --gateway &lt;domain&gt;)</div>';
+    gwHtml = '<div>Gateway: <span class="bad">not configured</span> (start with --gateway &lt;domain&gt;)</div>';
   }
   const lines = [
     "<!DOCTYPE html>",
@@ -3838,21 +3555,13 @@ function renderStatusPage(): string {
     "code{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:13px}</style></head><body>",
     "<h1>Browser MCP</h1>",
     '<div class="card">',
-    '<div>Extension: <span class="' +
-      extClass +
-      '">' +
-      extLabel +
-      "</span></div>",
-    "<div>Extensions: " +
-      (exts.length > 0 ? exts.join(", ") : "none") +
-      "</div>",
+    '<div>Extension: <span class="' + extClass + '">' + extLabel + "</span></div>",
+    "<div>Extensions: " + (exts.length > 0 ? exts.join(", ") : "none") + "</div>",
     "<div>MCP tools: " + String(Object.keys(tools).length) + "</div>",
     gwHtml,
     "</div>",
     '<div class="card">',
-    "<div><b>MCP endpoint:</b> <code>POST http://localhost:" +
-      String(port) +
-      "/mcp</code></div>",
+    "<div><b>MCP endpoint:</b> <code>POST http://localhost:" + String(port) + "/mcp</code></div>",
     "<div><b>Extension zip:</b> <code>GET /extension</code></div>",
     "<div><b>Health:</b> <code>GET /health</code></div>",
     "</div>",
@@ -3877,13 +3586,9 @@ const server = Bun.serve({
 
     // CORS preflight for agent-facing endpoints only (browser-based MCP clients).
     // Origin-gated: browser clients from non-local origins get 403 (CSRF defense).
-    if (
-      req.method === "OPTIONS" &&
-      (path === "/mcp" || path.startsWith("/files/"))
-    ) {
+    if (req.method === "OPTIONS" && (path === "/mcp" || path.startsWith("/files/"))) {
       const oc = checkMcpOrigin(req);
-      if (!oc.ok)
-        return new Response("Rejected: " + oc.reason, { status: 403 });
+      if (!oc.ok) return new Response("Rejected: " + oc.reason, { status: 403 });
       return new Response(null, { status: 204, headers: corsHeadersFor(req) });
     }
 
@@ -3913,16 +3618,12 @@ const server = Bun.serve({
     if (req.method === "GET" && path === "/extension") {
       const zipPath = join(import.meta.dir, "dist", "browser-extension.zip");
       if (!existsSync(zipPath)) {
-        return new Response(
-          "Extension zip not found. Run: bun build-extension.ts",
-          { status: 404 },
-        );
+        return new Response("Extension zip not found. Run: bun build-extension.ts", { status: 404 });
       }
       return new Response(Bun.file(zipPath), {
         headers: {
           "Content-Type": "application/zip",
-          "Content-Disposition":
-            'attachment; filename="browser-mcp-extension.zip"',
+          "Content-Disposition": 'attachment; filename="browser-mcp-extension.zip"',
           "Content-Length": String(statSync(zipPath).size),
         },
       });
@@ -3930,8 +3631,7 @@ const server = Bun.serve({
 
     // Extension file endpoints (uploaded downloads, files for upload)
     if (path === "/browser/files/upload" && req.method === "POST") {
-      if (!checkExtensionToken(req, url))
-        return new Response("unauthorized", { status: 401 });
+      if (!checkExtensionToken(req, url)) return new Response("unauthorized", { status: 401 });
       const resp = await handleFileUpload(req);
       return new Response(resp.body, {
         status: resp.status,
@@ -3940,8 +3640,7 @@ const server = Bun.serve({
     }
     const extFileMatch = path.match(/^\/browser\/files\/([A-Za-z0-9]+)$/);
     if (extFileMatch && req.method === "GET") {
-      if (!checkExtensionToken(req, url))
-        return new Response("unauthorized", { status: 401 });
+      if (!checkExtensionToken(req, url)) return new Response("unauthorized", { status: 401 });
       const resp = handleFileDownload(extFileMatch[1], false);
       return resp ?? new Response("not found", { status: 404 });
     }
@@ -3949,8 +3648,7 @@ const server = Bun.serve({
     // Agent file endpoints (origin-gated like /mcp - CSRF defense for browser clients)
     if (path === "/files/upload" && req.method === "POST") {
       const oc = checkMcpOrigin(req);
-      if (!oc.ok)
-        return new Response("Rejected: " + oc.reason, { status: 403 });
+      if (!oc.ok) return new Response("Rejected: " + oc.reason, { status: 403 });
       if (!checkMcpToken(req, url))
         return new Response("unauthorized", {
           status: 401,
@@ -3965,8 +3663,7 @@ const server = Bun.serve({
     const agentFileMatch = path.match(/^\/files\/([A-Za-z0-9]+)$/);
     if (agentFileMatch && req.method === "GET") {
       const oc = checkMcpOrigin(req);
-      if (!oc.ok)
-        return new Response("Rejected: " + oc.reason, { status: 403 });
+      if (!oc.ok) return new Response("Rejected: " + oc.reason, { status: 403 });
       if (!checkMcpToken(req, url))
         return new Response("unauthorized", {
           status: 401,
@@ -3988,9 +3685,7 @@ const server = Bun.serve({
     if (path === "/browser/ws") {
       const originCheck = checkExtensionOrigin(req);
       if (!originCheck.ok) {
-        console.warn(
-          "[browser-mcp] Rejected /browser/ws: " + originCheck.reason,
-        );
+        console.warn("[browser-mcp] Rejected /browser/ws: " + originCheck.reason);
         return new Response("Rejected: " + originCheck.reason, { status: 403 });
       }
       if (!checkExtensionToken(req, url)) {
@@ -4035,8 +3730,7 @@ const server = Bun.serve({
           headers: CORS_HEADERS,
         });
       const oc = checkMcpOrigin(req);
-      if (!oc.ok)
-        return new Response("Rejected: " + oc.reason, { status: 403 });
+      if (!oc.ok) return new Response("Rejected: " + oc.reason, { status: 403 });
       if (!checkMcpToken(req, url))
         return new Response("unauthorized", {
           status: 401,
@@ -4085,8 +3779,7 @@ const server = Bun.serve({
 // ============================================================================
 
 /** Default gateway when the extension provides a device ID (popup ID field). */
-const DEFAULT_GATEWAY_DOMAIN =
-  process.env.BMCP_GATEWAY_DOMAIN ?? "code-mcp.tuanm.dev";
+const DEFAULT_GATEWAY_DOMAIN = process.env.BMCP_GATEWAY_DOMAIN ?? "code-mcp.tuanm.dev";
 /**
  * Effective /mcp auth token: CLI --token by default; overridden by the popup
  * token when the extension connects (the popup is the source of truth for the
@@ -4130,10 +3823,7 @@ function startGatewayClient(requestedDeviceId: string): void {
 
   function connect() {
     if (gen !== gatewayGeneration) return; // superseded by a newer client
-    const isLocal =
-      /^(localhost|127\.|192\.168\.|10\.|172\.16\.|ws:\/\/|http:\/\/)/.test(
-        domain,
-      );
+    const isLocal = /^(localhost|127\.|192\.168\.|10\.|172\.16\.|ws:\/\/|http:\/\/)/.test(domain);
     const scheme = isLocal ? "ws" : "wss";
     const url = scheme + "://" + domain + "/ws/" + gwDevice;
     console.error("[" + gwDevice + "] Connecting to gateway " + url + " ...");
@@ -4141,9 +3831,7 @@ function startGatewayClient(requestedDeviceId: string): void {
     try {
       ws = new WebSocket(url);
     } catch (err: any) {
-      console.error(
-        "[" + gwDevice + "] WS create failed: " + (err?.message ?? err),
-      );
+      console.error("[" + gwDevice + "] WS create failed: " + (err?.message ?? err));
       scheduleRetry();
       return;
     }
@@ -4155,13 +3843,7 @@ function startGatewayClient(requestedDeviceId: string): void {
     const armWatchdog = () => {
       if (watchdogTimer) clearTimeout(watchdogTimer);
       watchdogTimer = setTimeout(() => {
-        console.error(
-          "[" +
-            gwDevice +
-            "] no inbound for " +
-            WATCHDOG_MS +
-            "ms; forcing reconnect",
-        );
+        console.error("[" + gwDevice + "] no inbound for " + WATCHDOG_MS + "ms; forcing reconnect");
         try {
           ws.close();
         } catch {}
@@ -4196,12 +3878,7 @@ function startGatewayClient(requestedDeviceId: string): void {
         try {
           ws.send(JSON.stringify({ type: "keepalive" }));
         } catch (err: any) {
-          console.error(
-            "[" +
-              gwDevice +
-              "] keepalive send failed: " +
-              (err?.message ?? err),
-          );
+          console.error("[" + gwDevice + "] keepalive send failed: " + (err?.message ?? err));
           try {
             ws.close();
           } catch {}
@@ -4215,9 +3892,7 @@ function startGatewayClient(requestedDeviceId: string): void {
         const msg = JSON.parse(e.data as string);
         if (msg?.type === "keepalive-ack") return;
         if (msg?.id == null || !msg?.request) return;
-        const tokenParam = msg.token
-          ? "?token=" + encodeURIComponent(msg.token)
-          : "";
+        const tokenParam = msg.token ? "?token=" + encodeURIComponent(msg.token) : "";
         try {
           const res = await fetch(localMcpUrl + tokenParam, {
             method: "POST",
@@ -4235,8 +3910,7 @@ function startGatewayClient(requestedDeviceId: string): void {
               id: msg.id,
               error: {
                 code: -32000,
-                message:
-                  "upstream HTTP " + res.status + ": " + text.slice(0, 200),
+                message: "upstream HTTP " + res.status + ": " + text.slice(0, 200),
               },
             };
           }
@@ -4257,14 +3931,10 @@ function startGatewayClient(requestedDeviceId: string): void {
               }),
             );
           } catch {}
-          console.error(
-            "[" + gwDevice + "] handle error: " + (err?.message ?? err),
-          );
+          console.error("[" + gwDevice + "] handle error: " + (err?.message ?? err));
         }
       } catch (err: any) {
-        console.error(
-          "[" + gwDevice + "] gateway message error: " + (err?.message ?? err),
-        );
+        console.error("[" + gwDevice + "] gateway message error: " + (err?.message ?? err));
       }
     });
 
@@ -4274,36 +3944,20 @@ function startGatewayClient(requestedDeviceId: string): void {
       gatewayWs = null;
       gatewayStatus.connected = false;
       const delay =
-        Math.min(
-          MAX_DELAY_MS,
-          BASE_DELAY_MS * Math.pow(2, Math.min(retries, 6)),
-        ) + Math.floor(Math.random() * 500);
+        Math.min(MAX_DELAY_MS, BASE_DELAY_MS * Math.pow(2, Math.min(retries, 6))) + Math.floor(Math.random() * 500);
       retries++;
-      console.error(
-        "[" +
-          gwDevice +
-          "] Disconnected; retry #" +
-          retries +
-          " in " +
-          delay +
-          "ms",
-      );
+      console.error("[" + gwDevice + "] Disconnected; retry #" + retries + " in " + delay + "ms");
       setTimeout(connect, delay);
     });
 
     ws.addEventListener("error", (err: any) => {
-      console.error(
-        "[" + gwDevice + "] Gateway WS error: " + (err?.message ?? err),
-      );
+      console.error("[" + gwDevice + "] Gateway WS error: " + (err?.message ?? err));
     });
 
     function scheduleRetry() {
       if (gen !== gatewayGeneration) return;
       const delay =
-        Math.min(
-          MAX_DELAY_MS,
-          BASE_DELAY_MS * Math.pow(2, Math.min(retries, 6)),
-        ) + Math.floor(Math.random() * 500);
+        Math.min(MAX_DELAY_MS, BASE_DELAY_MS * Math.pow(2, Math.min(retries, 6))) + Math.floor(Math.random() * 500);
       retries++;
       console.error("[" + gwDevice + "] Retrying in " + delay + "ms");
       setTimeout(connect, delay);

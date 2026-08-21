@@ -586,6 +586,33 @@ async function handleScreenshot({ tabId, selector, fullPage }) {
 
 // --- Click ---
 
+/**
+ * Await a CDP command but resolve early if a JS dialog (alert/confirm/prompt)
+ * opens while the page is processing input. Chromium blocks the renderer main
+ * thread on modal dialogs, which stalls the dispatchMouseEvent/insertText
+ * command response until the dialog is handled - so the agent would hang.
+ * Resolves { dialog_opened: true } so the caller can return and let the agent
+ * call the dialog tool, instead of blocking forever.
+ */
+function raceWithDialog(tid, promise) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      resolve(v);
+    };
+    promise.then(
+      (v) => finish({ value: v }),
+      (e) => finish({ error: e }),
+    );
+    const timer = setInterval(() => {
+      if (pendingDialogs.has(tid)) finish({ dialog_opened: true });
+    }, 40);
+  });
+}
+
 async function handleClick({ selector, x, y, tabId, button, clickCount: count, pierce, intercept_file_chooser }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
@@ -616,20 +643,46 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
     const clickCount = count || 1;
 
     for (let i = 0; i < clickCount; i++) {
-      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-        type: "mousePressed",
-        x: clickX,
-        y: clickY,
-        button: btn,
-        clickCount: i + 1,
-      });
-      await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        x: clickX,
-        y: clickY,
-        button: btn,
-        clickCount: i + 1,
-      });
+      const pressed = await raceWithDialog(
+        tid,
+        sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+          type: "mousePressed",
+          x: clickX,
+          y: clickY,
+          button: btn,
+          clickCount: i + 1,
+        }),
+      );
+      if (pressed.dialog_opened) {
+        const dl = pendingDialogs.get(tid);
+        return {
+          tabId: tid,
+          element: selector || `(${clickX},${clickY})`,
+          dialog_opened: true,
+          dialog: dl ? { type: dl.type, message: dl.message } : null,
+          hint: "A JS dialog is open. Use the dialog tool (accept/dismiss/prompt_text) to continue.",
+        };
+      }
+      const released = await raceWithDialog(
+        tid,
+        sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+          type: "mouseReleased",
+          x: clickX,
+          y: clickY,
+          button: btn,
+          clickCount: i + 1,
+        }),
+      );
+      if (released.dialog_opened) {
+        const dl = pendingDialogs.get(tid);
+        return {
+          tabId: tid,
+          element: selector || `(${clickX},${clickY})`,
+          dialog_opened: true,
+          dialog: dl ? { type: dl.type, message: dl.message } : null,
+          hint: "A JS dialog is open. Use the dialog tool (accept/dismiss/prompt_text) to continue.",
+        };
+      }
     }
     // Brief delay to let download/file-chooser events propagate from CDP
     await new Promise((r) => setTimeout(r, 300));
@@ -675,13 +728,26 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierc
     const coords = pierce ? await resolveElementCoords(tid, selector) : await getElementCenter(tid, selector);
     actionCoords = coords;
     await moveCursorTo(tid, coords.x, coords.y);
-    await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: coords.x,
-      y: coords.y,
-      button: "left",
-      clickCount: 1,
-    });
+    const fc = await raceWithDialog(
+      tid,
+      sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: coords.x,
+        y: coords.y,
+        button: "left",
+        clickCount: 1,
+      }),
+    );
+    if (fc.dialog_opened) {
+      const dl = pendingDialogs.get(tid);
+      return {
+        tabId: tid,
+        element: selector,
+        dialog_opened: true,
+        dialog: dl ? { type: dl.type, message: dl.message } : null,
+        hint: "A JS dialog is open. Use the dialog tool to continue.",
+      };
+    }
     await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
       type: "mouseReleased",
       x: coords.x,
@@ -717,7 +783,18 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierc
   }
 
   // Type text using CDP insertText (handles React/SPA events correctly)
-  await sendDebuggerCommand(tid, "Input.insertText", { text });
+  const ins = await raceWithDialog(tid, sendDebuggerCommand(tid, "Input.insertText", { text }));
+  if (ins.dialog_opened) {
+    const dl = pendingDialogs.get(tid);
+    return {
+      tabId: tid,
+      element: selector || "(focused)",
+      typed: false,
+      dialog_opened: true,
+      dialog: dl ? { type: dl.type, message: dl.message } : null,
+      hint: "A JS dialog is open. Use the dialog tool to continue.",
+    };
+  }
 
   if (pressEnter) {
     await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
@@ -858,8 +935,21 @@ async function handleExecute({ code, tabId, frameId }) {
     evalParams.contextId = contextId;
   }
 
-  // Use CDP Runtime.evaluate — MV3 blocks new Function()/eval in service workers
-  const result = await sendDebuggerCommand(tid, "Runtime.evaluate", evalParams);
+  // Use CDP Runtime.evaluate — MV3 blocks new Function()/eval in service workers.
+  // If the script opens a JS dialog (alert/confirm/prompt), Chromium stalls the
+  // response until the dialog is handled; race it so we surface the dialog to
+  // the agent instead of hanging.
+  const evalResult = await raceWithDialog(tid, sendDebuggerCommand(tid, "Runtime.evaluate", evalParams));
+  if (evalResult.dialog_opened) {
+    const dl = pendingDialogs.get(tid);
+    return {
+      value: null,
+      dialog_opened: true,
+      dialog: dl ? { type: dl.type, message: dl.message } : null,
+      hint: "The executed script opened a JS dialog. Use the dialog tool to accept/dismiss it, then re-run if needed.",
+    };
+  }
+  const result = evalResult.value;
   if (result.exceptionDetails) {
     throw new Error(
       result.exceptionDetails.exception?.description || result.exceptionDetails.text || "Script execution failed",
@@ -1421,6 +1511,17 @@ async function handleDialog({ action, promptText, tabId }) {
   const dialog = pendingDialogs.get(tid);
   if (!dialog) {
     return { tabId: tid, handled: false, message: "No pending dialog" };
+  }
+
+  // "status" lets the agent inspect an open dialog without dismissing it.
+  if (action === "status") {
+    return {
+      tabId: tid,
+      pending: true,
+      type: dialog.type,
+      message: dialog.message,
+      default_prompt: dialog.defaultPrompt || null,
+    };
   }
 
   await sendDebuggerCommand(tid, "Page.handleJavaScriptDialog", {
