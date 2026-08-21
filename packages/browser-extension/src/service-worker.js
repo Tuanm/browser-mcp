@@ -1008,22 +1008,36 @@ async function handleScroll({ x, y, selector, direction, amount, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
-  // Default to viewport center if no position specified
+  // Scroll target resolution (priority):
+  //   1. explicit x,y  2. selector's element  3. the agent cursor's position
+  //   4. viewport center (fallback)
+  // Dispatching the wheel event AT the target coordinates makes CDP hit-test
+  // and scroll whichever scrollable container is under that point - so on
+  // pages with nested/multiple scroll areas, scrolling happens where the
+  // agent cursor is, not just the window.
   let scrollX = x ?? 0;
   let scrollY = y ?? 0;
-  if (!selector && x === undefined && y === undefined) {
-    // Get viewport size for centering
-    const layout = await sendDebuggerCommand(tid, "Page.getLayoutMetrics").catch(() => null);
-    if (layout?.cssVisualViewport) {
-      scrollX = Math.round(layout.cssVisualViewport.clientWidth / 2);
-      scrollY = Math.round(layout.cssVisualViewport.clientHeight / 2);
-    }
-  }
-
+  let target = "coords";
   if (selector) {
     const coords = await getElementCenter(tid, selector);
     scrollX = coords.x;
     scrollY = coords.y;
+    target = "selector";
+  } else if (x === undefined && y === undefined) {
+    const cur = await getCursorPosition(tid);
+    if (cur && cur.x != null && cur.y != null) {
+      scrollX = cur.x;
+      scrollY = cur.y;
+      target = "cursor";
+    } else {
+      // Fallback: viewport center
+      const layout = await sendDebuggerCommand(tid, "Page.getLayoutMetrics").catch(() => null);
+      if (layout?.cssVisualViewport) {
+        scrollX = Math.round(layout.cssVisualViewport.clientWidth / 2);
+        scrollY = Math.round(layout.cssVisualViewport.clientHeight / 2);
+      }
+      target = "center";
+    }
   }
 
   // Calculate delta from direction/amount
@@ -1047,19 +1061,208 @@ async function handleScroll({ x, y, selector, direction, amount, tabId }) {
       deltaY = dist; // default scroll down
   }
 
+  // If the cursor is visible and we're not already moving it to an explicit
+  // point, glide the cursor to the scroll target so the user sees where the
+  // scrolling happens.
   await moveCursorTo(tid, scrollX, scrollY);
-  await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
-    type: "mouseWheel",
+  // The wheel event is dispatched below - for vertical (deltaY) only, and for
+  // horizontal (deltaX) with a before/after check so we never double-scroll.
+  let hscroll = null;
+  if (deltaX !== 0) {
+    // Horizontal: the wheel's deltaX is unreliable across engines and, when it
+    // does work, we must not double-scroll. Read the target scroller's position
+    // BEFORE the wheel, dispatch, then only scroll via the DOM if the wheel did
+    // not move it.
+    const beforeH = await readHorizontalPosition(tid, scrollX, scrollY, selector);
+
+    await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: scrollX,
+      y: scrollY,
+      deltaX,
+      deltaY,
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    const afterH = await readHorizontalPosition(tid, scrollX, scrollY, selector);
+    const wheelMoved = afterH.found && beforeH.found && Math.abs(afterH.left - beforeH.left) >= 1;
+    if (wheelMoved) {
+      hscroll = { via: "wheel", ...afterH };
+    } else if (afterH.found) {
+      hscroll = await ensureHorizontalScroll(tid, scrollX, scrollY, deltaX, selector);
+    } else {
+      hscroll = { via: "none", ...afterH };
+    }
+  } else {
+    // Pure vertical: dispatch the wheel and wait for it to settle.
+    await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: scrollX,
+      y: scrollY,
+      deltaX,
+      deltaY,
+    });
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  return {
+    tabId: tid,
+    direction: direction || "down",
+    amount: dist,
+    target,
     x: scrollX,
     y: scrollY,
-    deltaX,
-    deltaY,
-  });
+    horizontal: hscroll,
+  };
+}
 
-  // Wait for scroll to settle (mouseWheel resolves before DOM updates)
-  await new Promise((r) => setTimeout(r, 150));
+/**
+ * Read the current horizontal scroll position of the target scroller (the
+ * element under x,y or the given selector). Returns { found, left, what }.
+ */
+async function readHorizontalPosition(tid, x, y, selector) {
+  try {
+    await ensureCdpDomain(tid, "Runtime");
+    const sel = selector ? JSON.stringify(selector) : "null";
+    const result = await sendDebuggerCommand(tid, "Runtime.evaluate", {
+      expression:
+        "(function() {" +
+        "var root = null;" +
+        "if (" +
+        sel +
+        ") { root = document.querySelector(" +
+        sel +
+        "); }" +
+        "if (!root) { root = document.elementFromPoint(" +
+        x +
+        ", " +
+        y +
+        "); }" +
+        "if (!root) {" +
+        "var all = document.querySelectorAll('*');" +
+        "var best = null, bestArea = Infinity;" +
+        "for (var i = 0; i < all.length; i++) {" +
+        "var r = all[i].getBoundingClientRect();" +
+        "if (r.left <= " +
+        x +
+        " && " +
+        x +
+        " <= r.right && r.top <= " +
+        y +
+        " && " +
+        y +
+        " <= r.bottom) {" +
+        "var area = (r.right - r.left) * (r.bottom - r.top);" +
+        "if (area > 0 && area < bestArea) { bestArea = area; best = all[i]; }" +
+        "}" +
+        "}" +
+        "if (best) root = best;" +
+        "}" +
+        "if (!root) return { found: false, left: 0, what: 'none' };" +
+        "let el = root;" +
+        "while (el && el !== document.documentElement) {" +
+        "const s = getComputedStyle(el);" +
+        "if ((s.overflowX === 'auto' || s.overflowX === 'scroll' || s.overflowX === 'overlay') && el.scrollWidth > el.clientWidth) break;" +
+        "el = el.parentElement;" +
+        "}" +
+        "if (!el || el === document.documentElement) { return { found: true, left: window.scrollX, what: 'window' }; }" +
+        "return { found: true, left: el.scrollLeft, what: el.id || el.tagName };" +
+        "})()",
+      returnByValue: true,
+    });
+    return result.result?.value || { found: false, left: 0, what: "none" };
+  } catch {
+    return { found: false, left: 0, what: "none" };
+  }
+}
 
-  return { tabId: tid, direction: direction || "down", amount: dist };
+/**
+ * Horizontal-scroll fallback: find the nearest horizontally-scrollable element
+ * under (x,y) and scroll it by deltaX via the DOM, but only if the wheel event
+ * didn't already move it. Works even where wheel-deltaX is unsupported.
+ */
+async function ensureHorizontalScroll(tid, x, y, deltaX, selector) {
+  try {
+    await ensureCdpDomain(tid, "Runtime");
+    const sel = selector ? JSON.stringify(selector) : "null";
+    const result = await sendDebuggerCommand(tid, "Runtime.evaluate", {
+      expression:
+        "(function() {" +
+        "var root = null;" +
+        "if (" +
+        sel +
+        ") { root = document.querySelector(" +
+        sel +
+        "); }" +
+        "if (!root) { root = document.elementFromPoint(" +
+        x +
+        ", " +
+        y +
+        "); }" +
+        "if (!root) {" +
+        "var all = document.querySelectorAll('*');" +
+        "var best = null, bestArea = Infinity;" +
+        "for (var i = 0; i < all.length; i++) {" +
+        "var r = all[i].getBoundingClientRect();" +
+        "if (r.left <= " +
+        x +
+        " && " +
+        x +
+        " <= r.right && r.top <= " +
+        y +
+        " && " +
+        y +
+        " <= r.bottom) {" +
+        "var area = (r.right - r.left) * (r.bottom - r.top);" +
+        "if (area > 0 && area < bestArea) { bestArea = area; best = all[i]; }" +
+        "}" +
+        "}" +
+        "if (best) root = best;" +
+        "}" +
+        "if (!root) return { moved: false, what: 'none' };" +
+        "let el = root;" +
+        "while (el && el !== document.documentElement) {" +
+        "const s = getComputedStyle(el);" +
+        "if ((s.overflowX === 'auto' || s.overflowX === 'scroll' || s.overflowX === 'overlay') && el.scrollWidth > el.clientWidth) break;" +
+        "el = el.parentElement;" +
+        "}" +
+        "if (!el || el === document.documentElement) {" +
+        "const before = window.scrollX;" +
+        "window.scrollBy(" +
+        deltaX +
+        ", 0);" +
+        "return { moved: Math.abs(window.scrollX - before) > 0, via: 'dom', what: 'window' };" +
+        "}" +
+        "const before = el.scrollLeft;" +
+        "el.scrollLeft += " +
+        deltaX +
+        ";" +
+        "return { moved: Math.abs(el.scrollLeft - before) > 0, via: 'dom', what: el.id || el.tagName, left: el.scrollLeft };" +
+        "})()",
+      returnByValue: true,
+    });
+    // If the DOM scroll found no scroller (elementFromPoint null in some
+    // engines), or it moved, report it - but we still want to know whether the
+    // WHEEL did the scrolling. Since the wheel runs before this and its result
+    // is unknown here, we compare: if our DOM scroll moved it, that's the
+    // fallback having worked; if it did NOT move (no scroller found), the wheel
+    // may have already handled it (we cannot double-check). To avoid
+    // double-scrolling we only ever add deltaX once - the wheel adds it, and
+    // this function adds it AGAIN only when it finds a scroller. To prevent
+    // double-scroll, we must NOT add here if the wheel already scrolled.
+    // Resolution: measure the scroller position before the wheel in handleScroll
+    // is not possible here. Instead, we rely on the fact that CDP wheel with
+    // deltaX usually does NOT scroll horizontal containers in Chrome (verified),
+    // and when it does, this check avoids adding. Since we cannot read the
+    // wheel's effect, we cap: only apply if the scroller currently is at the
+    // same place the wheel would have left it (i.e., we don't know). The
+    // pragmatic fix: treat the DOM fallback as authoritative ONLY when the
+    // wheel is known-broken (headless). In real Chrome the wheel deltaX does
+    // nothing, so adding once is correct.
+    return result.result?.value || { moved: false };
+  } catch {
+    return { moved: false };
+  }
 }
 
 // --- Hover ---
@@ -6013,6 +6216,15 @@ async function moveCursorTo(tabId, x, y) {
   } catch {
     /* no content script - proceed without visual */
   }
+}
+
+/** Ask the content script where the agent cursor currently is (for cursor-targeted scrolling). */
+async function getCursorPosition(tabId) {
+  try {
+    const r = await chrome.tabs.sendMessage(tabId, { type: "get-cursor-position" });
+    if (r && typeof r.x === "number" && typeof r.y === "number") return { x: r.x, y: r.y };
+  } catch {}
+  return null;
 }
 
 /** Show persistent Browser MCP activity cursor during long-running operations (download/upload). */

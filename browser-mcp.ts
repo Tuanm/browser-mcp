@@ -1067,7 +1067,7 @@ const tools: Record<string, ToolDef> = {
 
   scroll: {
     description:
-      "Scroll the page or a specific scrollable area (sidebar, panel, chat list, etc.). When selector is given, the scroll event targets that element - the browser automatically scrolls the nearest scrollable ancestor. Use this to scroll within nested containers, not just the main page.",
+      "Scroll the page or a specific scrollable area (sidebar, panel, chat list, etc.). When selector is given, the scroll event targets that element - the browser scrolls the nearest scrollable ancestor (nested containers work). When no selector/coordinates are given, the scroll targets the agent cursor's position, so whatever scroll area the cursor is over gets scrolled. Direction: up, down, left, right (horizontal supported). x/y scroll at those coordinates.",
     parameters: {
       direction: {
         type: "string",

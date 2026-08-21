@@ -421,6 +421,9 @@ if (!window[Symbol.for("_x7cs")]) {
     } else if (message.type === "hide-activity-cursor") {
       hideActivityCursor();
       sendResponse({ ok: true });
+    } else if (message.type === "get-cursor-position") {
+      // Report where the agent cursor is so the SW can scroll that area.
+      sendResponse(cursorX != null && cursorY != null ? { x: cursorX, y: cursorY } : { x: null, y: null });
     } else if (message.type === "tts-speak") {
       // Async: respond when the utterance finishes (or immediately for fire-and-forget).
       ttsSpeak(message.text, {

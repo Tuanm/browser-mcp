@@ -286,7 +286,8 @@ export function createMcpHandler(dispatch) {
     },
     {
       name: "scroll",
-      description: "Scroll the page or a scrollable element (selector).",
+      description:
+        "Scroll the page or a scroll area. Without selector/coordinates it scrolls at the agent cursor's position (so nested scroll areas under the cursor work). Direction: up, down, left, or right (horizontal supported). Selector scrolls that element; x/y scroll at those coordinates.",
       parameters: {
         direction: { type: "string", enum: ["up", "down", "left", "right"] },
         amount: { type: "number" },
