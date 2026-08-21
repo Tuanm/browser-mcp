@@ -104,7 +104,9 @@ if (!window[Symbol.for("_x7cs")]) {
 
   // Real mouse pointer (black arrow, white outline, drop shadow) so the agent's
   // interaction looks like an actual mouse cursor, not a logo. Tip at (4,2).
-  const MOUSE_POINTER_PATH = "M4 2 L20 13.5 L13.8 14.4 L17.2 21.2 L14.4 22.8 L11 16.2 L4.2 19.8 Z";
+  // Minimal arrowhead cursor - no tail, just the pointy tip with a subtle
+  // concave back so it still reads as a pointer. Tip stays at (4,2).
+  const MOUSE_POINTER_PATH = "M4 2 L17.5 9 L11 10.4 L7.5 15 L4.2 12 Z";
 
   function cursorSvg(size) {
     return `<svg width="${size || 24}" height="${size || 24}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
