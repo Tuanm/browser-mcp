@@ -78,7 +78,7 @@ ok("notification 204 no content", r.status === 204, "status " + r.status + " bod
 r = await mcpCall(A, { jsonrpc: "2.0", id: 3, method: "tools/list" });
 ok(
   "tools/list 63 tools",
-  r.json?.result?.tools?.length === 63,
+  r.json?.result?.tools?.length === 65,
   "got " + (r.json?.result?.tools?.length ?? "?") + " tools",
 );
 const names = (r.json?.result?.tools ?? []).map((t: any) => t.name);
@@ -799,6 +799,8 @@ ok(
     "site_data",
     "extension",
     "vault",
+    "record",
+    "speak",
   ].every((t) => allNames.includes(t)),
   "missing: " +
     [

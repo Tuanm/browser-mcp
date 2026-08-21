@@ -118,8 +118,8 @@ async function ensureOffscreen() {
   offscreenReady = false;
   await chrome.offscreen.createDocument({
     url: "src/offscreen.html",
-    reasons: ["WORKERS"],
-    justification: "WebSocket connection to local Browser MCP server",
+    reasons: ["WORKERS", "USER_MEDIA", "DISPLAY_MEDIA"],
+    justification: "WebSocket bridge, tab/screen recording (MediaRecorder)",
   });
   // Hand saved config to the fresh offscreen doc so the gateway link
   // (device ID + token) survives service-worker / offscreen restarts.
@@ -453,6 +453,10 @@ async function dispatchCommand(method, params) {
       return handleExtension(params);
     case "vault":
       return handleVault(params);
+    case "record":
+      return handleRecord(params);
+    case "speak":
+      return handleSpeak(params);
     case "wait":
       return handleWait(params);
     default:
@@ -5317,6 +5321,200 @@ async function handleVault({
   throw new Error(
     "Unknown vault action: " + action + ". Use init, unlock, lock, status, set, get, list, delete, or fill.",
   );
+}
+
+// ============================================================================
+// Screen / Tab Recording
+// ============================================================================
+
+/**
+ * record action=start  [tab_id] [include_audio]  -> record a tab (no prompt)
+ * record action=window [include_audio]           -> record window/screen (user picks in Chrome's share dialog)
+ * record action=status                           -> is a recording running? how long / how big?
+ * record action=stop   [save_as] [filename]      -> stop + save to the user's device (Downloads)
+ *
+ * Saving: the WebM blob is saved via chrome.downloads (the user's Downloads
+ * folder, or a Save As dialog when save_as=true). When a local server is
+ * configured the file is also uploaded and a file_id is returned so the agent
+ * can read/attach it. The agent never receives raw recording bytes over the
+ * gateway (recordings can be huge) - it gets the download + file_id instead.
+ */
+async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
+  const act = action || "status";
+  await ensureOffscreen();
+
+  if (act === "status") {
+    const r = await chrome.runtime.sendMessage({ source: "offscreen", type: "record-status" }).catch(() => ({}));
+    return r || { recording: false };
+  }
+
+  if (act === "start") {
+    const tid = tabId || (await getActiveTabId());
+    // Preferred: capture the tab via chrome.tabCapture (no user prompt).
+    // This needs the activeTab grant (user opened the popup on that tab) or
+    // host permissions. If it fails, fall back to getDisplayMedia with
+    // preferCurrentTab - Chrome shows the share picker preselected to this
+    // tab, the user clicks Share once, and recording proceeds (works in
+    // gateway/headless mode too).
+    try {
+      const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tid });
+      const r = await chrome.runtime.sendMessage({
+        source: "offscreen",
+        type: "record-start",
+        streamId,
+        includeAudio: includeAudio !== false,
+        mode: "tab",
+      });
+      if (r && r.ok) return { recording: true, mode: "tab", tab_id: tid, mime: r.mime, via: "tabCapture" };
+      throw new Error((r && r.error) || "tabCapture recording failed to start");
+    } catch (err) {
+      // Fallback: share picker (tab preselected)
+      const r = await chrome.runtime.sendMessage({
+        source: "offscreen",
+        type: "record-start-display",
+        includeAudio: includeAudio !== false,
+        mode: "tab",
+      });
+      if (!r || !r.ok)
+        throw new Error(
+          "tab capture unavailable (" +
+            ((err && err.message) || err).slice(0, 120) +
+            "). Fallback also failed: " +
+            ((r && r.error) || "no response") +
+            ". Open the extension popup once on the tab to grant tab capture, or use record action=window for the share picker.",
+        );
+      return {
+        recording: true,
+        mode: "tab",
+        tab_id: tid,
+        mime: r.mime,
+        via: "getDisplayMedia",
+        hint: "A share dialog appeared - click Share (tab preselected) to start recording. For a silent no-prompt capture, open the extension popup on that tab first.",
+      };
+    }
+  }
+
+  if (act === "window" || act === "screen") {
+    // getDisplayMedia shows Chrome's share picker - the user chooses which
+    // tab/window/screen to record.
+    const r = await chrome.runtime.sendMessage({
+      source: "offscreen",
+      type: "record-start-display",
+      includeAudio: includeAudio !== false,
+      mode: act === "screen" ? "screen" : "window",
+    });
+    if (!r || !r.ok)
+      throw new Error((r && r.error) || "Recording failed to start (user may have cancelled the share dialog)");
+    return {
+      recording: true,
+      mode: act,
+      mime: r.mime,
+      hint: "User picked a source in the share dialog. Use record action=stop to finish and save.",
+    };
+  }
+
+  if (act === "stop") {
+    const r = await chrome.runtime.sendMessage({ source: "offscreen", type: "record-stop" });
+    if (!r || !r.ok) throw new Error((r && r.error) || "No recording in progress");
+    const out = { recording: false, mode: r.mode, mime: r.mime, size_bytes: r.size, elapsed_ms: r.elapsedMs };
+    const name = filename || "recording-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".webm";
+    const savedTo = [];
+
+    // 1) Save to the user's device via chrome.downloads
+    try {
+      await chrome.downloads.download({
+        url: r.blobUrl,
+        filename: name,
+        saveAs: saveAs !== false, // default: show the Save As dialog so the user picks the destination
+        conflictAction: "uniquify",
+      });
+      savedTo.push("device");
+      out.filename = name;
+    } catch (err) {
+      out.save_error = "download: " + ((err && err.message) || err);
+    }
+
+    // 2) Also upload to the local server when configured (gives the agent a file_id)
+    try {
+      const cfg = await chrome.storage.local.get(["serverUrl", "authToken"]);
+      if (cfg.serverUrl) {
+        const blob = await fetch(r.blobUrl).then((res) => res.blob());
+        const file = await uploadRecordingBlob(blob, name);
+        if (file) {
+          out.file_id = file.id;
+          out.server_filename = file.name;
+          savedTo.push("server");
+        }
+      }
+    } catch (err) {
+      out.upload_error = ((err && err.message) || err).slice(0, 200);
+    }
+    out.saved_to = savedTo;
+    return out;
+  }
+
+  throw new Error("Unknown record action: " + action + ". Use start, window, screen, status, or stop.");
+}
+
+/** Upload a recording blob to the local server's file store (extension endpoint). */
+async function uploadRecordingBlob(blob, filename) {
+  const { baseUrl, authToken } = await getServerBaseUrl();
+  const url = baseUrl + "/browser/files/upload" + (authToken ? "?token=" + encodeURIComponent(authToken) : "");
+  const form = new FormData();
+  form.append("file", blob, filename);
+  const resp = await fetch(url, { method: "POST", body: form });
+  if (!resp.ok) throw new Error("upload HTTP " + resp.status);
+  const json = await resp.json();
+  return json && json.ok ? json.file : null;
+}
+
+// ============================================================================
+// Text-to-Speech (agent narration)
+// ============================================================================
+
+/**
+ * speak action=say  text=... [voice] [rate] [pitch] [volume] [block]
+ * speak action=voices
+ * speak action=stop
+ * speak action=status
+ *
+ * Uses the native Web Speech API (Chrome + Edge). The utterance plays through
+ * the current tab via the content script, so it is audible to the user AND is
+ * captured by tab recording (chrome.tabCapture picks up the tab's audio).
+ * English-first: voices can be listed and chosen by name.
+ */
+async function handleSpeak({ action, text, voice, rate, pitch, volume, lang, block, tabId }) {
+  const act = action || "say";
+  const tid = tabId || (await getActiveTabId());
+  // Make sure the content script is injected so tts-* messages reach a listener.
+  await chrome.scripting.executeScript({ target: { tabId: tid }, files: ["src/content-script.js"] }).catch(() => {});
+
+  if (act === "voices") {
+    const r = await chrome.tabs
+      .sendMessage(tid, { type: "tts-voices" })
+      .catch((e) => ({ ok: false, error: (e && e.message) || "no content script" }));
+    return r || { ok: false, error: "no response" };
+  }
+  if (act === "stop") {
+    const r = await chrome.tabs
+      .sendMessage(tid, { type: "tts-stop" })
+      .catch((e) => ({ ok: false, error: (e && e.message) || "no content script" }));
+    return r || { ok: false, error: "no response" };
+  }
+  if (act === "status") {
+    const r = await chrome.tabs
+      .sendMessage(tid, { type: "tts-status" })
+      .catch((e) => ({ ok: false, error: (e && e.message) || "no content script" }));
+    return r || { ok: false, error: "no response" };
+  }
+  if (act === "say") {
+    if (!text) throw new Error("text is required for speak action=say");
+    const r = await chrome.tabs
+      .sendMessage(tid, { type: "tts-speak", text, voice, rate, pitch, volume, lang, block: block !== false })
+      .catch((e) => ({ ok: false, error: (e && e.message) || "no content script (restricted page?)" }));
+    return r || { ok: false, error: "no response" };
+  }
+  throw new Error("Unknown speak action: " + action + ". Use say, voices, stop, or status.");
 }
 
 // ============================================================================

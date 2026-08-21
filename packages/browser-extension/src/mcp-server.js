@@ -1478,6 +1478,62 @@ export function createMcpHandler(dispatch) {
     },
 
     {
+      name: "record",
+      description:
+        "Record the browser. Actions: start (record a tab - no prompt), window (record a window/screen - user picks in Chrome's share dialog), status (is recording, how long/size), stop (finish + save to the user's Downloads; when a local server is configured also returns a file_id for the agent). Recordings are WebM; saved via chrome.downloads.",
+      parameters: {
+        action: { type: "string", enum: ["start", "window", "screen", "status", "stop"] },
+        tab_id: { type: "number" },
+        include_audio: { type: "boolean" },
+        save_as: { type: "boolean" },
+        filename: { type: "string" },
+      },
+      required: [],
+      run: async (a) => {
+        const r = await dispatch("record", {
+          action: a.action || "status",
+          tabId: a.tab_id,
+          includeAudio: a.include_audio,
+          saveAs: a.save_as,
+          filename: a.filename,
+        });
+        return { content: textBlocks(jsonOut(r)) };
+      },
+    },
+
+    {
+      name: "speak",
+      description:
+        "Make the agent speak aloud via the browser's native text-to-speech (English-first; works in Chrome and Edge). Plays through the current tab so it is audible AND captured by tab recording. Actions: say (text + optional voice/rate/pitch/volume/block), voices (list available voices), stop, status.",
+      parameters: {
+        action: { type: "string", enum: ["say", "voices", "stop", "status"] },
+        text: { type: "string" },
+        voice: { type: "string" },
+        rate: { type: "number" },
+        pitch: { type: "number" },
+        volume: { type: "number" },
+        lang: { type: "string" },
+        block: { type: "boolean" },
+        tab_id: { type: "number" },
+      },
+      required: [],
+      run: async (a) => {
+        const r = await dispatch("speak", {
+          action: a.action || "say",
+          text: a.text,
+          voice: a.voice,
+          rate: a.rate,
+          pitch: a.pitch,
+          volume: a.volume,
+          lang: a.lang,
+          block: a.block,
+          tabId: a.tab_id,
+        });
+        return { content: textBlocks(jsonOut(r)) };
+      },
+    },
+
+    {
       name: "vault",
       description:
         "Encrypted in-browser credential store (like a password manager). Actions: init (create vault with master password), unlock (master), lock, status, set (origin/name/username/password/url), get (origin/name - returns credentials), list, delete, fill (fill a login form on the current page from the vault - credentials never leave the extension).",

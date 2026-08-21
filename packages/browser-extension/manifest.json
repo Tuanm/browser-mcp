@@ -18,7 +18,8 @@
     "history",
     "bookmarks",
     "sessions",
-    "browsingData"
+    "browsingData",
+    "tabCapture"
   ],
   "host_permissions": [
     "<all_urls>",
@@ -43,7 +44,9 @@
         "http://127.0.0.1/*",
         "http://[::1]/*"
       ],
-      "js": ["src/shield.js"],
+      "js": [
+        "src/shield.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN",
       "all_frames": true
@@ -55,7 +58,9 @@
         "http://127.0.0.1/*",
         "http://[::1]/*"
       ],
-      "js": ["src/content-script.js"],
+      "js": [
+        "src/content-script.js"
+      ],
       "run_at": "document_idle"
     }
   ],

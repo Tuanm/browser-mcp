@@ -29,7 +29,7 @@ Requires Chrome or Edge >= 111.
 > The token must match the one configured for the device on the gateway. Leave
 > it empty and anyone reaching the gateway can control the browser.
 
-## Tools (63)
+## Tools (65)
 
 Element discovery uses the **@ref system**: `snapshot` returns an interactive
 element tree with `[ref=eN]` markers; every interaction tool accepts a ref or
@@ -50,7 +50,9 @@ a CSS selector.
 - **State & debugging** — `store`, `cookies`, `storage`,
   `console`, `errors`, `status`, `file_read`, `extension`
 - **Emulation & control** — `emulate`, `set`, `perms`, `auth`,
-  `dialog`, `frames`, `touch`, `download`
+  `dialog`, `frames`, `touch`, `download`, `record`
+- **Recording** — `record`: record a tab (`start`) or window/screen (`window`, user picks in the share dialog), `status`, `stop` — saved to the user's Downloads as WebM (plus a `file_id` when the local server is running)
+- **Voice** — `speak`: the agent narrates each step aloud via native text-to-speech (`say`/`voices`/`stop`/`status`; English-first, plays through the tab so it's captured in recordings)
 - **Vault** — `vault`: encrypted in-browser credential store (master
   password → PBKDF2 → AES-256-GCM, stored in `chrome.storage.local`, never
   sent to the gateway). Actions: `init`, `unlock`, `lock`, `status`, `set`,

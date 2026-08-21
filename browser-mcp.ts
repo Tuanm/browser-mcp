@@ -3322,6 +3322,82 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
+  record: {
+    description:
+      "Record the browser. Actions: start (record a tab - no prompt), window (record a window/screen - user picks in Chrome's share dialog), status (is recording, how long/size), stop (finish + save to the user's Downloads; when a local server is configured also returns a file_id for the agent). Recordings are WebM; saved via chrome.downloads.",
+    parameters: {
+      action: {
+        type: "string",
+        description: "start, window, screen, status, or stop",
+        enum: ["start", "window", "screen", "status", "stop"],
+      },
+      tab_id: { type: "number", description: "Tab to record (start only; default: active tab)" },
+      include_audio: { type: "boolean", description: "Capture tab audio (default: true)" },
+      save_as: {
+        type: "boolean",
+        description: "Show Save As dialog (default: true); false saves straight to Downloads",
+      },
+      filename: { type: "string", description: "Output filename (default: recording-<timestamp>.webm)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("record", {
+          action: args.action || "status",
+          tabId: args.tab_id,
+          includeAudio: args.include_audio,
+          saveAs: args.save_as,
+          filename: args.filename,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
+    },
+  },
+
+  speak: {
+    description:
+      "Make the agent speak aloud via the browser's native text-to-speech (English-first; works in Chrome and Edge). Plays through the current tab so it is audible AND captured by tab recording. Actions: say (text + optional voice/rate/pitch/volume/block), voices (list available voices), stop, status.",
+    parameters: {
+      action: {
+        type: "string",
+        description: "say, voices, stop, or status",
+        enum: ["say", "voices", "stop", "status"],
+      },
+      text: { type: "string", description: "Text to speak (say only; max 2000 chars)" },
+      voice: { type: "string", description: "Voice name or substring (list with action=voices)" },
+      rate: { type: "number", description: "Speech rate 0.5-2 (default 1)" },
+      pitch: { type: "number", description: "Pitch 0-2 (default 1)" },
+      volume: { type: "number", description: "Volume 0-1 (default 1)" },
+      lang: { type: "string", description: "Language tag (default en-US)" },
+      block: {
+        type: "boolean",
+        description: "Wait for the utterance to finish (default true); false returns immediately",
+      },
+      tab_id: { type: "number", description: "Tab to speak through (default: active tab)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("speak", {
+          action: args.action || "say",
+          text: args.text,
+          voice: args.voice,
+          rate: args.rate,
+          pitch: args.pitch,
+          volume: args.volume,
+          lang: args.lang,
+          block: args.block,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
+    },
+  },
+
   vault: {
     description:
       "Encrypted in-browser credential store (like a password manager). Actions: init (create vault with master password), unlock (master), lock, status, set (origin/name/username/password/url), get (origin/name - returns credentials), list, delete, fill (fill a login form on the current page from the vault - credentials never leave the extension).",

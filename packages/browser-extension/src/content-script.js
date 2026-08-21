@@ -283,6 +283,88 @@ if (!window[Symbol.for("_x7cs")]) {
   }
 
   // ========================================================================
+  // Text-to-Speech (agent narration) - native Web Speech API
+  // ========================================================================
+  // Plays through THIS tab so chrome.tabCapture (recording) captures the
+  // audio. Works in Chrome and Edge (both Chromium). English-first: the
+  // agent can list voices (tts action=voices) and pick one by name.
+
+  function ttsListVoices() {
+    if (!window.speechSynthesis) return { ok: false, error: "speechSynthesis unavailable in this browser" };
+    const voices = speechSynthesis.getVoices();
+    return {
+      ok: true,
+      voices: voices.map((v) => ({ name: v.name, lang: v.lang, local: v.localService, default: v.default })),
+      note:
+        voices.length === 0 ? "No voices loaded yet - call voices again (Chrome loads them async on first use)." : "",
+    };
+  }
+
+  function ttsSpeak(text, opts) {
+    return new Promise((resolve) => {
+      try {
+        if (!window.speechSynthesis) {
+          resolve({ ok: false, error: "speechSynthesis unavailable in this browser" });
+          return;
+        }
+        if (!text) {
+          resolve({ ok: false, error: "text is required" });
+          return;
+        }
+        // Cancel anything already speaking so the agent's latest line wins.
+        try {
+          speechSynthesis.cancel();
+        } catch {}
+        const u = new SpeechSynthesisUtterance(String(text).slice(0, 2000));
+        const voices = speechSynthesis.getVoices();
+        if (opts.voice) {
+          const match = voices.find(
+            (v) => v.name === opts.voice || v.name.toLowerCase().includes(String(opts.voice).toLowerCase()),
+          );
+          if (match) u.voice = match;
+        }
+        if (!u.voice) {
+          // English-first default: prefer an en voice, fall back to any.
+          const en = voices.find((v) => v.lang && v.lang.toLowerCase().startsWith("en"));
+          if (en) u.voice = en;
+        }
+        u.lang = opts.lang || "en-US";
+        u.rate = Math.min(Math.max(Number(opts.rate) || 1, 0.5), 2);
+        u.pitch = Math.min(Math.max(Number(opts.pitch) || 1, 0), 2);
+        u.volume = Math.min(Math.max(Number(opts.volume) || 1, 0), 1);
+        const done = (ok, extra) => {
+          try {
+            u.onend = null;
+            u.onerror = null;
+          } catch {}
+          resolve(Object.assign({ ok, spoken: String(text).slice(0, 120) }, extra || {}));
+        };
+        u.onend = () => done(true);
+        u.onerror = (e) => done(false, { error: (e && e.error) || "speech synthesis error" });
+        speechSynthesis.speak(u);
+        // block=false: fire-and-forget, resolve as soon as queued.
+        if (!opts.block) setTimeout(() => done(true, { speaking: true }), 60);
+      } catch (e) {
+        resolve({ ok: false, error: String((e && e.message) || e) });
+      }
+    });
+  }
+
+  function ttsStop() {
+    try {
+      if (window.speechSynthesis) speechSynthesis.cancel();
+      return { ok: true, stopped: true };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+  }
+
+  function ttsStatus() {
+    if (!window.speechSynthesis) return { ok: true, speaking: false, supported: false };
+    return { ok: true, supported: true, speaking: speechSynthesis.speaking, pending: speechSynthesis.pending };
+  }
+
+  // ========================================================================
   // Message Handlers
   // ========================================================================
 
@@ -339,6 +421,23 @@ if (!window[Symbol.for("_x7cs")]) {
     } else if (message.type === "hide-activity-cursor") {
       hideActivityCursor();
       sendResponse({ ok: true });
+    } else if (message.type === "tts-speak") {
+      // Async: respond when the utterance finishes (or immediately for fire-and-forget).
+      ttsSpeak(message.text, {
+        voice: message.voice,
+        rate: message.rate,
+        pitch: message.pitch,
+        volume: message.volume,
+        lang: message.lang,
+        block: message.block !== false,
+      }).then((r) => sendResponse(r));
+      return true;
+    } else if (message.type === "tts-stop") {
+      sendResponse(ttsStop());
+    } else if (message.type === "tts-voices") {
+      sendResponse(ttsListVoices());
+    } else if (message.type === "tts-status") {
+      sendResponse(ttsStatus());
     }
     return false;
   });

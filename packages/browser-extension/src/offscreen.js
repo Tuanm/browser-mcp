@@ -396,8 +396,144 @@ function broadcastStatus(connected) {
 // Message Listener
 // ============================================================================
 
+// ============================================================================
+// Screen / Tab Recording (MediaRecorder in the offscreen document)
+// ============================================================================
+//
+// Tab recording: the service worker calls chrome.tabCapture.getMediaStreamId()
+// and sends the streamId here; we attach getUserMedia with chromeMediaSource
+// "tab" and record with MediaRecorder (WebM).
+// Window/screen recording: getDisplayMedia() shows the user a picker; after
+// they choose, we record the returned stream the same way.
+// The recorded WebM is kept in memory (chunks) until 'record-stop', then the
+// bytes are handed back to the service worker which saves them to the user's
+// device (chrome.downloads) and/or uploads them to the local server.
+
+let recorder = null;
+let recorderStream = null;
+let recorderChunks = [];
+let recorderStartTime = 0;
+let recorderMode = null; // "tab" | "window" | "screen"
+
+function pickMimeType() {
+  const candidates = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
+  for (const c of candidates) {
+    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c))
+      return c;
+  }
+  return "video/webm";
+}
+
+async function startRecording(streamId, includeAudio, mode) {
+  try {
+    if (recorder) throw new Error("A recording is already in progress. Stop it first (record action=stop).");
+    let stream;
+    if (mode === "tab") {
+      const base = { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId } };
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: includeAudio ? base : false,
+        video: base,
+      });
+    } else {
+      // window / screen (or tab fallback): show the user Chrome's share picker.
+      // preferCurrentTab preselects the current tab for the tab-capture fallback.
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: includeAudio,
+        preferCurrentTab: mode === "tab",
+      });
+    }
+    const mime = pickMimeType();
+    const r = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+    recorderChunks = [];
+    r.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) recorderChunks.push(e.data);
+    };
+    r.onstop = () => {
+      // Stop tracks so the tab indicator clears / camera light goes off
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+    };
+    r.start(250); // collect chunks every 250ms so we can report size live
+    recorder = r;
+    recorderStream = stream;
+    recorderStartTime = Date.now();
+    recorderMode = mode;
+    return { ok: true, mode, mime };
+  } catch (err) {
+    console.error("[bmcp-offscreen] startRecording failed:", err);
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+function stopRecording() {
+  return new Promise((resolve) => {
+    if (!recorder) {
+      resolve({ ok: false, error: "No recording in progress" });
+      return;
+    }
+    const r = recorder;
+    recorder = null;
+    const chunks = recorderChunks;
+    recorderChunks = [];
+    const mode = recorderMode;
+    recorderMode = null;
+    const startedAt = recorderStartTime;
+    recorderStartTime = 0;
+    r.onstop = async () => {
+      if (recorderStream) {
+        recorderStream.getTracks().forEach((t) => t.stop());
+        recorderStream = null;
+      }
+      const blob = new Blob(chunks, { type: r.mimeType || "video/webm" });
+      // Blob URLs are same-origin for every extension context, so the service
+      // worker can fetch() this URL (or hand it to chrome.downloads.download).
+      const blobUrl = URL.createObjectURL(blob);
+      resolve({ ok: true, blobUrl, mime: blob.type, size: blob.size, mode, elapsedMs: Date.now() - startedAt });
+    };
+    try {
+      r.stop();
+    } catch (err) {
+      resolve({ ok: false, error: String(err) });
+    }
+  });
+}
+
+function recordingStatus() {
+  if (!recorder) return { recording: false };
+  const size = recorderChunks.reduce((s, c) => s + c.size, 0);
+  return {
+    recording: true,
+    mode: recorderMode,
+    elapsed_ms: Date.now() - recorderStartTime,
+    size_bytes: size,
+    mime: recorder ? recorder.mimeType : null,
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log("[bmcp-offscreen] Received message:", message.type);
+
+  if (message.type === "record-start") {
+    startRecording(message.streamId, message.includeAudio !== false, message.mode || "tab").then((r) =>
+      sendResponse(r),
+    );
+    return true;
+  }
+
+  if (message.type === "record-start-display") {
+    startRecording(null, message.includeAudio !== false, message.mode || "window").then((r) => sendResponse(r));
+    return true;
+  }
+
+  if (message.type === "record-stop") {
+    stopRecording().then((r) => sendResponse(r));
+    return true;
+  }
+
+  if (message.type === "record-status") {
+    sendResponse(recordingStatus());
+    return false;
+  }
 
   if (message.type === "get-status") {
     const gwConnected = gatewayWs !== null && gatewayWs !== undefined && gatewayWs.readyState === WebSocket.OPEN;
