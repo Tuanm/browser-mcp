@@ -219,6 +219,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ received: true });
   }
 
+  // ---- Popup-driven recording (invocation context: user clicked the toolbar) ----
+  // Clicking the toolbar icon grants the activeTab-like invocation that
+  // chrome.tabCapture requires. These handlers start/stop recording from that
+  // context so tab capture needs no screen-picker dialog.
+  if (message.type === "record-start" && !message.source) {
+    handleRecord({ action: "start", includeAudio: false })
+      .then((r) => sendResponse({ ok: !!r.recording, error: r.save_error || null, ...r }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message.type === "record-stop" && !message.source) {
+    handleRecord({ action: "stop", saveAs: false })
+      .then((r) => sendResponse({ ok: true, ...r }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+  if (message.type === "record-status" && !message.source) {
+    handleRecord({ action: "status" })
+      .then((r) => sendResponse(r))
+      .catch(() => sendResponse({ recording: false }));
+    return true;
+  }
+
   // ---- Popup-driven config + status --------------------------------------
   // The offscreen document can be closed by Chrome at any time, so the SW is
   // the robust relay: it persists config to storage (the source of truth) and
@@ -5350,14 +5373,22 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
 
   if (act === "start") {
     const tid = tabId || (await getActiveTabId());
-    // Preferred: capture the tab via chrome.tabCapture (no user prompt).
-    // This needs the activeTab grant (user opened the popup on that tab) or
-    // host permissions. If it fails, fall back to getDisplayMedia with
-    // preferCurrentTab - Chrome shows the share picker preselected to this
-    // tab, the user clicks Share once, and recording proceeds (works in
-    // gateway/headless mode too).
+    // Picker-free tab capture via chrome.tabCapture. This requires the user to
+    // have invoked the extension (clicked the toolbar icon) on that tab - a
+    // Chrome security rule (like activeTab); host permissions alone do not
+    // bypass it. The streamId obtained here is consumed in the offscreen doc
+    // (the documented pattern). No screen-picker dialog appears.
+    // Fallback (no invocation yet): getDisplayMedia with preferCurrentTab -
+    // the user clicks Share once (tab preselected).
+    let streamId = null;
     try {
-      const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tid });
+      streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tid });
+    } catch (err) {
+      // Fall through to the share-picker fallback below.
+      streamId = null;
+      recorderInvocationError = String((err && err.message) || err);
+    }
+    if (streamId) {
       const r = await chrome.runtime.sendMessage({
         source: "offscreen",
         type: "record-start",
@@ -5366,43 +5397,43 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
         mode: "tab",
       });
       if (r && r.ok) return { recording: true, mode: "tab", tab_id: tid, mime: r.mime, via: "tabCapture" };
-      throw new Error((r && r.error) || "tabCapture recording failed to start");
-    } catch (err) {
-      // Fallback: share picker (tab preselected)
-      const r = await chrome.runtime.sendMessage({
-        source: "offscreen",
-        type: "record-start-display",
-        includeAudio: includeAudio !== false,
-        mode: "tab",
-      });
-      if (!r || !r.ok)
-        throw new Error(
-          "tab capture unavailable (" +
-            ((err && err.message) || err).slice(0, 120) +
-            "). Fallback also failed: " +
-            ((r && r.error) || "no response") +
-            ". Open the extension popup once on the tab to grant tab capture, or use record action=window for the share picker.",
-        );
-      return {
-        recording: true,
-        mode: "tab",
-        tab_id: tid,
-        mime: r.mime,
-        via: "getDisplayMedia",
-        hint: "A share dialog appeared - click Share (tab preselected) to start recording. For a silent no-prompt capture, open the extension popup on that tab first.",
-      };
+      streamId = null;
     }
-  }
-
-  if (act === "window" || act === "screen") {
-    // getDisplayMedia shows Chrome's share picker - the user chooses which
-    // tab/window/screen to record.
     const r = await chrome.runtime.sendMessage({
       source: "offscreen",
       type: "record-start-display",
       includeAudio: includeAudio !== false,
-      mode: act === "screen" ? "screen" : "window",
+      mode: "tab",
     });
+    if (!r || !r.ok)
+      throw new Error(
+        "tab capture needs the extension to be invoked on that tab (click the toolbar icon once). " +
+          (recorderInvocationError || "").slice(0, 140) +
+          " Fallback picker also failed: " +
+          ((r && r.error) || "no response"),
+      );
+    return {
+      recording: true,
+      mode: "tab",
+      tab_id: tid,
+      mime: r.mime,
+      via: "getDisplayMedia",
+      hint: "A share dialog appeared - click Share (tab preselected) to start recording. Next time, click the Browser MCP toolbar icon on the tab first to record without any dialog.",
+    };
+  }
+
+  if (act === "window" || act === "screen") {
+    // getDisplayMedia shows Chrome's share picker - the user chooses a source once.
+    const r = await withTimeout(
+      chrome.runtime.sendMessage({
+        source: "offscreen",
+        type: "record-start-display",
+        includeAudio: includeAudio !== false,
+        mode: act === "screen" ? "screen" : "window",
+      }),
+      15000,
+      "Timed out waiting for the share dialog - the user needs to pick a source in the browser's share dialog.",
+    );
     if (!r || !r.ok)
       throw new Error((r && r.error) || "Recording failed to start (user may have cancelled the share dialog)");
     return {
@@ -5420,12 +5451,13 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
     const name = filename || "recording-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".webm";
     const savedTo = [];
 
-    // 1) Save to the user's device via chrome.downloads
+    // Save straight to the user's Downloads - no dialog (agent-driven).
+    // save_as=true opts into the Save As dialog instead.
     try {
       await chrome.downloads.download({
         url: r.blobUrl,
         filename: name,
-        saveAs: saveAs !== false, // default: show the Save As dialog so the user picks the destination
+        saveAs: saveAs === true,
         conflictAction: "uniquify",
       });
       savedTo.push("device");
@@ -5434,7 +5466,7 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
       out.save_error = "download: " + ((err && err.message) || err);
     }
 
-    // 2) Also upload to the local server when configured (gives the agent a file_id)
+    // Also upload to the local server when configured (gives the agent a file_id).
     try {
       const cfg = await chrome.storage.local.get(["serverUrl", "authToken"]);
       if (cfg.serverUrl) {
@@ -5456,7 +5488,24 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
   throw new Error("Unknown record action: " + action + ". Use start, window, screen, status, or stop.");
 }
 
-/** Upload a recording blob to the local server's file store (extension endpoint). */
+let recorderInvocationError = null;
+
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve({ ok: false, error: message || "timeout" }), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      () => {
+        clearTimeout(t);
+        resolve({ ok: false, error: message || "timeout" });
+      },
+    );
+  });
+}
+
 async function uploadRecordingBlob(blob, filename) {
   const { baseUrl, authToken } = await getServerBaseUrl();
   const url = baseUrl + "/browser/files/upload" + (authToken ? "?token=" + encodeURIComponent(authToken) : "");

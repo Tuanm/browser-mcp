@@ -424,11 +424,23 @@ function pickMimeType() {
   return "video/webm";
 }
 
-async function startRecording(streamId, includeAudio, mode) {
+async function startRecording(streamId, includeAudio, mode, targetTabId) {
   try {
     if (recorder) throw new Error("A recording is already in progress. Stop it first (record action=stop).");
     let stream;
     if (mode === "tab") {
+      // Obtain the stream id HERE (offscreen document = extension page), not in
+      // the service worker: chrome.tabCapture is gesture-gated in a SW, but an
+      // extension page with host permissions (<all_urls>) can acquire the tab
+      // stream without the screen-picker dialog.
+      if (!streamId) {
+        streamId = await new Promise((resolve, reject) => {
+          chrome.tabCapture.getMediaStreamId({ targetTabId: targetTabId }, (id) => {
+            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message || "tabCapture failed"));
+            else resolve(id);
+          });
+        });
+      }
       const base = { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId } };
       stream = await navigator.mediaDevices.getUserMedia({
         audio: includeAudio ? base : false,
@@ -514,7 +526,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log("[bmcp-offscreen] Received message:", message.type);
 
   if (message.type === "record-start") {
-    startRecording(message.streamId, message.includeAudio !== false, message.mode || "tab").then((r) =>
+    startRecording(message.streamId, message.includeAudio !== false, message.mode || "tab", message.targetTabId).then((r) =>
       sendResponse(r),
     );
     return true;

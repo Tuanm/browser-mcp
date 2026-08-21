@@ -158,3 +158,69 @@ function setStatus(connected, detail, mode) {
     headerIcon.src = connected ? "../icons/connected-128.png" : "../icons/app-icon-128.png";
   }
 }
+
+// ---- Record this tab (picker-free tab recording launcher) ----
+// Clicking the toolbar icon invokes the extension on the current tab, which is
+// what chrome.tabCapture requires (activeTab-like rule). This button performs
+// that invocation and starts recording right away, so the agent can then use
+// record action=stop via MCP with no picker and no Save dialog.
+const recordBtn = document.getElementById("recordBtn");
+
+function setRecordBtn(enabled) {
+  if (!recordBtn) return;
+  recordBtn.disabled = !enabled;
+  recordBtn.textContent = enabled ? "Record this tab" : "Connect first";
+}
+
+function updateRecordBtn(connected) {
+  if (!recordBtn) return;
+  if (!connected) {
+    recordBtn.disabled = true;
+    recordBtn.textContent = "Connect first";
+    return;
+  }
+  // Ask the SW whether a recording is already running.
+  chrome.runtime.sendMessage({ type: "record-status" }, (resp) => {
+    const recording = resp && resp.recording;
+    recordBtn.disabled = false;
+    recordBtn.textContent = recording ? "Stop recording (save)" : "Record this tab";
+    recordBtn.dataset.recording = recording ? "1" : "0";
+  });
+}
+
+recordBtn.addEventListener("click", async () => {
+  if (recordBtn.disabled) return;
+  const isRecording = recordBtn.dataset.recording === "1";
+  recordBtn.disabled = true;
+  try {
+    if (isRecording) {
+      const resp = await chrome.runtime.sendMessage({ type: "record-stop" });
+      if (resp && resp.ok) {
+        recordBtn.textContent = "Record this tab";
+        recordBtn.dataset.recording = "0";
+        setStatus(true, resp.saved_to && resp.saved_to.includes("device") ? "Saved to Downloads" : "Recording saved");
+      } else {
+        setStatus(true, "Save failed: " + ((resp && resp.error) || "unknown"));
+      }
+    } else {
+      const resp = await chrome.runtime.sendMessage({ type: "record-start" });
+      if (resp && resp.ok) {
+        recordBtn.textContent = "Stop recording (save)";
+        recordBtn.dataset.recording = "1";
+        setStatus(true, "Recording tab");
+      } else {
+        setStatus(true, "Start failed: " + ((resp && resp.error) || "unknown"));
+      }
+    }
+  } finally {
+    recordBtn.disabled = false;
+  }
+  window.close();
+});
+
+// Hook into existing connect/disconnect flow: after setStatus, update the button.
+const origSetStatus = setStatus;
+setStatus = function (connected, detail, mode) {
+  origSetStatus(connected, detail, mode);
+  updateRecordBtn(connected);
+};

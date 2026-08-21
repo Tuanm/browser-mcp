@@ -3324,7 +3324,7 @@ const tools: Record<string, ToolDef> = {
 
   record: {
     description:
-      "Record the browser. Actions: start (record a tab - no prompt), window (record a window/screen - user picks in Chrome's share dialog), status (is recording, how long/size), stop (finish + save to the user's Downloads; when a local server is configured also returns a file_id for the agent). Recordings are WebM; saved via chrome.downloads.",
+      "Record the browser. Actions: start (record a tab - no prompt, no picker), window (record a window/screen - Chrome requires the user to pick a source in the share dialog once), status (is recording, how long/size), stop (finish + save straight to the user's Downloads - no dialog; save_as=true opts into a Save As dialog; when a local server is configured also returns a file_id for the agent). Recordings are WebM; saved via chrome.downloads.",
     parameters: {
       action: {
         type: "string",

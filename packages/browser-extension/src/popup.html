@@ -1,76 +1,138 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-  <meta charset="utf-8">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html { overflow: hidden; }
-    body {
-      width: 280px;
-      padding: 16px;
-      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 13px;
-      color: #111;
-      background: #fff;
-      line-height: 1.4;
-    }
-    .head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
-    .head img { width: 20px; height: 20px; }
-    .ver { font-size: 10px; color: #999; }
-    .dot { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; }
-    .dot.on { background: #16a34a; }
-    .dot.off { background: #fff; border: 1.5px solid #111; }
-    label { display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: #111; margin: 0 0 4px 1px; }
-    input {
-      width: 100%;
-      padding: 7px 10px;
-      border: 1px solid #111;
-      background: #fff;
-      color: #111;
-      font-size: 13px;
-      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-      margin-bottom: 10px;
-    }
-    input:focus { outline: none; box-shadow: 0 0 0 1px #111; }
-    input::placeholder { color: #999; }
-    button {
-      width: 100%;
-      padding: 8px;
-      border: 1px solid #111;
-      background: #111;
-      color: #fff;
-      font-size: 13px;
-      font-weight: 600;
-      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-      cursor: pointer;
-    }
-    button:hover { background: #000; }
-    button.off { background: #fff; color: #111; }
-    button.off:hover { background: #f5f5f5; }
-    .status { margin-top: 10px; font-size: 11px; color: #666; text-align: center; }
-    .foot { margin-top: 10px; font-size: 10px; color: #999; text-align: center; }
-  </style>
-</head>
-<body>
-  <div class="head">
-    <img id="headerIcon" src="../icons/app-icon-128.png" alt="Browser MCP" />
-    <span class="ver" id="versionTag"></span>
-    <span class="dot off" id="dot"></span>
-  </div>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html {
+        overflow: hidden;
+      }
+      body {
+        width: 280px;
+        padding: 16px;
+        font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        color: #111;
+        background: #fff;
+        line-height: 1.4;
+      }
+      .head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .head img {
+        width: 20px;
+        height: 20px;
+      }
+      .ver {
+        font-size: 10px;
+        color: #999;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-left: auto;
+      }
+      .dot.on {
+        background: #16a34a;
+      }
+      .dot.off {
+        background: #fff;
+        border: 1.5px solid #111;
+      }
+      label {
+        display: block;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        color: #111;
+        margin: 0 0 4px 1px;
+      }
+      input {
+        width: 100%;
+        padding: 7px 10px;
+        border: 1px solid #111;
+        background: #fff;
+        color: #111;
+        font-size: 13px;
+        font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin-bottom: 10px;
+      }
+      input:focus {
+        outline: none;
+        box-shadow: 0 0 0 1px #111;
+      }
+      input::placeholder {
+        color: #999;
+      }
+      button {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #111;
+        background: #111;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+        font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #000;
+      }
+      button.off {
+        background: #fff;
+        color: #111;
+      }
+      button.off:hover {
+        background: #f5f5f5;
+      }
+      .status {
+        margin-top: 10px;
+        font-size: 11px;
+        color: #666;
+        text-align: center;
+      }
+      .foot {
+        margin-top: 10px;
+        font-size: 10px;
+        color: #999;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="head">
+      <img id="headerIcon" src="../icons/app-icon-128.png" alt="Browser MCP" />
+      <span class="ver" id="versionTag"></span>
+      <span class="dot off" id="dot"></span>
+    </div>
 
-  <label for="deviceId">ID</label>
-  <input type="text" id="deviceId" placeholder="device id" autocomplete="off" spellcheck="false" />
+    <label for="deviceId">ID</label>
+    <input type="text" id="deviceId" placeholder="device id" autocomplete="off" spellcheck="false" />
 
-  <label for="authToken">Token</label>
-  <input type="password" id="authToken" placeholder="token" autocomplete="new-password" spellcheck="false" />
+    <label for="authToken">Token</label>
+    <input type="password" id="authToken" placeholder="token" autocomplete="new-password" spellcheck="false" />
 
-  <button id="connectBtn">Connect</button>
-  <div class="status" id="statusText">Disconnected</div>
-  <div class="foot">code-mcp.tuanm.dev</div>
+    <button id="connectBtn">Connect</button>
+    <div class="status" id="statusText">Disconnected</div>
 
-  <script src="popup.js"></script>
-</body>
+    <button id="recordBtn" class="off" style="margin-top: 8px" disabled>Record this tab</button>
+    <div class="foot">code-mcp.tuanm.dev</div>
+
+    <script src="popup.js"></script>
+  </body>
 </html>

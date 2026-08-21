@@ -51,7 +51,7 @@ a CSS selector.
   `console`, `errors`, `status`, `file_read`, `extension`
 - **Emulation & control** — `emulate`, `set`, `perms`, `auth`,
   `dialog`, `frames`, `touch`, `download`, `record`
-- **Recording** — `record`: record a tab (`start`) or window/screen (`window`, user picks in the share dialog), `status`, `stop` — saved to the user's Downloads as WebM (plus a `file_id` when the local server is running)
+- **Recording** — `record`: record a tab (`start`, picker-free after clicking the toolbar icon once) or window/screen (`window`, Chrome's share dialog — required by the browser), `status`, `stop` — saved straight to the user's Downloads as WebM, no Save dialog (`save_as: true` opts into Save As). The popup's **Record this tab** button starts picker-free tab recording with one click
 - **Voice** — `speak`: the agent narrates each step aloud via native text-to-speech (`say`/`voices`/`stop`/`status`; English-first, plays through the tab so it's captured in recordings)
 - **Vault** — `vault`: encrypted in-browser credential store (master
   password → PBKDF2 → AES-256-GCM, stored in `chrome.storage.local`, never
