@@ -29,24 +29,32 @@ Requires Chrome or Edge >= 111.
 > The token must match the one configured for the device on the gateway. Leave
 > it empty and anyone reaching the gateway can control the browser.
 
-## Tools (47)
+## Tools (63)
 
 Element discovery uses the **@ref system**: `snapshot` returns an interactive
 element tree with `[ref=eN]` markers; every interaction tool accepts a ref or
 a CSS selector.
 
-- **Discovery** — `snapshot`, `find`, `get`, `is`
+- **Discovery** — `snapshot`, `find`, `get`, `is`, `styles`
 - **Interaction** — `click`, `dblclick`, `type`, `fill`, `check`,
   `uncheck`, `select`, `hover`, `focus`, `press`, `drag`,
   `scroll`, `upload`
 - **Navigation** — `navigate`, `reload`, `back`, `forward`,
-  `close`, `tabs`, `window`
+  `close`, `tabs`, `window`, `groups`, `history`, `bookmarks`,
+  `session`
 - **Page reads** — `extract`, `execute`, `screenshot` (image block),
   `pdf`, `wait`, `highlight`
+- **Network & DevTools** — `network`, `intercept`, `har`, `ws`,
+  `throttle`, `resources`, `coverage`, `pseudo`, `site_data`,
+  `notify`
 - **State & debugging** — `store`, `cookies`, `storage`,
-  `console`, `errors`, `network`, `status`, `file_read`
+  `console`, `errors`, `status`, `file_read`, `extension`
 - **Emulation & control** — `emulate`, `set`, `perms`, `auth`,
   `dialog`, `frames`, `touch`, `download`
+- **Vault** — `vault`: encrypted in-browser credential store (master
+  password → PBKDF2 → AES-256-GCM, stored in `chrome.storage.local`, never
+  sent to the gateway). Actions: `init`, `unlock`, `lock`, `status`, `set`,
+  `get`, `list`, `delete`
 
 ## Local server
 

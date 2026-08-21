@@ -1665,6 +1665,270 @@ const tools: Record<string, ToolDef> = {
       } catch (e) { return outError(e); }
     },
   },
+  history: {
+    description:
+      "Browser history. Actions: search (query - recent history items), visits (url - visit timestamps for one URL), clear (delete all history).",
+    parameters: {
+      action: { type: "string", description: "search, visits, or clear", enum: ["search", "visits", "clear"] },
+      query: { type: "string", description: "Search query for action=search" },
+      url: { type: "string", description: "URL for action=visits" },
+      max_results: { type: "number", description: "Max results (default 50)" },
+    },
+    required: ["action"],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("history", { action: args.action, query: args.query, url: args.url, maxResults: args.max_results }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  notify: {
+    description:
+      "Show a Chrome desktop notification (alerts the user even when Chrome is in the background). If url is given, clicking the notification opens it.",
+    parameters: {
+      title: { type: "string", description: "Notification title" },
+      message: { type: "string", description: "Notification body message" },
+      url: { type: "string", description: "URL to open when the notification is clicked (optional)" },
+      priority: { type: "number", description: "-2 to 2 (default 0)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("notify", { title: args.title, message: args.message, url: args.url, priority: args.priority }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  groups: {
+    description:
+      "Manage Chrome tab groups. Actions: list (all groups), create (tab_ids + optional title/color), add (tab_ids + group_id), remove (tab_ids), update (group_id + title/color/collapsed), list_tabs (group_id).",
+    parameters: {
+      action: { type: "string", description: "list (default), create, add, remove, update, or list_tabs", enum: ["list", "create", "add", "remove", "update", "list_tabs"] },
+      tab_ids: { type: "array", items: { type: "number" }, description: "Tab IDs for create/add/remove" },
+      group_id: { type: "number", description: "Group ID for add/update/list_tabs" },
+      title: { type: "string", description: "Group title" },
+      color: { type: "string", description: "grey, blue, red, yellow, green, pink, purple, cyan, or orange" },
+      collapsed: { type: "boolean", description: "Whether the group is collapsed" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("groups", { action: args.action || "list", tabIds: args.tab_ids, groupId: args.group_id, title: args.title, color: args.color, collapsed: args.collapsed }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  bookmarks: {
+    description:
+      "Manage browser bookmarks. Actions: tree (all bookmarks), create (title + optional parent_id/url), search (query).",
+    parameters: {
+      action: { type: "string", description: "tree (default), create, or search", enum: ["tree", "create", "search"] },
+      parent_id: { type: "string", description: "Parent folder ID for create" },
+      title: { type: "string", description: "Bookmark/folder title" },
+      url: { type: "string", description: "Bookmark URL (omit to create a folder)" },
+      query: { type: "string", description: "Search query" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("bookmarks", { action: args.action || "tree", parentId: args.parent_id, title: args.title, url: args.url, query: args.query }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  session: {
+    description:
+      "Browser session tools. Actions: recent (recently closed tabs/windows), restore (reopen the most recently closed tab/window).",
+    parameters: {
+      action: { type: "string", description: "recent (default) or restore", enum: ["recent", "restore"] },
+      max_results: { type: "number", description: "Max recently-closed items (default 10, max 25)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("session", { action: args.action || "recent", maxResults: args.max_results }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  intercept: {
+    description:
+      "Intercept network requests in a tab. Actions: enable (patterns - URL substrings, empty = all), status (paused requests), continue (request_id or url), fail (request_id/url + error_reason), fulfill (request_id/url + status/body/content_type/headers), stop.",
+    parameters: {
+      action: { type: "string", description: "enable, status, continue, fail, fulfill, or stop", enum: ["enable", "status", "continue", "fail", "fulfill", "stop"] },
+      patterns: { type: "array", items: { type: "string" }, description: "URL substrings to intercept (empty = all requests)" },
+      request_id: { type: "string", description: "Paused request ID (from status)" },
+      url: { type: "string", description: "Alternative to request_id: URL substring of the paused request" },
+      status: { type: "number", description: "HTTP status for fulfill" },
+      body: { type: "string", description: "Response body for fulfill (plain text; base64 strings are passed through)" },
+      content_type: { type: "string", description: "Content-Type header for fulfill" },
+      headers: { type: "object", description: "Extra response headers for fulfill" },
+      error_reason: { type: "string", description: "Fail reason: Failed, Aborted, TimedOut, AccessDenied, ConnectionClosed/Reset/Refused/Aborted/Failed, NameNotResolved, InternetDisconnected, AddressUnreachable" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: ["action"],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("intercept", { action: args.action, patterns: args.patterns, requestId: args.request_id, url: args.url, status: args.status, body: args.body, contentType: args.content_type, headers: args.headers, errorReason: args.error_reason, tabId: args.tab_id }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  har: {
+    description:
+      "Export the captured network requests for a tab as HAR 1.2 JSON. Requires network capture to have been active while the page loaded.",
+    parameters: {
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("har", { tabId: args.tab_id }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  ws: {
+    description:
+      "View or clear captured WebSocket frames for a tab (filter by URL substring). Capture starts on the first call - reload to capture early frames.",
+    parameters: {
+      action: { type: "string", description: "view (default) or clear", enum: ["view", "clear"] },
+      filter: { type: "string", description: "Case-insensitive substring filter on frame URLs" },
+      clear: { type: "boolean", description: "Clear frames after viewing" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("ws", { action: args.action || "view", filter: args.filter, clear: args.clear, tabId: args.tab_id }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  throttle: {
+    description:
+      "Simulate network conditions. Presets: offline, slow-3g, 3g, 4g, wifi. Or pass custom latency (ms) / download_throughput / upload_throughput (bytes/sec). clear resets to normal.",
+    parameters: {
+      preset: { type: "string", description: "offline, slow-3g, 3g, 4g, or wifi", enum: ["offline", "slow-3g", "3g", "4g", "wifi"] },
+      latency: { type: "number", description: "Custom latency in ms" },
+      download_throughput: { type: "number", description: "Custom download throughput in bytes/sec (-1 = unlimited)" },
+      upload_throughput: { type: "number", description: "Custom upload throughput in bytes/sec (-1 = unlimited)" },
+      clear: { type: "boolean", description: "Reset to normal network conditions" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("throttle", { preset: args.preset, latency: args.latency, downloadThroughput: args.download_throughput, uploadThroughput: args.upload_throughput, clear: args.clear, tabId: args.tab_id }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  resources: {
+    description:
+      "Inspect page resources. Actions: list (resources loaded by the page via Performance API), read (url - read a resource body from the browser cache; requires network capture active while it loaded).",
+    parameters: {
+      action: { type: "string", description: "list (default) or read", enum: ["list", "read"] },
+      url: { type: "string", description: "Resource URL for read" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("resources", { action: args.action || "list", url: args.url, tabId: args.tab_id }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  coverage: {
+    description:
+      "CSS usage coverage. Actions: start (begin tracking), stop (stop + report), report (one-shot measure: starts, waits wait_ms, reports). Returns per-stylesheet used percentages.",
+    parameters: {
+      action: { type: "string", description: "start, stop, or report (default)", enum: ["start", "stop", "report"] },
+      wait_ms: { type: "number", description: "Wait before measuring for report (default 1000, max 10000)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("coverage", { action: args.action || "report", waitMs: args.wait_ms, tabId: args.tab_id }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  pseudo: {
+    description:
+      "Force CSS pseudo-class states (:hover/:focus/:active/...) on an element so you can inspect hover/focus styles without real interaction. action=clear resets.",
+    parameters: {
+      action: { type: "string", description: "force (default) or clear", enum: ["force", "clear"] },
+      selector: { type: "string", description: "CSS selector of the target element" },
+      states: { type: "array", items: { type: "string" }, description: "Pseudo-classes to force, e.g. [\"hover\"] (default: [\"hover\"])" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: ["selector"],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("pseudo", { action: args.action || "force", selector: args.selector, states: args.states, tabId: args.tab_id }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  styles: {
+    description:
+      "Get computed styles and matched CSS rules for an element (selector or ref). Optionally filter computed styles by property.",
+    parameters: {
+      ref: { type: "string", description: "Element ref from snapshot (alternative to selector)" },
+      selector: { type: "string", description: "CSS selector of the target element" },
+      property: { type: "string", description: "Filter computed styles to one CSS property (optional)" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const sel = args.ref ? resolveRefArg(args) : args.selector; const result = await sendBrowserCommand("styles", { selector: sel, property: args.property, tabId: args.tab_id }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  site_data: {
+    description:
+      "Clear site data for an origin (cookies, local_storage, cache, indexed_db, service_workers). Defaults to the current tab's origin.",
+    parameters: {
+      origin: { type: "string", description: "Origin to clear (defaults to current tab's origin)" },
+      cookies: { type: "boolean", description: "Clear cookies (default true if nothing else specified)" },
+      local_storage: { type: "boolean", description: "Clear localStorage" },
+      cache: { type: "boolean", description: "Clear HTTP cache" },
+      indexed_db: { type: "boolean", description: "Clear IndexedDB" },
+      service_workers: { type: "boolean", description: "Unregister service workers" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("site_data", { origin: args.origin, cookies: args.cookies, localStorage: args.local_storage, cache: args.cache, indexedDB: args.indexed_db, serviceWorkers: args.service_workers, tabId: args.tab_id }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  extension: {
+    description:
+      "Extension diagnostics. Actions: state (version, mode, captures, vault status), reload (reload the extension), reconnect (force gateway reconnect).",
+    parameters: {
+      action: { type: "string", description: "state (default), reload, or reconnect", enum: ["state", "reload", "reconnect"] },
+    },
+    required: [],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("extension", { action: args.action || "state" }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
+  vault: {
+    description:
+      "Encrypted in-browser credential store (like a password manager). Actions: init (create vault with master password), unlock (master), lock, status, set (origin/name/username/password/url), get (origin/name - returns credentials), list, delete. Credentials are AES-256-GCM encrypted with a PBKDF2-derived key; never stored or transmitted in plaintext.",
+    parameters: {
+      action: { type: "string", description: "init, unlock, lock, status, set, get, list, or delete", enum: ["init", "unlock", "lock", "status", "set", "get", "list", "delete"] },
+      master: { type: "string", description: "Master password for init/unlock (never stored)" },
+      origin: { type: "string", description: "Site origin (defaults to current tab's origin)" },
+      name: { type: "string", description: "Entry name, e.g. \"work\" or \"personal\"" },
+      username: { type: "string", description: "Username for set" },
+      password: { type: "string", description: "Password for set" },
+      url: { type: "string", description: "Optional URL for the entry" },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: ["action"],
+    handler: async (args) => {
+      try { const result = await sendBrowserCommand("vault", { action: args.action, master: args.master, origin: args.origin, name: args.name, username: args.username, password: args.password, url: args.url, tabId: args.tab_id }); return outJson(result); }
+      catch (e) { return outError(e); }
+    },
+  },
+
 };// ============================================================================
 // JSON-RPC dispatch (MCP Streamable-HTTP style, same as code-mcp)
 // ============================================================================

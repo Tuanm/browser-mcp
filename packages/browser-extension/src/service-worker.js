@@ -58,6 +58,17 @@ const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status look
 const recentDownloads = []; // Recent download events (from CDP Browser.downloadWillBegin), max 20
 const cdpCompletedUrls = new Map(); // url -> timestamp — CDP-confirmed download completions (separate from recentDownloads to survive consumeRecentDownload splice)
 
+// --- Network interception (Fetch domain) ---
+const interceptState = new Map(); // tabId -> { patterns: string[] | null (null = all), paused: Map<requestId, {url, method}> }
+const fetchAuthEnabled = new Set(); // tabIds where Fetch auth handling is active (so intercept stop can restore it)
+
+// --- WebSocket frame capture ---
+const wsLogs = new Map(); // tabId -> [{ url, direction: "sent"|"received", opcode, payload, ts }]
+const wsUrls = new Map(); // tabId -> Map<webSocketId, url>
+
+// --- Notification click handling ---
+const notifyUrlMap = new Map(); // notificationId -> url to open on click
+
 // Clean up debugger state on detach (registered once at module scope)
 chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId) {
@@ -82,6 +93,10 @@ chrome.debugger.onDetach.addListener((source) => {
     networkLogs.delete(source.tabId);
     inFlightRequests.delete(source.tabId);
     tabSetOverrides.delete(source.tabId);
+    interceptState.delete(source.tabId);
+    fetchAuthEnabled.delete(source.tabId);
+    wsLogs.delete(source.tabId);
+    wsUrls.delete(source.tabId);
   }
 });
 
@@ -386,6 +401,36 @@ async function dispatchCommand(method, params) {
       return handleErrors(params);
     case "network":
       return handleNetwork(params);
+    case "notify":
+      return handleNotify(params);
+    case "groups":
+      return handleGroups(params);
+    case "bookmarks":
+      return handleBookmarks(params);
+    case "session":
+      return handleSession(params);
+    case "intercept":
+      return handleIntercept(params);
+    case "har":
+      return handleHar(params);
+    case "ws":
+      return handleWs(params);
+    case "throttle":
+      return handleThrottle(params);
+    case "resources":
+      return handleResources(params);
+    case "coverage":
+      return handleCoverage(params);
+    case "pseudo":
+      return handlePseudo(params);
+    case "styles":
+      return handleStyles(params);
+    case "site_data":
+      return handleSiteData(params);
+    case "extension":
+      return handleExtension(params);
+    case "vault":
+      return handleVault(params);
     case "wait":
       return handleWait(params);
     default:
@@ -545,6 +590,9 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
   }
 
   try {
+    // Animate the visible mouse to the target BEFORE the click fires, so the
+    // user sees the cursor travel to the element (curved, human-like) first.
+    await moveCursorTo(tid, clickX, clickY);
     const buttonMap = { left: "left", right: "right", middle: "middle" };
     const btn = buttonMap[button] || "left";
     const clickCount = count || 1;
@@ -565,8 +613,6 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
         clickCount: i + 1,
       });
     }
-
-    showActionCursor(tid, clickX, clickY);
     // Brief delay to let download/file-chooser events propagate from CDP
     await new Promise((r) => setTimeout(r, 300));
     const dl = consumeRecentDownload(tid);
@@ -607,9 +653,10 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierc
 
   let actionCoords = null;
   if (selector) {
-    // Focus the element first
+    // Focus the element first (animate the cursor to it BEFORE clicking)
     const coords = pierce ? await resolveElementCoords(tid, selector) : await getElementCenter(tid, selector);
     actionCoords = coords;
+    await moveCursorTo(tid, coords.x, coords.y);
     await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
       type: "mousePressed",
       x: coords.x,
@@ -667,7 +714,6 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierc
     });
   }
 
-  if (actionCoords) showActionCursor(tid, actionCoords.x, actionCoords.y);
   return { tabId: tid, element: selector || "(focused)" };
 }
 
@@ -849,6 +895,7 @@ async function handleScroll({ x, y, selector, direction, amount, tabId }) {
       deltaY = dist; // default scroll down
   }
 
+  await moveCursorTo(tid, scrollX, scrollY);
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
     type: "mouseWheel",
     x: scrollX,
@@ -856,8 +903,6 @@ async function handleScroll({ x, y, selector, direction, amount, tabId }) {
     deltaX,
     deltaY,
   });
-
-  showActionCursor(tid, scrollX, scrollY);
 
   // Wait for scroll to settle (mouseWheel resolves before DOM updates)
   await new Promise((r) => setTimeout(r, 150));
@@ -882,13 +927,14 @@ async function handleHover({ selector, x, y, tabId, pierce }) {
     throw new Error("Hover requires either 'selector' or both 'x' and 'y' coordinates");
   }
 
+  // Animate the visible cursor to the element, then dispatch the hover move.
+  await moveCursorTo(tid, hoverX, hoverY);
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x: hoverX,
     y: hoverY,
   });
 
-  showActionCursor(tid, hoverX, hoverY);
   return { tabId: tid, element: selector || `(${hoverX},${hoverY})` };
 }
 
@@ -902,6 +948,8 @@ async function handleMouseMove({ x, y, tabId, steps }) {
     throw new Error("mouse_move requires both 'x' and 'y' coordinates");
   }
 
+  // Animate the visible cursor to the target, then dispatch the CDP moves.
+  await moveCursorTo(tid, x, y);
   const numSteps = Math.max(1, steps || 1);
   // CDP doesn't track cursor position, so multi-step interpolation
   // uses small offsets approaching the target to generate mousemove events
@@ -926,7 +974,6 @@ async function handleMouseMove({ x, y, tabId, steps }) {
     });
   }
 
-  showActionCursor(tid, x, y);
   return { tabId: tid, position: { x, y }, steps: numSteps };
 }
 
@@ -958,6 +1005,8 @@ async function handleDrag({ fromSelector, fromX, fromY, toSelector, toX, toY, ta
 
   const numSteps = steps || 10;
 
+  // Animate the visible cursor to the drag source BEFORE pressing.
+  await moveCursorTo(tid, startX, startY);
   // Press at start
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
     type: "mousePressed",
@@ -978,8 +1027,7 @@ async function handleDrag({ fromSelector, fromX, fromY, toSelector, toX, toY, ta
     });
   }
 
-  showActionCursor(tid, startX, startY);
-  // Release at end
+  // Release at end, then glide the cursor to the drop point.
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", {
     type: "mouseReleased",
     x: endX,
@@ -1190,7 +1238,7 @@ async function handleSelect({ selector, value, text, index, tabId }) {
   });
   const result = results[0]?.result;
   if (result?.error) throw new Error(result.error);
-  if (result?.x != null && result?.y != null) showActionCursor(tid, result.x, result.y);
+  if (result?.x != null && result?.y != null) await moveCursorTo(tid, result.x, result.y);
   const { x: _x, y: _y, ...rest } = result;
   return { tabId: tid, ...rest };
 }
@@ -1297,6 +1345,17 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   // Auto-continue non-auth paused requests. Skip auth requests (401/407 — will be handled via Fetch.authRequired).
   if (method === "Fetch.requestPaused" && source.tabId) {
     const code = params.responseStatusCode;
+    // Network interception: park matching requests so the agent can fail/fulfill/continue them.
+    const int = interceptState.get(source.tabId);
+    if (int && int.active) {
+      const url = params.request?.url || "";
+      const match = int.patterns === null || (int.patterns || []).some((p) => url.includes(p));
+      if (match) {
+        int.paused.set(params.requestId, { url, method: params.request?.method || "", ts: Date.now() });
+        if (int.paused.size > 50) { const first = int.paused.keys().next().value; int.paused.delete(first); }
+        return;
+      }
+    }
     if (code !== 401 && code !== 407) {
       sendDebuggerCommand(source.tabId, "Fetch.continueRequest", {
         requestId: params.requestId,
@@ -1322,6 +1381,18 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
 });
 
+// Open the URL attached to a notification when the user clicks it
+chrome.notifications.onClicked.addListener((notificationId) => {
+  const url = notifyUrlMap.get(notificationId);
+  if (url) {
+    chrome.tabs.create({ url });
+    chrome.notifications.clear(notificationId).catch(() => {});
+  }
+});
+chrome.notifications.onClosed.addListener((notificationId) => {
+  notifyUrlMap.delete(notificationId);
+});
+
 async function handleDialog({ action, promptText, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
@@ -1340,10 +1411,29 @@ async function handleDialog({ action, promptText, tabId }) {
   return { tabId: tid, handled: true, type: dialog.type, dialogMessage: dialog.message };
 }
 
-// --- History (Back/Forward) ---
+// --- History (Back/Forward / Search / Visits / Clear) ---
 
-async function handleHistory({ action, tabId }) {
+async function handleHistory({ action, tabId, query, url, maxResults }) {
   const tid = tabId || (await getActiveTabId());
+
+  // Search recent history items
+  if (action === "search") {
+    if (!query) throw new Error("query is required for history search");
+    const items = await chrome.history.search({ text: query, maxResults: Math.min(Number(maxResults) || 50, 200) });
+    return { history: items.map((h) => ({ url: h.url, title: h.title, visit_count: h.visitCount, last_visit_time: h.lastVisitTime })) };
+  }
+  // Visit timestamps for one URL
+  if (action === "visits") {
+    if (!url) throw new Error("url is required for history visits");
+    const visits = await chrome.history.getVisits({ url: String(url) });
+    return { url, visits: visits.slice(0, 100).map((v) => ({ visit_time: v.visitTime, transition: v.transition })) };
+  }
+  // Delete all history
+  if (action === "clear") {
+    await chrome.history.deleteAll();
+    return { cleared: true };
+  }
+
   // Use CDP navigation history: chrome.tabs.goBack/goForward can report an empty
   // history even when entries exist (Chromium quirk), so drive the controller directly.
   await ensureDebugger(tid);
@@ -1560,6 +1650,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
   }
 
   if (action === "tap") {
+    await moveCursorTo(tid, touchX, touchY);
     await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
       type: "touchStart",
       touchPoints: [{ x: touchX, y: touchY }],
@@ -1569,7 +1660,6 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
       type: "touchEnd",
       touchPoints: [],
     });
-    showActionCursor(tid, touchX, touchY);
     return { tabId: tid, action: "tap", x: touchX, y: touchY };
   }
 
@@ -1578,6 +1668,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
     const eY = endY ?? touchY;
     const steps = 10;
 
+    await moveCursorTo(tid, touchX, touchY);
     await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
       type: "touchStart",
       touchPoints: [{ x: touchX, y: touchY }],
@@ -1607,6 +1698,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
 
   if (action === "long-press") {
     const holdMs = duration || 500;
+    await moveCursorTo(tid, touchX, touchY);
     await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
       type: "touchStart",
       touchPoints: [{ x: touchX, y: touchY }],
@@ -1616,7 +1708,6 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
       type: "touchEnd",
       touchPoints: [],
     });
-    showActionCursor(tid, touchX, touchY);
     return { tabId: tid, action: "long-press", x: touchX, y: touchY, duration: holdMs };
   }
 
@@ -1627,6 +1718,7 @@ async function handleTouch({ action, x, y, selector, endX, endY, scale, tabId, d
     const centerY = touchY;
     const steps = 10;
 
+    await moveCursorTo(tid, centerX, centerY);
     await sendDebuggerCommand(tid, "Input.dispatchTouchEvent", {
       type: "touchStart",
       touchPoints: [
@@ -2010,8 +2102,9 @@ async function handleDownload({ action, timeout }) {
 async function handleAuth({ action, username, password, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
-  // Fetch domain needed for HTTP auth interception
-  await ensureCdpDomain(tid, "Fetch", { handleAuthRequests: true });
+  // Fetch domain needed for HTTP auth interception (managed via fetch config so
+  // network interception and auth coexist — one Fetch.enable governs both).
+  await setFetchAuth(tid, true);
 
   if (action === "status") {
     const reqIds = pendingAuthByTab.get(tid);
@@ -2714,9 +2807,9 @@ async function handleCheck({ selector, tabId }) {
   if (r.checked) return { tabId: tid, checked: true, already: true };
   await ensureDebugger(tid);
   const coords = await getElementCenter(tid, selector);
+  await moveCursorTo(tid, coords.x, coords.y);
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mousePressed", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mouseReleased", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
-  showActionCursor(tid, coords.x, coords.y);
   return { tabId: tid, checked: true, already: false };
 }
 
@@ -2741,9 +2834,9 @@ async function handleUncheck({ selector, tabId }) {
   if (!r.checked) return { tabId: tid, checked: false, already: true };
   await ensureDebugger(tid);
   const coords = await getElementCenter(tid, selector);
+  await moveCursorTo(tid, coords.x, coords.y);
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mousePressed", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
   await sendDebuggerCommand(tid, "Input.dispatchMouseEvent", { type: "mouseReleased", x: coords.x, y: coords.y, button: "left", clickCount: 1 });
-  showActionCursor(tid, coords.x, coords.y);
   return { tabId: tid, checked: false, already: false };
 }
 
@@ -2766,7 +2859,7 @@ async function handleFocus({ selector, tabId }) {
   });
   const r = results[0]?.result;
   if (r?.error) throw new Error(r.error);
-  if (r?.x != null) showActionCursor(tid, r.x, r.y);
+  if (r?.x != null) await moveCursorTo(tid, r.x, r.y);
   return { tabId: tid, focused: true, element: selector };
 }
 
@@ -3047,6 +3140,536 @@ async function handleWindow({ action, url, windowId }) {
   throw new Error("Unknown window action: " + action + ". Use list, create, or close.");
 }
 
+// ============================================================================
+// Fetch config manager - one Fetch.enable governs both HTTP auth interception
+// (Fetch.authRequired) and network interception (Fetch.requestPaused parking).
+// ============================================================================
+
+const fetchConfigByTab = new Map(); // tabId -> { auth: boolean, patterns: string[] | null }
+
+async function applyFetchConfig(tabId) {
+  const cfg = fetchConfigByTab.get(tabId) || { auth: false, patterns: null };
+  const params = { handleAuthRequests: cfg.auth };
+  if (cfg.patterns && cfg.patterns.length) params.patterns = cfg.patterns.map((p) => ({ urlPattern: p }));
+  await sendDebuggerCommand(tabId, "Fetch.enable", params);
+  let enabled = cdpDomainEnabled.get(tabId);
+  if (!enabled) { enabled = new Set(); cdpDomainEnabled.set(tabId, enabled); }
+  enabled.add("Fetch");
+  if (cfg.auth) fetchAuthEnabled.add(tabId); else fetchAuthEnabled.delete(tabId);
+}
+
+async function setFetchAuth(tabId, auth) {
+  const cfg = fetchConfigByTab.get(tabId) || { auth: false, patterns: null };
+  cfg.auth = auth;
+  fetchConfigByTab.set(tabId, cfg);
+  await applyFetchConfig(tabId);
+}
+
+// ============================================================================
+// Notifications (chrome.notifications)
+// ============================================================================
+
+async function handleNotify({ title, message, url, priority }) {
+  if (!title && !message) throw new Error("notify requires a title or message");
+  const id = "bmcp-" + Date.now() + "-" + Math.floor(Math.random() * 1e6);
+  await chrome.notifications.create(id, {
+    type: "basic",
+    iconUrl: chrome.runtime.getURL("icons/app-icon-128.png"),
+    title: String(title || "Browser MCP").slice(0, 100),
+    message: String(message || "").slice(0, 300),
+    priority: Math.min(Math.max(Number(priority) || 0, -2), 2),
+  });
+  if (url) notifyUrlMap.set(id, url);
+  return { notification_id: id, url: url || null };
+}
+
+// ============================================================================
+// Tab groups (chrome.tabGroups + chrome.tabs.group/ungroup)
+// ============================================================================
+
+const GROUP_COLORS = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
+
+async function handleGroups({ action, tab_ids, group_id, title, color, collapsed }) {
+  const act = action || "list";
+  if (act === "list") {
+    const groups = await chrome.tabGroups.query({});
+    return {
+      groups: groups.map((g) => ({ id: g.id, title: g.title, color: g.color, collapsed: g.collapsed, windowId: g.windowId })),
+    };
+  }
+  if (act === "create") {
+    if (!tab_ids || !tab_ids.length) throw new Error("tab_ids (array) is required for create");
+    const groupId = await chrome.tabs.group({ tabIds: tab_ids.map(Number) });
+    if (title || color) {
+      const upd = {};
+      if (title) upd.title = String(title);
+      if (color) {
+        if (!GROUP_COLORS.includes(color)) throw new Error("color must be one of: " + GROUP_COLORS.join(", "));
+        upd.color = color;
+      }
+      await chrome.tabGroups.update(groupId, upd);
+    }
+    return { group_id: groupId, title: title || null, color: color || null };
+  }
+  if (act === "add") {
+    if (!tab_ids || !tab_ids.length) throw new Error("tab_ids (array) is required for add");
+    if (!group_id) throw new Error("group_id is required for add");
+    const groupId = await chrome.tabs.group({ tabIds: tab_ids.map(Number), groupId: Number(group_id) });
+    return { group_id: groupId, added: tab_ids.length };
+  }
+  if (act === "remove") {
+    if (!tab_ids || !tab_ids.length) throw new Error("tab_ids (array) is required for remove");
+    await chrome.tabs.ungroup(tab_ids.map(Number));
+    return { removed: tab_ids.length };
+  }
+  if (act === "update") {
+    if (!group_id) throw new Error("group_id is required for update");
+    const upd = {};
+    if (title !== undefined) upd.title = String(title);
+    if (color !== undefined) {
+      if (!GROUP_COLORS.includes(color)) throw new Error("color must be one of: " + GROUP_COLORS.join(", "));
+      upd.color = color;
+    }
+    if (collapsed !== undefined) upd.collapsed = !!collapsed;
+    if (Object.keys(upd).length === 0) throw new Error("update requires title, color, or collapsed");
+    await chrome.tabGroups.update(Number(group_id), upd);
+    return { group_id: Number(group_id), ...upd };
+  }
+  if (act === "list_tabs" || act === "tabs") {
+    if (!group_id) throw new Error("group_id is required for list_tabs");
+    const tabs = await chrome.tabs.query({ groupId: Number(group_id) });
+    return { group_id: Number(group_id), tabs: tabs.map((t) => ({ id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId })) };
+  }
+  throw new Error("Unknown groups action: " + action + ". Use list, create, add, remove, update, or list_tabs.");
+}
+
+// ============================================================================
+// Bookmarks (chrome.bookmarks)
+// ============================================================================
+
+function flattenBookmarks(nodes, depth) {
+  const out = [];
+  for (const n of nodes || []) {
+    if (!n) continue;
+    out.push({ id: n.id, title: n.title || "", url: n.url || null, parent_id: n.parentId || null, folder: !n.url, depth });
+    if (n.children) out.push(...flattenBookmarks(n.children, depth + 1));
+  }
+  return out;
+}
+
+async function handleBookmarks({ action, parent_id, title, url, query }) {
+  const act = action || "tree";
+  if (act === "tree") {
+    const tree = await chrome.bookmarks.getTree();
+    return { bookmarks: flattenBookmarks(tree, 0).slice(0, 300) };
+  }
+  if (act === "create") {
+    if (!title) throw new Error("title is required for create");
+    const created = await chrome.bookmarks.create({ parentId: parent_id ? String(parent_id) : undefined, title: String(title), url: url ? String(url) : undefined });
+    return { bookmark: { id: created.id, title: created.title, url: created.url || null, folder: !created.url } };
+  }
+  if (act === "search") {
+    if (!query) throw new Error("query is required for search");
+    const results = await chrome.bookmarks.search(String(query));
+    return { bookmarks: results.slice(0, 50).map((b) => ({ id: b.id, title: b.title, url: b.url || null, folder: !b.url })) };
+  }
+  throw new Error("Unknown bookmarks action: " + action + ". Use tree, create, or search.");
+}
+
+// ============================================================================
+// Session restore (chrome.sessions)
+// ============================================================================
+
+async function handleSession({ action, max_results }) {
+  const act = action || "recent";
+  if (act === "recent") {
+    const items = await chrome.sessions.getRecentlyClosed({ maxResults: Math.min(Number(max_results) || 10, 25) });
+    return {
+      sessions: items.map((s) => ({
+        session_id: s.sessionId,
+        type: s.tab ? "tab" : "window",
+        tab: s.tab ? { id: s.tab.sessionId, title: s.tab.title, url: s.tab.url, windowId: s.tab.windowId } : null,
+        window: s.window ? { id: s.window.sessionId, title: s.window.title, tabs: (s.window.tabs || []).length } : null,
+      })),
+    };
+  }
+  if (act === "restore") {
+    const restored = await chrome.sessions.restore();
+    const tab = restored && restored.tab ? { id: restored.tab.id, title: restored.tab.title, url: restored.tab.url, windowId: restored.tab.windowId } : null;
+    const window = restored && restored.window ? { id: restored.window.id, tabs: (restored.window.tabs || []).map((t) => ({ id: t.id, title: t.title, url: t.url })) } : null;
+    return { restored: { tab, window } };
+  }
+  throw new Error("Unknown session action: " + action + ". Use recent or restore.");
+}
+
+// ============================================================================
+// Network interception (Fetch.failRequest / Fetch.fulfillRequest)
+// ============================================================================
+
+const FETCH_FAIL_REASONS = ["Failed", "Aborted", "TimedOut", "AccessDenied", "ConnectionClosed", "ConnectionReset", "ConnectionRefused", "ConnectionAborted", "ConnectionFailed", "NameNotResolved", "InternetDisconnected", "AddressUnreachable"];
+
+async function handleIntercept({ action, patterns, request_id, url, status, body, content_type, headers, error_reason, tab_id }) {
+  const tid = tab_id || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  if (action === "enable") {
+    const cfg = fetchConfigByTab.get(tid) || { auth: false, patterns: null };
+    cfg.patterns = Array.isArray(patterns) && patterns.length ? patterns.map(String) : null;
+    fetchConfigByTab.set(tid, cfg);
+    interceptState.set(tid, { active: true, patterns: cfg.patterns, paused: new Map() });
+    await applyFetchConfig(tid);
+    return { tab_id: tid, intercepting: true, patterns: cfg.patterns || ["*"] };
+  }
+
+  if (action === "stop") {
+    interceptState.delete(tid);
+    const cfg = fetchConfigByTab.get(tid);
+    if (cfg && cfg.auth) {
+      cfg.patterns = null;
+      fetchConfigByTab.set(tid, cfg);
+      await applyFetchConfig(tid);
+    } else {
+      fetchConfigByTab.delete(tid);
+      await sendDebuggerCommand(tid, "Fetch.disable").catch(() => {});
+      const enabled = cdpDomainEnabled.get(tid);
+      if (enabled) enabled.delete("Fetch");
+    }
+    return { tab_id: tid, intercepting: false };
+  }
+
+  const int = interceptState.get(tid);
+  if (!int || !int.active) throw new Error("Interception is not active on this tab. Call intercept action=enable first.");
+
+  if (action === "status") {
+    const paused = [];
+    for (const [rid, info] of int.paused) paused.push({ request_id: rid, url: info.url, method: info.method });
+    return { tab_id: tid, intercepting: true, patterns: int.patterns || ["*"], paused };
+  }
+
+  let rid = request_id;
+  if (!rid && url) {
+    for (const [r, info] of int.paused) {
+      if (info.url.includes(url)) { rid = r; break; }
+    }
+  }
+  if (!rid) throw new Error("No matching paused request. Use status to list request_ids, or pass url to match.");
+
+  if (action === "continue") {
+    await sendDebuggerCommand(tid, "Fetch.continueRequest", { requestId: rid });
+    int.paused.delete(rid);
+    return { tab_id: tid, continued: rid };
+  }
+  if (action === "fail") {
+    const reason = error_reason || "Failed";
+    if (!FETCH_FAIL_REASONS.includes(reason)) throw new Error("error_reason must be one of: " + FETCH_FAIL_REASONS.join(", "));
+    await sendDebuggerCommand(tid, "Fetch.failRequest", { requestId: rid, errorReason: reason });
+    int.paused.delete(rid);
+    return { tab_id: tid, failed: rid, reason };
+  }
+  if (action === "fulfill") {
+    if (!status) throw new Error("status (HTTP code) is required for fulfill");
+    const respHeaders = [];
+    if (headers && typeof headers === "object") {
+      for (const [k, v] of Object.entries(headers)) respHeaders.push({ name: k, value: String(v) });
+    }
+    if (content_type) respHeaders.push({ name: "Content-Type", value: content_type });
+    const bodyB64 = typeof body === "string" && /^[A-Za-z0-9+/=]+$/.test(body) && body.length % 4 === 0 ? body : btoa(unescape(encodeURIComponent(String(body || ""))));
+    await sendDebuggerCommand(tid, "Fetch.fulfillRequest", {
+      requestId: rid,
+      responseCode: Number(status),
+      responsePhrase: "HTTP " + String(status),
+      responseHeaders: respHeaders,
+      body: bodyB64,
+    });
+    int.paused.delete(rid);
+    return { tab_id: tid, fulfilled: rid, status: Number(status) };
+  }
+
+  throw new Error("Unknown intercept action: " + action + ". Use enable, stop, status, continue, fail, or fulfill.");
+}
+
+// ============================================================================
+// HAR export (from captured network logs)
+// ============================================================================
+
+async function handleHar({ tab_id }) {
+  const tid = tab_id || (await getActiveTabId());
+  const logs = networkLogs.get(tid) || [];
+  const entries = logs.map((l) => ({
+    startedDateTime: new Date(l.ts || Date.now()).toISOString(),
+    time: l.duration || 0,
+    request: {
+      method: l.method || "GET",
+      url: l.url || "",
+      httpVersion: "HTTP/1.1",
+      headers: [],
+      queryString: [],
+      cookies: [],
+      headersSize: -1,
+      bodySize: -1,
+    },
+    response: {
+      status: l.status || 0,
+      statusText: l.statusText || "",
+      httpVersion: "HTTP/1.1",
+      headers: [],
+      cookies: [],
+      content: { size: l.size || 0, mimeType: l.mimeType || "" },
+      redirectURL: "",
+      headersSize: -1,
+      bodySize: -1,
+    },
+    cache: {},
+    timings: { send: 0, wait: l.duration || 0, receive: 0 },
+    resourceType: l.resourceType || "",
+    _error: l.errorText || undefined,
+  }));
+  return { count: entries.length, har: { log: { version: "1.2", creator: { name: "browser-mcp", version: "0.2.0" }, entries } } };
+}
+
+// ============================================================================
+// WebSocket frame capture
+// ============================================================================
+
+async function handleWs({ action, tab_id, filter, clear }) {
+  const tid = tab_id || (await getActiveTabId());
+  if (action === "clear") { wsLogs.delete(tid); return { cleared: true }; }
+  await ensureDebugger(tid);
+  await ensureCdpDomain(tid, "Network");
+  let frames = wsLogs.get(tid) || [];
+  if (filter) frames = frames.filter((f) => (f.url || "").toLowerCase().includes(String(filter).toLowerCase()));
+  if (clear) wsLogs.delete(tid);
+  const out = frames.slice(-100);
+  return { count: out.length, frames: out, note: "WebSocket capture starts from this call - reload/navigate to capture early frames." };
+}
+
+// ============================================================================
+// Network throttling presets
+// ============================================================================
+
+const THROTTLE_PRESETS = {
+  offline: { offline: true },
+  "slow-3g": { offline: false, latency: 2000, downloadThroughput: Math.round(500 * 1024 / 8), uploadThroughput: Math.round(250 * 1024 / 8) },
+  "3g": { offline: false, latency: 500, downloadThroughput: Math.round(1.6 * 1024 * 1024 / 8), uploadThroughput: Math.round(750 * 1024 / 8) },
+  "4g": { offline: false, latency: 150, downloadThroughput: Math.round(9 * 1024 * 1024 / 8), uploadThroughput: Math.round(3.75 * 1024 * 1024 / 8) },
+  wifi: { offline: false, latency: 100, downloadThroughput: Math.round(30 * 1024 * 1024 / 8), uploadThroughput: Math.round(10 * 1024 * 1024 / 8) },
+};
+
+async function handleThrottle({ preset, latency, download_throughput, upload_throughput, clear, tab_id }) {
+  const tid = tab_id || (await getActiveTabId());
+  await ensureDebugger(tid);
+  await ensureCdpDomain(tid, "Network");
+  if (clear) {
+    await sendDebuggerCommand(tid, "Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+    return { tab_id: tid, throttle: "none" };
+  }
+  let params;
+  if (preset) {
+    const p = THROTTLE_PRESETS[String(preset).toLowerCase()];
+    if (!p) throw new Error("Unknown throttle preset: " + preset + ". Available: " + Object.keys(THROTTLE_PRESETS).join(", "));
+    params = { ...p };
+  } else if (latency != null || download_throughput != null || upload_throughput != null) {
+    params = { offline: false, latency: Number(latency) || 0, downloadThroughput: download_throughput != null ? Number(download_throughput) : -1, uploadThroughput: upload_throughput != null ? Number(upload_throughput) : -1 };
+  } else {
+    throw new Error("throttle requires a preset or custom latency/throughput values");
+  }
+  await sendDebuggerCommand(tid, "Network.emulateNetworkConditions", params);
+  return { tab_id: tid, throttle: preset || "custom", ...params };
+}
+
+// ============================================================================
+// Resource inspection (performance entries + cached bodies)
+// ============================================================================
+
+async function handleResources({ action, url, tab_id }) {
+  const tid = tab_id || (await getActiveTabId());
+  const act = action || "list";
+  await ensureDebugger(tid);
+  if (act === "list") {
+    await ensureCdpDomain(tid, "Runtime");
+    const result = await sendDebuggerCommand(tid, "Runtime.evaluate", {
+      expression: 'JSON.stringify(performance.getEntriesByType("resource").slice(-200).map(e => ({ url: e.name, type: e.initiatorType, size: e.transferSize || e.decodedBodySize || 0, duration: Math.round(e.duration) })))',
+      returnByValue: true,
+    });
+    let resources = [];
+    try { resources = JSON.parse(result.result?.value || "[]"); } catch {}
+    return { count: resources.length, resources: resources.slice(0, 100) };
+  }
+  if (act === "read") {
+    if (!url) throw new Error("url is required for read");
+    const logs = networkLogs.get(tid) || [];
+    const rec = logs.find((l) => l.url === url);
+    if (!rec || !rec.requestId) {
+      return { error: "No captured body for " + url + ". Network capture must be active while the resource loads (enable via network view, then reload)." };
+    }
+    const body = await sendDebuggerCommand(tid, "Network.getResponseBody", { requestId: rec.requestId });
+    return { url, base64_encoded: !!body.base64Encoded, size: (body.body || "").length, content: String(body.body || "").slice(0, 200000) };
+  }
+  throw new Error("Unknown resources action: " + action + ". Use list or read.");
+}
+
+// ============================================================================
+// CSS coverage (CSS.startRuleUsageTracking + takeCoverageDelta)
+// ============================================================================
+
+const coverageState = new Map(); // tabId -> { started: boolean }
+
+function summarizeCoverage(rangesList) {
+  let totalUsed = 0, totalAll = 0;
+  const sheets = (rangesList || []).slice(0, 50).map((sheet) => {
+    const text = sheet.text || "";
+    const used = (sheet.ranges || []).reduce((s, r) => s + (r.endOffset - r.startOffset), 0);
+    const pct = text.length > 0 ? Math.round((used / text.length) * 1000) / 10 : 0;
+    totalUsed += used; totalAll += text.length;
+    return { url: sheet.url || "(inline)", used_chars: used, total_chars: text.length, used_pct: pct };
+  });
+  return { sheets, overall_used_pct: totalAll > 0 ? Math.round((totalUsed / totalAll) * 1000) / 10 : 0 };
+}
+
+async function handleCoverage({ action, wait_ms, tab_id }) {
+  const tid = tab_id || (await getActiveTabId());
+  const act = action || "report";
+  await ensureDebugger(tid);
+  await ensureCdpDomain(tid, "DOM");
+  await ensureCdpDomain(tid, "CSS");
+  const st = coverageState.get(tid) || { started: false };
+
+  if (act === "start") {
+    await sendDebuggerCommand(tid, "CSS.startRuleUsageTracking");
+    st.started = true;
+    coverageState.set(tid, st);
+    return { tab_id: tid, tracking: true };
+  }
+  if (act === "stop") {
+    const delta = await sendDebuggerCommand(tid, "CSS.takeCoverageDelta").catch(() => ({ coverage: [] }));
+    await sendDebuggerCommand(tid, "CSS.stopRuleUsageTracking").catch(() => {});
+    st.started = false;
+    coverageState.set(tid, st);
+    return summarizeCoverage(delta.coverage || []);
+  }
+  if (act === "report") {
+    if (!st.started) {
+      await sendDebuggerCommand(tid, "CSS.startRuleUsageTracking");
+      await new Promise((r) => setTimeout(r, Math.min(Number(wait_ms) || 1000, 10000)));
+      const delta = await sendDebuggerCommand(tid, "CSS.takeCoverageDelta").catch(() => ({ coverage: [] }));
+      await sendDebuggerCommand(tid, "CSS.stopRuleUsageTracking").catch(() => {});
+      return summarizeCoverage(delta.coverage || []);
+    }
+    const delta = await sendDebuggerCommand(tid, "CSS.takeCoverageDelta").catch(() => ({ coverage: [] }));
+    return summarizeCoverage(delta.coverage || []);
+  }
+  throw new Error("Unknown coverage action: " + action + ". Use start, stop, or report.");
+}
+
+// ============================================================================
+// Force CSS pseudo-states
+// ============================================================================
+
+async function handlePseudo({ action, selector, states, tab_id }) {
+  const tid = tab_id || (await getActiveTabId());
+  if (!selector) throw new Error("selector is required");
+  await ensureDebugger(tid);
+  await ensureCdpDomain(tid, "DOM");
+  await ensureCdpDomain(tid, "CSS");
+  const doc = await sendDebuggerCommand(tid, "DOM.getDocument");
+  const node = await sendDebuggerCommand(tid, "DOM.querySelector", { nodeId: doc.root.nodeId, selector });
+  if (!node.nodeId) throw new Error("Element not found: " + selector);
+  const act = action || "force";
+  const forced = act === "clear" ? [] : Array.isArray(states) && states.length ? states : ["hover"];
+  await sendDebuggerCommand(tid, "CSS.forcePseudoState", { nodeId: node.nodeId, forcedPseudoClasses: forced });
+  return { tab_id: tid, selector, forced_pseudo_classes: forced };
+}
+
+// ============================================================================
+// Full element styles (computed + matched rules)
+// ============================================================================
+
+async function handleStyles({ selector, ref, property, tab_id }) {
+  const tid = tab_id || (await getActiveTabId());
+  const sel = ref || selector;
+  if (!sel) throw new Error("selector or ref is required");
+  await ensureDebugger(tid);
+  await ensureCdpDomain(tid, "DOM");
+  await ensureCdpDomain(tid, "CSS");
+  const doc = await sendDebuggerCommand(tid, "DOM.getDocument");
+  const node = await sendDebuggerCommand(tid, "DOM.querySelector", { nodeId: doc.root.nodeId, selector: sel });
+  if (!node.nodeId) throw new Error("Element not found: " + sel);
+  const computed = await sendDebuggerCommand(tid, "CSS.getComputedStyleForNode", { nodeId: node.nodeId });
+  const matched = await sendDebuggerCommand(tid, "CSS.getMatchedStylesForNode", { nodeId: node.nodeId }).catch(() => ({}));
+  const all = computed.computedStyle || [];
+  let styles = {};
+  for (const s of all) {
+    if (property && s.name !== property) continue;
+    styles[s.name] = s.value;
+  }
+  if (property) styles = { [property]: styles[property] };
+  const rules = (matched.matchedCSSRules || []).slice(0, 20).map((r) => ({
+    selector: (r.rule?.selectorList?.text || "").slice(0, 200),
+    origin: r.origin || "",
+    declarations: (r.rule?.style?.cssProperties || []).slice(0, 15).map((p) => ({ name: p.name, value: p.value })),
+  }));
+  return { tab_id: tid, selector: sel, computed: styles, matched_rules: rules };
+}
+
+// ============================================================================
+// Clear site data (chrome.browsingData)
+// ============================================================================
+
+async function handleSiteData({ origin, cookies, local_storage, cache, indexed_db, service_workers, tab_id }) {
+  const tid = tab_id || (await getActiveTabId());
+  let targetOrigin = origin;
+  if (!targetOrigin) {
+    const tab = await chrome.tabs.get(tid);
+    targetOrigin = new URL(tab.url).origin;
+  }
+  if (!targetOrigin || targetOrigin === "null" || !/^https?:\/\//.test(targetOrigin)) {
+    throw new Error("Invalid origin: " + targetOrigin + ". Provide an http(s) origin or use a real tab.");
+  }
+  const remove = {};
+  if (cookies || (cookies === undefined && local_storage === undefined && cache === undefined && indexed_db === undefined && service_workers === undefined)) remove.cookies = true;
+  if (local_storage) remove.localStorage = true;
+  if (cache) remove.cache = true;
+  if (indexed_db) remove.indexedDB = true;
+  if (service_workers) remove.serviceWorkers = true;
+  if (Object.keys(remove).length === 0) throw new Error("Nothing to clear. Pass cookies, local_storage, cache, indexed_db, or service_workers.");
+  await chrome.browsingData.remove({ since: 0, origins: [targetOrigin] }, remove);
+  return { origin: targetOrigin, cleared: Object.keys(remove) };
+}
+
+// ============================================================================
+// Extension diagnostics
+// ============================================================================
+
+async function handleExtension({ action }) {
+  const act = action || "state";
+  if (act === "reload") {
+    setTimeout(() => chrome.runtime.reload(), 100);
+    return { reloading: true };
+  }
+  if (act === "reconnect") {
+    const cfg = await chrome.storage.local.get(["serverUrl", "extensionId", "deviceId", "authToken"]);
+    chrome.runtime.sendMessage({ type: "reconnect", deviceId: cfg.deviceId, token: cfg.authToken, fromSw: true }).catch(() => {});
+    return { reconnecting: true };
+  }
+  if (act === "state") {
+    const manifest = chrome.runtime.getManifest();
+    const cfg = await chrome.storage.local.get(["serverUrl", "extensionId", "deviceId", "authToken"]);
+    return {
+      version: manifest.version,
+      version_name: manifest.version_name || manifest.version,
+      mode: cfg.deviceId ? "gateway" : "local",
+      device_id: cfg.deviceId || null,
+      has_token: !!(cfg.authToken),
+      offscreen_ready: offscreenReady,
+      debugger_attached_tabs: [...debuggerAttached],
+      network_capture_tabs: [...networkLogs.keys()],
+      ws_capture_tabs: [...wsLogs.keys()],
+      vault: await vaultStatus(),
+    };
+  }
+  throw new Error("Unknown extension action: " + action + ". Use state, reload, or reconnect.");
+}
+
 // ---- Console / Errors / Network capture (CDP event ring buffers) ----
 
 const consoleLogs = new Map();
@@ -3118,7 +3741,12 @@ async function handleNetwork({ action, tabId, filter }) {
   await ensureCdpDomain(tid, "Network");
   let logs = networkLogs.get(tid) || [];
   if (filter) logs = logs.filter((l) => (l.url || "").toLowerCase().includes(String(filter).toLowerCase()));
-  return { count: logs.length, requests: logs.slice(-200) };
+  // requestId is an internal handle for resources read / intercept - keep the agent output lean.
+  const out = logs.slice(-200).map((l) => {
+    const { requestId, ...rest } = l;
+    return rest;
+  });
+  return { count: logs.length, requests: out };
 }
 
 // CDP event hooks for console/errors/network (called from chrome.debugger.onEvent)
@@ -3136,7 +3764,7 @@ function handleCaptureEvent(tabId, method, params) {
   if (method === "Network.requestWillBeSent") {
     let m = inFlightRequests.get(tabId);
     if (!m) { m = new Map(); inFlightRequests.set(tabId, m); }
-    m.set(params.requestId, { url: params.request ? params.request.url || "" : "", method: params.request ? params.request.method || "" : "", resourceType: params.type || "", startedAt: Date.now(), ts: Date.now() });
+    m.set(params.requestId, { requestId: params.requestId, url: params.request ? params.request.url || "" : "", method: params.request ? params.request.method || "" : "", resourceType: params.type || "", startedAt: Date.now(), ts: Date.now() });
     if (m.size > 400) { const first = m.keys().next().value; m.delete(first); }
     return;
   }
@@ -3170,6 +3798,23 @@ function handleCaptureEvent(tabId, method, params) {
       pushCapped(networkLogs, tabId, rec, 200);
       m.delete(params.requestId);
     }
+    return;
+  }
+  // WebSocket frame capture (Network domain must be enabled)
+  if (method === "Network.webSocketCreated" && params.requestId) {
+    let m = wsUrls.get(tabId);
+    if (!m) { m = new Map(); wsUrls.set(tabId, m); }
+    m.set(params.requestId, params.url || "");
+    return;
+  }
+  if (method === "Network.webSocketFrameSent") {
+    const url = (wsUrls.get(tabId) || new Map()).get(params.requestId) || "";
+    pushCapped(wsLogs, tabId, { url, direction: "sent", opcode: params.response?.opcode ?? null, payload: String(params.response?.payloadData ?? "").slice(0, 500), ts: Date.now() }, 200);
+    return;
+  }
+  if (method === "Network.webSocketFrameReceived") {
+    const url = (wsUrls.get(tabId) || new Map()).get(params.requestId) || "";
+    pushCapped(wsLogs, tabId, { url, direction: "received", opcode: params.response?.opcode ?? null, payload: String(params.response?.payloadData ?? "").slice(0, 500), ts: Date.now() }, 200);
     return;
   }
 }
@@ -3236,8 +3881,59 @@ async function dispatchStealthCommand(method, params) {
   }
 }
 
+async function stealthResolveCenter(tid, selector, x, y) {
+  // Stealth: resolve the element center via DOM-only injection (no CDP), so the
+  // visible cursor can travel to it BEFORE the action dispatches.
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    func: (sel, hx, hy) => {
+      function deepQuery(s, root) {
+        const el = (root || document).querySelector(s);
+        if (el) return el;
+        for (const n of (root || document).querySelectorAll("*")) {
+          if (n.shadowRoot) {
+            const d = deepQuery(s, n.shadowRoot);
+            if (d) return d;
+          }
+        }
+        if (!root || root === document) {
+          for (const iframe of document.querySelectorAll("iframe")) {
+            try {
+              if (iframe.contentDocument) {
+                const m = iframe.contentDocument.querySelector(s);
+                if (m) return m;
+              }
+            } catch {}
+          }
+        }
+        return null;
+      }
+      let el;
+      if (sel) {
+        el = deepQuery(sel);
+        if (!el) return { error: `Element not found: ${sel}` };
+        if (el.scrollIntoViewIfNeeded) el.scrollIntoViewIfNeeded(true);
+        else el.scrollIntoView({ block: "center", behavior: "instant" });
+      } else if (hx != null && hy != null) {
+        el = document.elementFromPoint(hx, hy);
+        if (!el) return { error: `No element at (${hx},${hy})` };
+      } else {
+        return { error: "Provide selector or x,y coordinates" };
+      }
+      const rect = el.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    },
+    args: [selector || null, x ?? null, y ?? null],
+  });
+  const r = results[0]?.result;
+  if (r?.error) throw new Error(r.error);
+  return r;
+}
+
 async function stealthClick({ selector, x, y, tabId, button, clickCount }) {
   const tid = tabId || (await getActiveTabId());
+  const point = await stealthResolveCenter(tid, selector, x, y);
+  await moveCursorTo(tid, point.x, point.y);
   const results = await chrome.scripting.executeScript({
     target: { tabId: tid },
     func: (sel, cx, cy, btn, count) => {
@@ -3321,12 +4017,15 @@ async function stealthClick({ selector, x, y, tabId, button, clickCount }) {
   });
   const result = results[0]?.result;
   if (result?.error) throw new Error(result.error);
-  showActionCursor(tid, result.x, result.y);
   return { tabId: tid, element: selector || `(${x},${y})` };
 }
 
 async function stealthType({ text, selector, tabId, clearFirst, pressEnter }) {
   const tid = tabId || (await getActiveTabId());
+  if (selector) {
+    const point = await stealthResolveCenter(tid, selector, null, null);
+    await moveCursorTo(tid, point.x, point.y);
+  }
   const results = await chrome.scripting.executeScript({
     target: { tabId: tid },
     func: (sel, txt, clear, enter) => {
@@ -3418,7 +4117,6 @@ async function stealthType({ text, selector, tabId, clearFirst, pressEnter }) {
   });
   const result = results[0]?.result;
   if (result?.error) throw new Error(result.error);
-  if (result?.x != null) showActionCursor(tid, result.x, result.y);
   return { tabId: tid, element: selector || "(focused)" };
 }
 
@@ -3619,6 +4317,8 @@ async function stealthHover({ selector, x, y, tabId }) {
   if (!selector && (x === undefined || y === undefined)) {
     throw new Error("Stealth hover requires either 'selector' or both 'x' and 'y' coordinates");
   }
+  const point = await stealthResolveCenter(tid, selector, x, y);
+  await moveCursorTo(tid, point.x, point.y);
   const results = await chrome.scripting.executeScript({
     target: { tabId: tid },
     func: (sel, hx, hy) => {
@@ -3666,8 +4366,213 @@ async function stealthHover({ selector, x, y, tabId }) {
   });
   const result = results[0]?.result;
   if (result?.error) throw new Error(result.error);
-  showActionCursor(tid, result.x, result.y);
   return { tabId: tid, element: selector || `(${x},${y})` };
+}
+
+// ============================================================================
+// Vault - encrypted in-browser credential store (like a password manager).
+//
+// Security model:
+//  - Credentials are encrypted with AES-256-GCM (WebCrypto).
+//  - The key is derived from a user-chosen master password via PBKDF2
+//    (150k iterations, random 16-byte salt) - the password itself is never stored.
+//  - Ciphertext lives in chrome.storage.local; plaintext exists only in this
+//    service worker's memory while unlocked, and is never sent to the gateway.
+//  - Auto-locks after 5 minutes of inactivity; locks on SW restart.
+// ============================================================================
+
+const VAULT_PREFIX = "bmcp:vault:";
+let vaultKey = null; // CryptoKey (AES-GCM) derived from master password - memory only
+let vaultEntries = null; // decrypted { origin: { name: { username, password, url?, updatedAt } } }
+let vaultUnlockedAt = 0;
+const VAULT_AUTO_LOCK_MS = 5 * 60 * 1000;
+const VAULT_ITERATIONS = 150000;
+
+function b64encode(buf) {
+  const bytes = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+function b64decode(str) {
+  const bin = atob(str);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+async function vaultDeriveKey(password, saltBytes) {
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(String(password)), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: saltBytes, iterations: VAULT_ITERATIONS, hash: "SHA-256" },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+async function vaultEncrypt(key, plaintext) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = new TextEncoder().encode(String(plaintext));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data);
+  return { iv: b64encode(iv), ct: b64encode(ct) };
+}
+
+async function vaultDecrypt(key, { iv, ct }) {
+  const data = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64decode(iv) }, key, b64decode(ct));
+  return new TextDecoder().decode(data);
+}
+
+async function vaultLoad() {
+  const stored = await chrome.storage.local.get([VAULT_PREFIX + "meta", VAULT_PREFIX + "entries"]);
+  return { meta: stored[VAULT_PREFIX + "meta"] || null, entries: stored[VAULT_PREFIX + "entries"] || null };
+}
+
+async function vaultStatus() {
+  const { meta } = await vaultLoad();
+  const unlocked = !!vaultKey && Date.now() - vaultUnlockedAt < VAULT_AUTO_LOCK_MS;
+  let site_count = 0;
+  let entry_count = 0;
+  if (unlocked && vaultEntries) {
+    for (const origin of Object.keys(vaultEntries)) {
+      site_count++;
+      entry_count += Object.keys(vaultEntries[origin] || {}).length;
+    }
+  }
+  return {
+    initialized: !!meta,
+    unlocked,
+    site_count: unlocked ? site_count : null,
+    entry_count: unlocked ? entry_count : null,
+    auto_lock_minutes: VAULT_AUTO_LOCK_MS / 60000,
+    note: unlocked ? "" : "Vault locked. Unlock with vault action=unlock master=<master password>.",
+  };
+}
+
+async function vaultRequireUnlock() {
+  if (!vaultKey || Date.now() - vaultUnlockedAt >= VAULT_AUTO_LOCK_MS) {
+    vaultKey = null;
+    vaultEntries = null;
+    throw new Error("Vault is locked. Unlock it first: vault action=unlock master=<master password>");
+  }
+}
+
+async function vaultPersist() {
+  const { meta } = await vaultLoad();
+  if (!meta) throw new Error("Vault not initialized");
+  const enc = await vaultEncrypt(vaultKey, JSON.stringify(vaultEntries));
+  await chrome.storage.local.set({ [VAULT_PREFIX + "entries"]: enc });
+}
+
+function vaultOriginFor(url) {
+  try {
+    const o = new URL(url).origin;
+    return o === "null" ? null : o;
+  } catch { return null; }
+}
+
+async function handleVault({ action, master, origin, name, username, password, url, tab_id }) {
+  const act = action || "status";
+
+  if (act === "init") {
+    if (!master || String(master).length < 4) throw new Error("master password is required (min 4 chars) for vault init");
+    const { meta } = await vaultLoad();
+    if (meta) throw new Error("Vault already initialized. Use action=unlock, or delete the vault data to re-init.");
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const key = await vaultDeriveKey(master, salt);
+    vaultKey = key;
+    vaultEntries = {};
+    vaultUnlockedAt = Date.now();
+    const metaStore = { v: 1, salt: b64encode(salt), iterations: VAULT_ITERATIONS, createdAt: Date.now() };
+    await chrome.storage.local.set({ [VAULT_PREFIX + "meta"]: metaStore });
+    await vaultPersist();
+    return { initialized: true, message: "Vault created and unlocked. Store credentials with vault action=set. The master password is not stored anywhere." };
+  }
+
+  if (act === "unlock") {
+    if (!master) throw new Error("master password is required for vault unlock");
+    const { meta, entries } = await vaultLoad();
+    if (!meta) throw new Error("Vault not initialized. Create it with vault action=init master=<master password>");
+    if (!entries) throw new Error("Vault has no data - re-init or restore backup");
+    try {
+      const key = await vaultDeriveKey(master, b64decode(meta.salt));
+      const plain = await vaultDecrypt(key, entries);
+      vaultKey = key;
+      vaultEntries = JSON.parse(plain);
+      vaultUnlockedAt = Date.now();
+      return { unlocked: true, message: "Vault unlocked. Use action=list to see stored entries." };
+    } catch {
+      throw new Error("Wrong master password - could not decrypt the vault.");
+    }
+  }
+
+  if (act === "lock") {
+    vaultKey = null;
+    vaultEntries = null;
+    vaultUnlockedAt = 0;
+    return { locked: true };
+  }
+
+  if (act === "status") return vaultStatus();
+
+  await vaultRequireUnlock();
+  if (!vaultEntries) vaultEntries = {};
+
+  // Resolve target origin: explicit origin, or from the active tab URL, or url param
+  let targetOrigin = origin;
+  if (!targetOrigin && url) targetOrigin = vaultOriginFor(url);
+  if (!targetOrigin && tab_id) {
+    try { const tab = await chrome.tabs.get(tab_id); targetOrigin = vaultOriginFor(tab.url || ""); } catch {}
+  }
+  if (!targetOrigin) {
+    try { const tid = await getActiveTabId(); const tab = await chrome.tabs.get(tid); targetOrigin = vaultOriginFor(tab.url || ""); } catch {}
+  }
+  if (!targetOrigin) throw new Error("Could not determine origin. Pass origin=, url=, or tab_id=.");
+  if (!vaultEntries[targetOrigin]) vaultEntries[targetOrigin] = {};
+
+  if (act === "set") {
+    if (!name) throw new Error("name is required for vault set (e.g. name=\"work\" or name=\"personal\")");
+    if (!username && !password) throw new Error("username and/or password is required");
+    const existing = vaultEntries[targetOrigin][name] || {};
+    vaultEntries[targetOrigin][name] = {
+      username: username !== undefined ? String(username) : existing.username,
+      password: password !== undefined ? String(password) : existing.password,
+      url: url || existing.url || targetOrigin,
+      updatedAt: Date.now(),
+    };
+    await vaultPersist();
+    return { origin: targetOrigin, name, stored: true };
+  }
+
+  if (act === "get") {
+    if (!name) throw new Error("name is required for vault get (use action=list to see names)");
+    const entry = vaultEntries[targetOrigin] && vaultEntries[targetOrigin][name];
+    if (!entry) throw new Error("No entry '" + name + "' for " + targetOrigin + ". Use action=list to see stored names.");
+    return { origin: targetOrigin, name, username: entry.username, password: entry.password, url: entry.url || targetOrigin };
+  }
+
+  if (act === "list") {
+    const sites = {};
+    for (const o of Object.keys(vaultEntries)) {
+      sites[o] = Object.keys(vaultEntries[o] || {});
+    }
+    return { origin: targetOrigin, sites, note: "Passwords are hidden. Use action=get name=<name> to retrieve one." };
+  }
+
+  if (act === "delete") {
+    if (!name) throw new Error("name is required for vault delete");
+    if (vaultEntries[targetOrigin] && vaultEntries[targetOrigin][name]) {
+      delete vaultEntries[targetOrigin][name];
+      if (Object.keys(vaultEntries[targetOrigin]).length === 0) delete vaultEntries[targetOrigin];
+      await vaultPersist();
+      return { origin: targetOrigin, name, deleted: true };
+    }
+    return { origin: targetOrigin, name, deleted: false };
+  }
+
+  throw new Error("Unknown vault action: " + action + ". Use init, unlock, lock, status, set, get, list, or delete.");
 }
 
 // ============================================================================
@@ -3864,6 +4769,25 @@ function showActionCursor(tabId, x, y) {
   chrome.tabs.sendMessage(tabId, { type: "show-action-cursor", x, y }).catch(() => {});
 }
 
+/**
+ * Move the on-page cursor to (x,y) and WAIT until the animation lands, so the
+ * real input is dispatched only after the user sees the mouse arrive at the
+ * element (human-like: curved path, ease-out, pop on arrival). Timeout guards
+ * against a missing content script (e.g. chrome:// pages).
+ */
+async function moveCursorTo(tabId, x, y) {
+  if (x === undefined || y === undefined || !tabId) return;
+  try {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 1200);
+      chrome.tabs.sendMessage(tabId, { type: "show-action-cursor", x, y }, () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  } catch { /* no content script - proceed without visual */ }
+}
+
 /** Show persistent Browser MCP activity cursor during long-running operations (download/upload). */
 function showActivityCursor(tabId) {
   chrome.tabs.sendMessage(tabId, { type: "show-activity-cursor" }).catch(() => {});
@@ -3972,4 +4896,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   networkLogs.delete(tabId);
   inFlightRequests.delete(tabId);
   tabSetOverrides.delete(tabId);
+  interceptState.delete(tabId);
+  fetchAuthEnabled.delete(tabId);
+  wsLogs.delete(tabId);
+  wsUrls.delete(tabId);
 });

@@ -82,8 +82,8 @@ if (!window[Symbol.for("_x7cs")]) {
   // ========================================================================
 
   // Real mouse pointer (black arrow, white outline, drop shadow) so the agent's
-  // interaction looks like an actual mouse cursor, not a logo.
-  const MOUSE_POINTER_PATH = "M6.2 1.9a1 1 0 01.8.26L22.6 15.5a1 1 0 01-.55 1.76l-6.6.36-3.2 7.2a1 1 0 01-1.9-.2l-3.2-9.6-4.4 4.9a1 1 0 01-1.7-.66V2.9a1 1 0 011-1z";
+  // interaction looks like an actual mouse cursor, not a logo. Tip at (4,2).
+  const MOUSE_POINTER_PATH = "M4 2 L20 13.5 L13.8 14.4 L17.2 21.2 L14.4 22.8 L11 16.2 L4.2 19.8 Z";
 
   function cursorSvg(size) {
     return `<svg width="${size || 24}" height="${size || 24}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -112,8 +112,8 @@ if (!window[Symbol.for("_x7cs")]) {
       `  position: fixed;`,
       `  z-index: 2147483647;`,
       `  pointer-events: none;`,
-      `  transform-origin: 6px 2px; /* arrow tip */`,
-      `  filter: drop-shadow(0 2px 3px rgba(0,0,0,0.35));`,
+      `  transform-origin: 4px 2px; /* arrow tip */`,
+      `  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)) drop-shadow(0 0 1px rgba(0,0,0,0.4));`,
       `}`,
       `.` + `${_pfx}-action-cursor svg { display: block; }`,
     ].join("\n");
@@ -134,56 +134,84 @@ if (!window[Symbol.for("_x7cs")]) {
   // Last tip position of the persistent cursor, for animating the next move.
   let cursorX = null;
   let cursorY = null;
-  let moveEndHandler = null;
+  let cursorAnimId = null;
 
   /** Pop (scale-in) animation at the cursor's current position. */
   function popCursor(cursor) {
     cursor.style.animation = "none";
     void cursor.offsetWidth; // reflow to restart animation
-    cursor.style.animation = `${_pfx}-cursor-pop 0.35s ease-out forwards`;
+    cursor.style.animation = _pfx + "-cursor-pop 0.35s ease-out forwards";
+  }
+
+  /**
+   * Animate the cursor from (fx,fy) to (tx,ty) along a natural curved path.
+   * Human mouse movements are curved (not straight lines): we take a quadratic
+   * bezier whose control point is offset perpendicular to the start->end line,
+   * with the arc direction picked deterministically per move so consecutive
+   * moves don't always bow the same way. Easing is ease-out (fast start,
+   * gentle stop), duration scales with distance. Calls onDone when it lands.
+   */
+  function animateCursorAlongCurve(cursor, fx, fy, tx, ty, onDone) {
+    const dist = Math.hypot(tx - fx, ty - fy);
+    if (dist < 1) { onDone && onDone(); return; }
+    const dur = Math.min(Math.max(160, dist * 0.85), 650);
+    // Perpendicular control-point offset: arc scales with distance (~8-60px).
+    const arc = Math.min(Math.max(dist * 0.12, 8), 60) * (Math.round(fx + fy) % 2 === 0 ? 1 : -1);
+    // Quadratic bezier control point, offset perpendicular to the travel line.
+    const dx = tx - fx;
+    const dy = ty - fy;
+    const len = Math.hypot(dx, dy) || 1;
+    const cx = (fx + tx) / 2 - (dy / len) * arc;
+    const cy = (fy + ty) / 2 + (dx / len) * arc;
+    const start = performance.now();
+    function step(now) {
+      const t = Math.min((now - start) / dur, 1);
+      const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+      const it = 1 - eased;
+      const px = it * it * fx + 2 * it * eased * cx + eased * eased * tx;
+      const py = it * it * fy + 2 * it * eased * cy + eased * eased * ty;
+      cursor.style.left = (px - 4) + "px";
+      cursor.style.top = (py - 2) + "px";
+      if (t < 1) {
+        cursorAnimId = requestAnimationFrame(step);
+      } else {
+        cursorAnimId = null;
+        cursorX = tx;
+        cursorY = ty;
+        popCursor(cursor);
+        onDone && onDone();
+      }
+    }
+    cursorAnimId = requestAnimationFrame(step);
   }
 
   /**
    * Move the persistent mouse pointer to the action point. The pointer glides
-   * from its current position (human-like: ease-out, duration scales with
-   * distance, pop on arrival) instead of teleporting.
+   * along a natural curve from its current position (ease-out, duration scales
+   * with distance, pop on arrival) instead of teleporting or sliding straight.
+   * onDone fires once the cursor has landed - the service worker awaits this
+   * BEFORE dispatching the actual input, so the user sees the mouse travel to
+   * the element first, then the click/type happens.
    */
-  function showActionCursor(x, y) {
+  function showActionCursor(x, y, onDone) {
     try {
       const cursor = ensurePersistentCursor();
       cursor.style.display = "block";
       cursor.style.animation = "none";
-      // Place the arrow tip at the action point (tip at 6,2 in the 24px svg).
-      const tipX = x - 6;
-      const tipY = y - 2;
+      if (cursorAnimId) { cancelAnimationFrame(cursorAnimId); cursorAnimId = null; }
       if (cursorX == null) {
         // First placement: appear at the point immediately with a pop.
         cursor.style.transition = "none";
-        cursor.style.left = tipX + "px";
-        cursor.style.top = tipY + "px";
+        cursor.style.left = (x - 4) + "px";
+        cursor.style.top = (y - 2) + "px";
+        cursorX = x;
+        cursorY = y;
         popCursor(cursor);
+        onDone && onDone();
       } else {
-        const dist = Math.hypot(x - cursorX, y - cursorY);
-        // Human move: ~150-600ms, longer for longer distances, ease-out.
-        const dur = Math.min(Math.max(140, dist * 0.9), 600);
-        cursor.style.transition =
-          "left " + dur + "ms cubic-bezier(0.25, 0.46, 0.45, 0.94), " +
-          "top " + dur + "ms cubic-bezier(0.25, 0.46, 0.45, 0.94)";
-        cursor.style.left = tipX + "px";
-        cursor.style.top = tipY + "px";
-        // Pop when the glide arrives (handle left transition only, once).
-        if (moveEndHandler) cursor.removeEventListener("transitionend", moveEndHandler);
-        moveEndHandler = (e) => {
-          if (e.propertyName !== "left") return;
-          cursor.removeEventListener("transitionend", moveEndHandler);
-          moveEndHandler = null;
-          popCursor(cursor);
-        };
-        cursor.addEventListener("transitionend", moveEndHandler);
+        animateCursorAlongCurve(cursor, cursorX, cursorY, x, y, onDone);
       }
-      cursorX = x;
-      cursorY = y;
-    } catch {}
+    } catch { if (onDone) onDone(); }
   }
 
   /** Show the persistent pointer (keeps its last position; starts at center). */
@@ -239,8 +267,10 @@ if (!window[Symbol.for("_x7cs")]) {
       highlightElement(message.selector, message.duration || 2000);
       sendResponse({ ok: true });
     } else if (message.type === "show-action-cursor") {
-      showActionCursor(message.x, message.y);
-      sendResponse({ ok: true });
+      // Async: respond only after the cursor has finished traveling, so the
+      // service worker can dispatch the real input AFTER the visual arrival.
+      showActionCursor(message.x, message.y, () => sendResponse({ ok: true, landed: true }));
+      return true; // keep the message channel open until the animation completes
     } else if (message.type === "show-activity-cursor") {
       showActivityCursor();
       sendResponse({ ok: true });

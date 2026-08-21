@@ -51,7 +51,7 @@ r = await mcpCall(A, { jsonrpc: "2.0", method: "notifications/initialized" });
 ok("notification 204 no content", r.status === 204, "status " + r.status + " body " + JSON.stringify(r.json));
 
 r = await mcpCall(A, { jsonrpc: "2.0", id: 3, method: "tools/list" });
-ok("tools/list 47 tools", r.json?.result?.tools?.length === 47, "got " + (r.json?.result?.tools?.length ?? "?") + " tools");
+ok("tools/list 63 tools", r.json?.result?.tools?.length === 63, "got " + (r.json?.result?.tools?.length ?? "?") + " tools");
 const names = (r.json?.result?.tools ?? []).map((t: any) => t.name);
 ok("has navigate", names.includes("navigate"));
 ok("has file_read", names.includes("file_read"));
@@ -240,6 +240,11 @@ r = await mcpCall(A, { jsonrpc: "2.0", id: 43, method: "tools/list" });
 const allNames = (r.json?.result?.tools ?? []).map((x: any) => x.name);
 ok("renamed tools (press/dialog/upload/perms)", allNames.includes("press") && allNames.includes("dialog") && allNames.includes("upload") && allNames.includes("perms"));
 ok("no tool keeps a browser_ prefix", allNames.every((n: string) => !n.startsWith("browser_")));
+// DevTools-grade tools added (matching OpenTabs feature set)
+ok("devtools tools present", ["notify", "groups", "bookmarks", "session", "intercept", "har", "ws", "throttle", "resources", "coverage", "pseudo", "styles", "site_data", "extension", "vault"].every((t) => allNames.includes(t)), "missing: " + ["notify", "groups", "bookmarks", "session", "intercept", "har", "ws", "throttle", "resources", "coverage", "pseudo", "styles", "site_data", "extension", "vault"].filter((t) => !allNames.includes(t)).join(","));
+// vault schema exposes action enum
+const vaultTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "vault");
+ok("vault schema has action enum", !!vaultTool?.inputSchema?.properties?.action?.enum?.includes("unlock"));
 // ref param injected into click schema
 const clickTool = allNames.length ? null : null;
 const schemaTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "click");

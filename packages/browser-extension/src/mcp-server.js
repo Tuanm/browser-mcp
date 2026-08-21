@@ -358,6 +358,102 @@ export function createMcpHandler(dispatch) {
     description: "Read a file stored on the local server. Not available in direct mode.",
     parameters: { file_id: { type: "string" } }, required: ["file_id"],
     run: async () => { throw new Error("file_read requires the local server"); } },
+
+  { name: "history",
+    description: "Browser history. Actions: search (query - recent history items), visits (url - visit timestamps for one URL), clear (delete all history).",
+    parameters: { action: { type: "string", enum: ["search", "visits", "clear"] }, query: { type: "string" }, url: { type: "string" }, max_results: { type: "number" } },
+    required: ["action"],
+    run: async (a) => { const r = await dispatch("history", { action: a.action, query: a.query, url: a.url, maxResults: a.max_results }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "notify",
+    description: "Show a Chrome desktop notification (alerts the user even when Chrome is in the background). If url is given, clicking the notification opens it.",
+    parameters: { title: { type: "string" }, message: { type: "string" }, url: { type: "string" }, priority: { type: "number" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("notify", { title: a.title, message: a.message, url: a.url, priority: a.priority }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "groups",
+    description: "Manage Chrome tab groups. Actions: list, create (tab_ids + optional title/color), add (tab_ids + group_id), remove (tab_ids), update (group_id + title/color/collapsed), list_tabs (group_id).",
+    parameters: { action: { type: "string", enum: ["list", "create", "add", "remove", "update", "list_tabs"] }, tab_ids: { type: "array", items: { type: "number" } }, group_id: { type: "number" }, title: { type: "string" }, color: { type: "string" }, collapsed: { type: "boolean" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("groups", { action: a.action || "list", tabIds: a.tab_ids, groupId: a.group_id, title: a.title, color: a.color, collapsed: a.collapsed }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "bookmarks",
+    description: "Manage browser bookmarks. Actions: tree (all bookmarks), create (title + optional parent_id/url), search (query).",
+    parameters: { action: { type: "string", enum: ["tree", "create", "search"] }, parent_id: { type: "string" }, title: { type: "string" }, url: { type: "string" }, query: { type: "string" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("bookmarks", { action: a.action || "tree", parentId: a.parent_id, title: a.title, url: a.url, query: a.query }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "session",
+    description: "Browser session tools. Actions: recent (recently closed tabs/windows), restore (reopen the most recently closed tab/window).",
+    parameters: { action: { type: "string", enum: ["recent", "restore"] }, max_results: { type: "number" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("session", { action: a.action || "recent", maxResults: a.max_results }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "intercept",
+    description: "Intercept network requests in a tab. Actions: enable (patterns - url substrings, empty = all), status (paused requests), continue (request_id or url), fail (request_id/url + error_reason), fulfill (request_id/url + status/body/content_type/headers), stop.",
+    parameters: { action: { type: "string", enum: ["enable", "stop", "status", "continue", "fail", "fulfill"] }, patterns: { type: "array", items: { type: "string" } }, request_id: { type: "string" }, url: { type: "string" }, status: { type: "number" }, body: { type: "string" }, content_type: { type: "string" }, headers: { type: "object" }, error_reason: { type: "string" }, tab_id: { type: "number" } },
+    required: ["action"],
+    run: async (a) => { const r = await dispatch("intercept", { action: a.action, patterns: a.patterns, requestId: a.request_id, url: a.url, status: a.status, body: a.body, contentType: a.content_type, headers: a.headers, errorReason: a.error_reason, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "har",
+    description: "Export the captured network requests for a tab as HAR 1.2 JSON. Requires network capture to have been active while the page loaded.",
+    parameters: { tab_id: { type: "number" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("har", { tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "ws",
+    description: "View or clear captured WebSocket frames for a tab (filter by URL substring). Capture starts on the first call - reload to capture early frames.",
+    parameters: { action: { type: "string", enum: ["view", "clear"] }, filter: { type: "string" }, clear: { type: "boolean" }, tab_id: { type: "number" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("ws", { action: a.action || "view", filter: a.filter, clear: a.clear, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "throttle",
+    description: "Simulate network conditions. Presets: offline, slow-3g, 3g, 4g, wifi. Or pass custom latency (ms) / download_throughput / upload_throughput (bytes/sec). clear resets to normal.",
+    parameters: { preset: { type: "string", enum: ["offline", "slow-3g", "3g", "4g", "wifi"] }, latency: { type: "number" }, download_throughput: { type: "number" }, upload_throughput: { type: "number" }, clear: { type: "boolean" }, tab_id: { type: "number" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("throttle", { preset: a.preset, latency: a.latency, downloadThroughput: a.download_throughput, uploadThroughput: a.upload_throughput, clear: a.clear, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "resources",
+    description: "Inspect page resources. Actions: list (resources loaded by the page via Performance API), read (url - read a resource body from the browser cache; requires network capture active while it loaded).",
+    parameters: { action: { type: "string", enum: ["list", "read"] }, url: { type: "string" }, tab_id: { type: "number" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("resources", { action: a.action || "list", url: a.url, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "coverage",
+    description: "CSS usage coverage. Actions: start (begin tracking), stop (stop + report), report (one-shot measure: starts, waits wait_ms, reports). Returns per-stylesheet used percentages.",
+    parameters: { action: { type: "string", enum: ["start", "stop", "report"] }, wait_ms: { type: "number" }, tab_id: { type: "number" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("coverage", { action: a.action || "report", waitMs: a.wait_ms, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "pseudo",
+    description: "Force CSS pseudo-class states (:hover/:focus/:active/...) on an element so you can inspect hover/focus styles without real interaction. action=clear resets.",
+    parameters: { action: { type: "string", enum: ["force", "clear"] }, selector: { type: "string" }, states: { type: "array", items: { type: "string" } }, tab_id: { type: "number" } },
+    required: ["selector"],
+    run: async (a) => { const r = await dispatch("pseudo", { action: a.action || "force", selector: a.selector, states: a.states, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "styles",
+    description: "Get computed styles and matched CSS rules for an element (selector or ref). Optionally filter computed styles by property.",
+    parameters: { ref: { type: "string" }, selector: { type: "string" }, property: { type: "string" }, tab_id: { type: "number" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("styles", { ref: a.ref, selector: a.selector, property: a.property, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "site_data",
+    description: "Clear site data for an origin (cookies, local_storage, cache, indexed_db, service_workers). Defaults to the current tab's origin.",
+    parameters: { origin: { type: "string" }, cookies: { type: "boolean" }, local_storage: { type: "boolean" }, cache: { type: "boolean" }, indexed_db: { type: "boolean" }, service_workers: { type: "boolean" }, tab_id: { type: "number" } },
+    required: [],
+    run: async (a) => { const r = await dispatch("site_data", { origin: a.origin, cookies: a.cookies, localStorage: a.local_storage, cache: a.cache, indexedDB: a.indexed_db, serviceWorkers: a.service_workers, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "extension",
+    description: "Extension diagnostics. Actions: state (version, mode, captures, vault status), reload (reload the extension), reconnect (force gateway reconnect).",
+    parameters: { action: { type: "string", enum: ["state", "reload", "reconnect"] } },
+    required: [],
+    run: async (a) => { const r = await dispatch("extension", { action: a.action || "state" }); return { content: textBlocks(jsonOut(r)) }; } },
+
+  { name: "vault",
+    description: "Encrypted in-browser credential store (like a password manager). Actions: init (create vault with master password), unlock (master), lock, status, set (origin/name/username/password/url), get (origin/name - returns credentials), list, delete. Credentials are AES-256-GCM encrypted with a PBKDF2-derived key; never stored or transmitted in plaintext.",
+    parameters: { action: { type: "string", enum: ["init", "unlock", "lock", "status", "set", "get", "list", "delete"] }, master: { type: "string" }, origin: { type: "string" }, name: { type: "string" }, username: { type: "string" }, password: { type: "string" }, url: { type: "string" }, tab_id: { type: "number" } },
+    required: ["action"],
+    run: async (a) => { const r = await dispatch("vault", { action: a.action, master: a.master, origin: a.origin, name: a.name, username: a.username, password: a.password, url: a.url, tabId: a.tab_id }); return { content: textBlocks(jsonOut(r)) }; } },
   ];
 
   async function handle(request) {

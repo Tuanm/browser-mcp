@@ -12,7 +12,13 @@
     "storage",
     "cookies",
     "downloads",
-    "downloads.ui"
+    "downloads.ui",
+    "notifications",
+    "tabGroups",
+    "history",
+    "bookmarks",
+    "sessions",
+    "browsingData"
   ],
   "host_permissions": ["<all_urls>", "http://localhost/*", "http://127.0.0.1/*", "http://[::1]/*"],
   "background": {
