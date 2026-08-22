@@ -62,7 +62,7 @@ const recentDownloads = []; // Recent download events (from CDP Browser.download
 const cdpCompletedUrls = new Map(); // url -> timestamp — CDP-confirmed download completions (separate from recentDownloads to survive consumeRecentDownload splice)
 
 // --- Multi-tab session recording (CDP screencast frames) ---
-const sessionRec = { active: false, tabId: null, frameSeq: 0 };
+const sessionRec = { active: false, tabId: null, frameSeq: 0, mode: "session" }; // mode: "session" | "tab" (start)
 
 // --- Network interception (Fetch domain) ---
 const interceptState = new Map(); // tabId -> { patterns: string[] | null (null = all), paused: Map<requestId, {url, method}> }
@@ -1877,16 +1877,19 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 
   // Multi-tab session recording: forward screencast JPEG frames to the
   // offscreen session canvas (fire-and-forget - frames are frequent).
-  if (method === "Page.screencastFrame" && sessionRec.active && source.tabId === sessionRec.tabId) {
-    sessionRec.frameSeq++;
-    chrome.runtime
-      .sendMessage({
-        source: "offscreen",
-        type: "record-session-frame",
-        dataUrl: "data:image/jpeg;base64," + params.data,
-      })
-      .catch(() => {});
+  if (method === "Page.screencastFrame") {
+    // ALWAYS ack - an un-ACKed frame pauses screencast delivery forever.
     sendDebuggerCommand(source.tabId, "Page.screencastFrameAck", { sessionId: params.sessionId }).catch(() => {});
+    if (sessionRec.active && source.tabId === sessionRec.tabId) {
+      sessionRec.frameSeq++;
+      chrome.runtime
+        .sendMessage({
+          source: "offscreen",
+          type: "record-session-frame",
+          dataUrl: "data:image/jpeg;base64," + params.data,
+        })
+        .catch(() => {});
+    }
     return;
   }
   // Console / errors / network capture (agent-browser port)
@@ -5755,7 +5758,7 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
         .catch(() => ({}));
       return {
         recording: true,
-        mode: "session",
+        mode: sessionRec.mode || "session",
         current_tab_id: sessionRec.tabId,
         frames: sessionRec.frameSeq,
         elapsed_ms: (s && s.elapsed_ms) || 0,
@@ -5769,52 +5772,100 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
 
   if (act === "start") {
     const tid = tabId || (await getActiveTabId());
-    // Picker-free tab capture via chrome.tabCapture. This requires the user to
-    // have invoked the extension (clicked the toolbar icon) on that tab - a
-    // Chrome security rule (like activeTab); host permissions alone do not
-    // bypass it. The streamId obtained here is consumed in the offscreen doc
-    // (the documented pattern). No screen-picker dialog appears.
-    // Fallback (no invocation yet): getDisplayMedia with preferCurrentTab -
-    // the user clicks Share once (tab preselected).
-    let streamId = null;
-    try {
-      streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tid });
-    } catch (err) {
-      // Fall through to the share-picker fallback below.
-      streamId = null;
-      recorderInvocationError = String((err && err.message) || err);
-    }
-    if (streamId) {
-      const r = await chrome.runtime.sendMessage({
-        source: "offscreen",
-        type: "record-start",
-        streamId,
-        includeAudio: includeAudio !== false,
-        mode: "tab",
-      });
-      if (r && r.ok) return { recording: true, mode: "tab", tab_id: tid, mime: r.mime, via: "tabCapture" };
-      streamId = null;
-    }
-    const r = await chrome.runtime.sendMessage({
-      source: "offscreen",
-      type: "record-start-display",
-      includeAudio: includeAudio !== false,
-      mode: "tab",
-    });
-    if (!r || !r.ok)
-      throw new Error(
-        "tab capture needs the extension to be invoked on that tab (click the toolbar icon once). " +
-          (recorderInvocationError || "").slice(0, 140) +
-          " Fallback picker also failed: " +
-          ((r && r.error) || "no response"),
+    // Audio requested -> chrome.tabCapture (real tab audio + video). This is
+    // the path that needs the one-time toolbar invocation on the tab (a Chrome
+    // security rule like activeTab; host permissions do not bypass it). The
+    // "Record this tab" popup button exists to grant that invocation.
+    if (includeAudio === true) {
+      let streamId = null;
+      try {
+        streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tid });
+      } catch (err) {
+        streamId = null;
+        recorderInvocationError = String((err && err.message) || err);
+      }
+      if (streamId) {
+        const r = await chrome.runtime.sendMessage({
+          source: "offscreen",
+          type: "record-start",
+          streamId,
+          includeAudio: true,
+          mode: "tab",
+          targetTabId: tid,
+        });
+        if (r && r.ok) return { recording: true, mode: "tab", tab_id: tid, mime: r.mime, via: "tabCapture" };
+        streamId = null;
+      }
+      // No invocation yet: fall back to the share picker (audio requires a
+      // real capture source; Chrome mandates the picker for it).
+      const r = await withTimeout(
+        chrome.runtime.sendMessage({
+          source: "offscreen",
+          type: "record-start-display",
+          includeAudio: true,
+          mode: "tab",
+        }),
+        15000,
+        "Timed out waiting for the share dialog - the user needs to pick a source in the browser's share dialog.",
       );
+      if (!r || !r.ok)
+        throw new Error(
+          "tab audio capture needs the extension to be invoked on that tab (click the toolbar icon once). " +
+            (recorderInvocationError || "").slice(0, 140) +
+            " Fallback picker also failed: " +
+            ((r && r.error) || "no response"),
+        );
+      return {
+        recording: true,
+        mode: "tab",
+        tab_id: tid,
+        mime: r.mime,
+        via: "getDisplayMedia",
+        hint: "A share dialog appeared - click Share (tab preselected) to start recording. Next time, click the Browser MCP toolbar icon on the tab first to record without any dialog.",
+      };
+    }
+
+    // Video-only default: CDP screencast via the already-attached debugger.
+    // This works on ANY tab with NO permission gate - no toolbar click, no
+    // share picker, zero human interaction (same mechanism as the multi-tab
+    // session). Frames arrive as messages and are painted onto the session
+    // canvas, so recordings always contain real bytes.
+    if (sessionRec.active) {
+      // Already recording via screencast: switch to the requested tab.
+      return await handleRecord({ action: "tab", tabId: tid, saveAs, filename });
+    }
+    const sr = await chrome.runtime.sendMessage({
+      source: "offscreen",
+      type: "record-session-start",
+      tabId: null,
+      includeAudio: false,
+    });
+    if (!sr || !sr.ok) throw new Error((sr && sr.error) || "Session recording failed to start");
+    sessionRec.active = true;
+    sessionRec.frameSeq = 0;
+    sessionRec.mode = "tab";
+    // Set tabId BEFORE Page.startScreencast: screencast frames can arrive
+    // immediately, and the forward handler drops (and fails to ACK) frames
+    // whose source.tabId !== sessionRec.tabId - an un-ACKed first frame
+    // pauses frame delivery entirely (frames stay 0 forever).
+    sessionRec.tabId = tid;
+    await ensureDebugger(tid);
+    await sendDebuggerCommand(tid, "Page.startScreencast", {
+      format: "jpeg",
+      quality: 85,
+      maxWidth: 1920,
+      maxHeight: 1080,
+    });
     return {
       recording: true,
       mode: "tab",
       tab_id: tid,
-      mime: r.mime,
-      via: "getDisplayMedia",
-      hint: "A share dialog appeared - click Share (tab preselected) to start recording. Next time, click the Browser MCP toolbar icon on the tab first to record without any dialog.",
+      mime: sr.mime,
+      via: "screencast",
+      hint:
+        "Recording tab " +
+        tid +
+        " via CDP screencast - no toolbar click or share picker needed. Stop with record action=stop. Use include_audio=true for tab audio (needs one toolbar click on the tab).",
     };
   }
 
@@ -5841,6 +5892,12 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
   }
 
   if (act === "stop") {
+    // A screencast-based recording (record action=start default) is stopped
+    // through the session pipeline; the single-recorder path handles
+    // tabCapture (include_audio=true) and window/screen recordings.
+    if (sessionRec.active) {
+      return await handleRecord({ action: "session_stop", saveAs, filename, tabId });
+    }
     const r = await chrome.runtime.sendMessage({ source: "offscreen", type: "record-stop" });
     if (!r || !r.ok) throw new Error((r && r.error) || "No recording in progress");
     const out = { recording: false, mode: r.mode, mime: r.mime, size_bytes: r.size, elapsed_ms: r.elapsedMs };
@@ -5894,6 +5951,7 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
     sessionRec.active = true;
     sessionRec.tabId = null;
     sessionRec.frameSeq = 0;
+    sessionRec.mode = "session";
     return {
       recording: true,
       mode: "session",
@@ -5912,6 +5970,9 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
       } catch {}
     }
     // Attach the debugger (already done for automation) and start screencast.
+    // tabId is set BEFORE startScreencast: an un-ACKed first frame (dropped
+    // because tabId didn't match yet) pauses frame delivery forever.
+    sessionRec.tabId = tid;
     await ensureDebugger(tid);
     await sendDebuggerCommand(tid, "Page.startScreencast", {
       format: "jpeg",
@@ -5919,7 +5980,6 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
       maxWidth: 1920,
       maxHeight: 1080,
     });
-    sessionRec.tabId = tid;
     return {
       recording: true,
       mode: "session",
@@ -5937,11 +5997,16 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
       } catch {}
       sessionRec.tabId = null;
     }
+    const stoppedMode = sessionRec.mode || "session";
     sessionRec.active = false;
     const r = await chrome.runtime.sendMessage({ source: "offscreen", type: "record-session-stop" });
     if (!r || !r.ok) throw new Error((r && r.error) || "No session recording in progress");
-    const out = { recording: false, mode: "session", mime: r.mime, size_bytes: r.size, elapsed_ms: r.elapsedMs };
-    const name = filename || "session-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".webm";
+    const out = { recording: false, mode: stoppedMode, mime: r.mime, size_bytes: r.size, elapsed_ms: r.elapsedMs };
+    const name =
+      filename ||
+      (stoppedMode === "tab" ? "recording-" : "session-") +
+        new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) +
+        ".webm";
     const savedTo = [];
     try {
       await chrome.downloads.download({

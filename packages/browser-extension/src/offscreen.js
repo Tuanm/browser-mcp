@@ -415,6 +415,35 @@ let recorderChunks = [];
 let recorderStartTime = 0;
 let recorderMode = null; // "tab" | "window" | "screen"
 
+/**
+ * Shared REC badge painter (red dot + "REC mm:ss" + optional tab id).
+ * Used by the overlay pipeline, the session canvas, and per-frame painting.
+ */
+function paintRecBadge(ctx, canvas, tabId, startTime) {
+  try {
+    const pad = 14;
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+    const ss = String(elapsed % 60).padStart(2, "0");
+    const label = "REC " + mm + ":" + ss + (tabId ? "  tab " + tabId : "");
+    ctx.font = "bold 18px ui-monospace, SFMono-Regular, Menlo, monospace";
+    const w = ctx.measureText(label).width;
+    const x = canvas.width - w - pad * 2;
+    const y = pad;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x - pad, y - pad, w + pad * 2, 30, 6);
+    else ctx.rect(x - pad, y - pad, w + pad * 2, 30);
+    ctx.fill();
+    ctx.fillStyle = "#ff3b30";
+    ctx.beginPath();
+    ctx.arc(x - pad + 9, y + 6, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.fillText(label, x + 4, y + 14);
+  } catch {}
+}
+
 function pickMimeType() {
   const candidates = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
   for (const c of candidates) {
@@ -435,6 +464,7 @@ let overlayCtx = null;
 let overlayVideo = null;
 let overlayVideoTrack = null;
 let overlayRaf = null;
+let overlayTimer = null;
 let overlayStart = 0;
 let overlayTabId = null;
 
@@ -442,6 +472,8 @@ let overlayTabId = null;
 function stopRecOverlay() {
   if (overlayRaf) cancelAnimationFrame(overlayRaf);
   overlayRaf = null;
+  if (overlayTimer) clearInterval(overlayTimer);
+  overlayTimer = null;
   if (overlayVideo) {
     try {
       overlayVideo.srcObject = null;
@@ -480,6 +512,10 @@ function withRecOverlay(sourceStream, tabId) {
   overlayVideo.srcObject = sourceStream;
   overlayVideo.play().catch(() => {});
 
+  // NOTE: offscreen documents are HIDDEN pages - requestAnimationFrame is
+  // throttled/paused there, so a rAF-only paint loop leaves the canvas blank
+  // and canvas.captureStream() emits no frames -> 0-byte recordings.
+  // Drive the paint with setInterval instead; rAF is only an optional bonus.
   const capStream = overlayCanvas.captureStream(30);
   overlayVideoTrack = capStream.getVideoTracks()[0];
 
@@ -488,36 +524,26 @@ function withRecOverlay(sourceStream, tabId) {
     try {
       const vw = overlayVideo.videoWidth;
       const vh = overlayVideo.videoHeight;
-      if (vw && vh && (overlayCanvas.width !== vw || overlayCanvas.height !== vh)) {
-        overlayCanvas.width = vw;
-        overlayCanvas.height = vh;
+      if (vw && vh) {
+        // Scale to canvas without resizing (resizing a canvas with an active
+        // captureStream can stall frame production in some Chrome versions).
+        const scale = Math.min(overlayCanvas.width / vw, overlayCanvas.height / vh);
+        const dw = vw * scale;
+        const dh = vh * scale;
+        const dx = (overlayCanvas.width - dw) / 2;
+        const dy = (overlayCanvas.height - dh) / 2;
+        overlayCtx.fillStyle = "#000";
+        overlayCtx.fillRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        overlayCtx.drawImage(overlayVideo, dx, dy, dw, dh);
+      } else {
+        overlayCtx.fillStyle = "#111";
+        overlayCtx.fillRect(0, 0, overlayCanvas.width, overlayCanvas.height);
       }
-      overlayCtx.drawImage(overlayVideo, 0, 0, overlayCanvas.width, overlayCanvas.height);
     } catch {}
-    // REC badge + live elapsed time + tab id
-    const pad = 14;
-    const elapsed = Math.floor((Date.now() - overlayStart) / 1000);
-    const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
-    const ss = String(elapsed % 60).padStart(2, "0");
-    const label = "REC " + mm + ":" + ss + (overlayTabId ? "  tab " + overlayTabId : "");
-    overlayCtx.font = "bold 18px ui-monospace, SFMono-Regular, Menlo, monospace";
-    const w = overlayCtx.measureText(label).width;
-    const x = overlayCanvas.width - w - pad * 2;
-    const y = pad;
-    overlayCtx.fillStyle = "rgba(0,0,0,0.55)";
-    overlayCtx.beginPath();
-    if (overlayCtx.roundRect) overlayCtx.roundRect(x - pad, y - pad, w + pad * 2, 30, 6);
-    else overlayCtx.rect(x - pad, y - pad, w + pad * 2, 30);
-    overlayCtx.fill();
-    overlayCtx.fillStyle = "#ff3b30";
-    overlayCtx.beginPath();
-    overlayCtx.arc(x - pad + 9, y + 6, 6, 0, Math.PI * 2);
-    overlayCtx.fill();
-    overlayCtx.fillStyle = "#fff";
-    overlayCtx.fillText(label, x + 4, y + 14);
-    overlayRaf = requestAnimationFrame(draw);
+    paintRecBadge(overlayCtx, overlayCanvas, overlayTabId, overlayStart);
   };
   overlayRaf = requestAnimationFrame(draw);
+  overlayTimer = setInterval(draw, 50); // ~20fps guaranteed paint -> real bytes
 
   const tracks = [overlayVideoTrack];
   const audioTracks = sourceStream.getAudioTracks();
@@ -529,19 +555,11 @@ async function startRecording(streamId, includeAudio, mode, targetTabId) {
   try {
     if (recorder) throw new Error("A recording is already in progress. Stop it first (record action=stop).");
     let stream;
-    if (mode === "tab") {
-      // Obtain the stream id HERE (offscreen document = extension page), not in
-      // the service worker: chrome.tabCapture is gesture-gated in a SW, but an
-      // extension page with host permissions (<all_urls>) can acquire the tab
-      // stream without the screen-picker dialog.
-      if (!streamId) {
-        streamId = await new Promise((resolve, reject) => {
-          chrome.tabCapture.getMediaStreamId({ targetTabId: targetTabId }, (id) => {
-            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message || "tabCapture failed"));
-            else resolve(id);
-          });
-        });
-      }
+    if (mode === "tab" && streamId) {
+      // Tab capture via a streamId obtained in the service worker (the
+      // documented pattern). chrome.tabCapture itself is unavailable in the
+      // offscreen document and is gesture-gated in a SW, so the SW acquires the
+      // streamId after the user has invoked the extension on that tab.
       const base = { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId } };
       stream = await navigator.mediaDevices.getUserMedia({
         audio: includeAudio ? base : false,
@@ -653,6 +671,8 @@ let sessionStream = null;
 let sessionChunks = [];
 let sessionStartTime = 0;
 let sessionRafId = null;
+let sessionTimer = null;
+let sessionLastFrame = null; // Image of the most recent screencast frame
 let sessionCurrentTabId = null;
 
 function sessionPickMime() {
@@ -693,6 +713,12 @@ async function sessionStart(initialTabId, includeAudio) {
     sessionActive = true;
     sessionStartTime = Date.now();
     sessionCurrentTabId = null;
+    sessionLastFrame = null;
+    // Drive the paint loop with setInterval, not rAF: offscreen docs are hidden
+    // pages where rAF is throttled/paused. Without periodic paints the canvas
+    // stays blank and captureStream emits no frames -> 0-byte recordings.
+    if (sessionTimer) clearInterval(sessionTimer);
+    sessionTimer = setInterval(sessionDrawLoop, 50); // ~20fps guaranteed paint
     return { ok: true, mime };
   } catch (err) {
     console.error("[bmcp-offscreen] sessionStart failed:", err);
@@ -700,49 +726,44 @@ async function sessionStart(initialTabId, includeAudio) {
   }
 }
 
-/** Draw the current tab's video onto the session canvas each frame. */
+/** Draw the current tab's video (or last screencast frame) + REC badge. */
 function sessionDrawLoop() {
-  if (!sessionActive) {
-    sessionRafId = requestAnimationFrame(sessionDrawLoop);
-    return;
-  }
+  if (!sessionActive || !sessionCanvas) return;
   try {
     const ctx = sessionCanvas.getContext("2d");
     if (sessionVideoEl && sessionVideoEl.videoWidth && sessionVideoEl.videoHeight) {
       const vw = sessionVideoEl.videoWidth,
         vh = sessionVideoEl.videoHeight;
-      if (sessionCanvas.width !== vw || sessionCanvas.height !== vh) {
-        sessionCanvas.width = vw;
-        sessionCanvas.height = vh;
-      }
-      ctx.drawImage(sessionVideoEl, 0, 0, sessionCanvas.width, sessionCanvas.height);
+      // Scale without resizing (resizing a canvas with an active captureStream
+      // can stall frame production).
+      const scale = Math.min(sessionCanvas.width / vw, sessionCanvas.height / vh);
+      const dw = vw * scale,
+        dh = vh * scale;
+      const dx = (sessionCanvas.width - dw) / 2,
+        dy = (sessionCanvas.height - dh) / 2;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, sessionCanvas.width, sessionCanvas.height);
+      ctx.drawImage(sessionVideoEl, dx, dy, dw, dh);
+    } else if (sessionLastFrame && sessionLastFrame.width) {
+      // Repaint the most recent screencast frame (keeps the canvas producing
+      // frames between screencast frames / on static pages).
+      const vw = sessionLastFrame.width,
+        vh = sessionLastFrame.height;
+      const scale = Math.min(sessionCanvas.width / vw, sessionCanvas.height / vh);
+      const dw = vw * scale,
+        dh = vh * scale;
+      const dx = (sessionCanvas.width - dw) / 2,
+        dy = (sessionCanvas.height - dh) / 2;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, sessionCanvas.width, sessionCanvas.height);
+      ctx.drawImage(sessionLastFrame, dx, dy, dw, dh);
     } else {
       // No tab stream yet: fill with a neutral background so the file is valid.
       ctx.fillStyle = "#111";
       ctx.fillRect(0, 0, sessionCanvas.width, sessionCanvas.height);
     }
-    // REC badge + elapsed time + current tab id (visible in the recording).
-    const pad = 14;
-    const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
-    const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
-    const ss = String(elapsed % 60).padStart(2, "0");
-    const label = "REC " + mm + ":" + ss + (sessionCurrentTabId ? "  tab " + sessionCurrentTabId : "");
-    ctx.font = "bold 18px ui-monospace, SFMono-Regular, Menlo, monospace";
-    const w = ctx.measureText(label).width;
-    const x = sessionCanvas.width - w - pad * 2;
-    const y = pad;
-    ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.beginPath();
-    ctx.roundRect ? ctx.roundRect(x - pad, y - pad, w + pad * 2, 30, 6) : ctx.rect(x - pad, y - pad, w + pad * 2, 30);
-    ctx.fill();
-    ctx.fillStyle = "#ff3b30";
-    ctx.beginPath();
-    ctx.arc(x - pad + 9, y + 6, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#fff";
-    ctx.fillText(label, x + 4, y + 14);
+    paintRecBadge(ctx, sessionCanvas, sessionCurrentTabId, sessionStartTime);
   } catch {}
-  sessionRafId = requestAnimationFrame(sessionDrawLoop);
 }
 
 /** Switch the session to a different tab (captures its stream via streamId). */
@@ -776,8 +797,6 @@ async function sessionSwitchTab(tabId, includeAudio) {
     sessionVideoEl.srcObject = sessionStream;
     await sessionVideoEl.play().catch(() => {});
     sessionCurrentTabId = tabId;
-    if (sessionRafId) cancelAnimationFrame(sessionRafId);
-    sessionRafId = requestAnimationFrame(sessionDrawLoop);
     return { ok: true, switched: true, tab_id: tabId };
   } catch (err) {
     console.error("[bmcp-offscreen] sessionSwitchTab failed:", err);
@@ -805,6 +824,9 @@ function sessionStop() {
     }
     if (sessionRafId) cancelAnimationFrame(sessionRafId);
     sessionRafId = null;
+    if (sessionTimer) clearInterval(sessionTimer);
+    sessionTimer = null;
+    sessionLastFrame = null;
     const r = sessionRecorder;
     sessionActive = false;
     sessionRecorder = null;
@@ -932,12 +954,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const img = new Image();
       img.onload = () => {
         try {
+          sessionLastFrame = img;
+          // Draw immediately so the frame appears even before the next paint
+          // tick; the interval loop keeps repainting it + the REC badge.
           const ctx = sessionCanvas.getContext("2d");
-          if (sessionCanvas.width !== img.width || sessionCanvas.height !== img.height) {
-            sessionCanvas.width = img.width;
-            sessionCanvas.height = img.height;
-          }
-          ctx.drawImage(img, 0, 0, sessionCanvas.width, sessionCanvas.height);
+          const vw = img.width,
+            vh = img.height;
+          const scale = Math.min(sessionCanvas.width / vw, sessionCanvas.height / vh);
+          const dw = vw * scale,
+            dh = vh * scale;
+          const dx = (sessionCanvas.width - dw) / 2,
+            dy = (sessionCanvas.height - dh) / 2;
+          ctx.fillStyle = "#000";
+          ctx.fillRect(0, 0, sessionCanvas.width, sessionCanvas.height);
+          ctx.drawImage(img, dx, dy, dw, dh);
+          paintRecBadge(ctx, sessionCanvas, sessionCurrentTabId, sessionStartTime);
           // Track live size: frames are not MediaRecorder chunks, so feed a
           // synthetic chunk to the size counter for accurate status reporting.
           if (sessionRecorder) {

@@ -1481,7 +1481,7 @@ export function createMcpHandler(dispatch) {
     {
       name: "record",
       description:
-        "Record the browser. Actions: start (record a tab - no prompt, no picker), window/screen (Chrome share dialog - required by the browser), status, stop (save to Downloads, no dialog). Multi-tab session: session_start (begin ONE continuous recording), tab (tab_id - switch which tab is recorded into the same session; each tab needs the one-time toolbar invocation), session_stop (finish the combined session recording). save_as=true opts into Save As. WebM, saved via chrome.downloads.",
+        "Record the browser. Actions: start (record a tab - no prompt, no picker, no toolbar click needed; CDP screencast, video-only by default), window/screen (Chrome share dialog - required by the browser), status, stop (save to Downloads, no dialog). Multi-tab session: session_start (begin ONE continuous recording), tab (tab_id - switch which tab is recorded into the same session), session_stop (finish the combined session recording). include_audio=true uses chrome.tabCapture for real tab audio (requires one toolbar click on that tab - Chrome security rule; falls back to the share picker otherwise). save_as=true opts into Save As. WebM, saved via chrome.downloads.",
       parameters: {
         action: {
           type: "string",
