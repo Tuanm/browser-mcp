@@ -110,7 +110,34 @@
         margin-top: 10px;
         font-size: 10px;
         color: #999;
-        text-align: center;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+      }
+      .icon-btn {
+        background: none;
+        border: none;
+        padding: 0 2px;
+        cursor: pointer;
+        font-size: 11px;
+        color: #999;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+        line-height: 1;
+      }
+      .foot:hover .icon-btn,
+      .icon-btn:focus-visible {
+        opacity: 1;
+      }
+      .icon-btn:hover {
+        color: #111;
+      }
+      .host-input {
+        display: none;
+        margin-top: 6px;
+        font-size: 10px;
+        padding: 5px 8px;
       }
     </style>
   </head>
@@ -130,8 +157,12 @@
     <button id="connectBtn">Connect</button>
     <div class="status" id="statusText">Disconnected</div>
 
-    <button id="recordBtn" class="off" style="margin-top: 8px" disabled>Record this tab</button>
-    <div class="foot">code-mcp.tuanm.dev</div>
+    <button id="recordBtn" class="off" style="margin-top: 8px; display: none" disabled>Record this tab</button>
+    <div class="foot" id="gatewayRow" title="Gateway domain - click the pencil to change">
+      <span id="gatewayHostLabel"></span>
+      <button id="gatewayEditBtn" class="icon-btn" title="Change gateway domain" aria-label="Change gateway domain">&#9998;</button>
+    </div>
+    <input type="text" id="gatewayHostInput" class="host-input" placeholder="wss://your-gateway.example.com" autocomplete="off" spellcheck="false" />
 
     <script src="popup.js"></script>
   </body>

@@ -1,20 +1,29 @@
 /**
  * Popup Script - minimal black/white UI.
  *
- * Two fields configure the connection:
- *   ID    - device ID for the code-mcp-gateway registration (wss://code-mcp.tuanm.workers.dev/ws/<id>)
- *   Token - shared secret the gateway sends with each request; the extension
- *           verifies it before answering (defense in depth).
+ * Three fields configure the connection:
+ *   ID     - device ID for the code-mcp-gateway registration (wss://<gateway>/ws/<id>)
+ *   Token  - shared secret the gateway sends with each request; the extension
+ *            verifies it before answering (defense in depth).
+ *   Gateway - hover the host label and click the pencil to use a custom
+ *            code-mcp-gateway domain (persisted as gatewayHost).
  *
  * Entering an ID makes the extension the MCP server: it connects to the gateway
  * directly and answers MCP requests in place - no local server required.
  */
+
+const DEFAULT_GATEWAY = "wss://code-mcp.tuanm.workers.dev";
 
 const dot = document.getElementById("dot");
 const statusText = document.getElementById("statusText");
 const deviceIdInput = document.getElementById("deviceId");
 const tokenInput = document.getElementById("authToken");
 const connectBtn = document.getElementById("connectBtn");
+const gatewayHostLabel = document.getElementById("gatewayHostLabel");
+const gatewayEditBtn = document.getElementById("gatewayEditBtn");
+const gatewayHostInput = document.getElementById("gatewayHostInput");
+
+let gatewayHost = null; // custom code-mcp-gateway domain (null = default)
 
 // Show the build version (git hash injected as version_name at zip time).
 const manifest = chrome.runtime.getManifest();
@@ -55,7 +64,7 @@ tokenInput.addEventListener("blur", () => {
 });
 
 // Load saved config
-chrome.storage.local.get(["deviceId", "authToken"]).then((config) => {
+chrome.storage.local.get(["deviceId", "authToken", "gatewayHost"]).then((config) => {
   deviceIdInput.value = config.deviceId || "";
   if (config.authToken) {
     realToken = config.authToken;
@@ -63,7 +72,78 @@ chrome.storage.local.get(["deviceId", "authToken"]).then((config) => {
     tokenInput.value = maskToken(config.authToken);
     tokenMasked = true;
   }
+  gatewayHost = config.gatewayHost || null;
+  renderGatewayHost();
 });
+
+/** Show the active gateway host (default or custom) in the footer. */
+function renderGatewayHost() {
+  if (gatewayHostLabel) gatewayHostLabel.textContent = gatewayHost || DEFAULT_GATEWAY;
+  if (gatewayHostInput) gatewayHostInput.value = gatewayHost || "";
+}
+
+/** Persist a custom gateway host and reconnect so it takes effect. */
+function saveGatewayHost() {
+  const value = (gatewayHostInput.value || "").trim();
+  const next = value || null;
+  if (next === gatewayHost) {
+    closeGatewayEditor();
+    return;
+  }
+  gatewayHost = next;
+  if (next) {
+    chrome.storage.local.set({ gatewayHost: next }).catch(() => {});
+  } else {
+    chrome.storage.local.remove("gatewayHost").catch(() => {});
+  }
+  renderGatewayHost();
+  closeGatewayEditor();
+  // Reconnect so the offscreen picks up the new host immediately.
+  const deviceId = deviceIdInput.value.trim();
+  const token = tokenMasked ? realToken : tokenInput.value.trim();
+  if (deviceId) {
+    chrome.runtime.sendMessage(
+      { type: "reconnect", deviceId, token: token || undefined, gatewayHost: next },
+      () => {},
+    );
+    setTimeout(checkStatus, 2000);
+  }
+}
+
+function openGatewayEditor() {
+  if (!gatewayHostInput) return;
+  renderGatewayHost();
+  gatewayHostLabel.style.display = "none";
+  if (gatewayEditBtn) gatewayEditBtn.style.display = "none";
+  gatewayHostInput.style.display = "block";
+  gatewayHostInput.focus();
+  gatewayHostInput.select();
+}
+
+function closeGatewayEditor() {
+  if (!gatewayHostInput) return;
+  gatewayHostInput.style.display = "none";
+  if (gatewayHostLabel) gatewayHostLabel.style.display = "";
+  if (gatewayEditBtn) gatewayEditBtn.style.display = "";
+}
+
+if (gatewayEditBtn) {
+  gatewayEditBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openGatewayEditor();
+  });
+}
+if (gatewayHostInput) {
+  gatewayHostInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveGatewayHost();
+    } else if (e.key === "Escape") {
+      closeGatewayEditor();
+    }
+  });
+  gatewayHostInput.addEventListener("blur", () => saveGatewayHost());
+}
 
 // Check connection status
 function checkStatus() {
@@ -169,16 +249,19 @@ const recordBtn = document.getElementById("recordBtn");
 function setRecordBtn(enabled) {
   if (!recordBtn) return;
   recordBtn.disabled = !enabled;
-  recordBtn.textContent = enabled ? "Record this tab" : "Connect first";
+  // Hidden until connected - never show a dead "Connect first" button.
+  recordBtn.style.display = enabled ? "" : "none";
+  if (enabled) recordBtn.textContent = "Record this tab";
 }
 
 function updateRecordBtn(connected) {
   if (!recordBtn) return;
   if (!connected) {
     recordBtn.disabled = true;
-    recordBtn.textContent = "Connect first";
+    recordBtn.style.display = "none"; // hide instead of "Connect first"
     return;
   }
+  recordBtn.style.display = "";
   // Ask the SW whether a recording is already running.
   chrome.runtime.sendMessage({ type: "record-status" }, (resp) => {
     const recording = resp && resp.recording;

@@ -182,13 +182,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // offscreen requests the saved config from the SW (the storage authority).
   if (message.type === "get-config" && message.fromOffscreen) {
     chrome.storage.local
-      .get(["serverUrl", "extensionId", "deviceId", "authToken"])
+      .get(["serverUrl", "extensionId", "deviceId", "authToken", "gatewayHost"])
       .then((cfg) =>
         sendResponse({
           serverUrl: cfg.serverUrl,
           extensionId: cfg.extensionId,
           deviceId: cfg.deviceId,
           authToken: cfg.authToken,
+          gatewayHost: cfg.gatewayHost,
         }),
       )
       .catch(() => sendResponse({}));
@@ -265,6 +266,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const cfg = {};
     if (message.deviceId !== undefined) cfg.deviceId = message.deviceId || "";
     if (message.token !== undefined) cfg.authToken = message.token || "";
+    if (message.gatewayHost !== undefined) cfg.gatewayHost = message.gatewayHost || "";
     chrome.storage.local.set(cfg).catch(() => {});
     ensureOffscreen()
       .then(() => {
@@ -272,7 +274,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const fwd = () => {
           attempts++;
           chrome.runtime
-            .sendMessage({ type: "reconnect", deviceId: message.deviceId, token: message.token, fromSw: true })
+            .sendMessage({ type: "reconnect", deviceId: message.deviceId, token: message.token, gatewayHost: message.gatewayHost, fromSw: true })
             .then(() => sendResponse?.({ ok: true }))
             .catch(() => {
               if (attempts < 8) setTimeout(fwd, 300);

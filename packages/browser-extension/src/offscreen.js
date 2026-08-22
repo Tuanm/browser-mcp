@@ -266,6 +266,30 @@ async function connectGateway() {
     if (gatewayWatchdogTimer) clearTimeout(gatewayWatchdogTimer);
     if (gatewayKeepaliveTimer) clearInterval(gatewayKeepaliveTimer);
     if (gatewayWs === gen) gatewayWs = null;
+    // 1006 = abnormal close. In browsers this is ALSO what a rejected WS
+    // upgrade looks like (the gateway answered 401/403/404 instead of 101),
+    // so probe the gateway to give the user an actionable message instead of
+    // a bare close code.
+    if (event.code === 1006) {
+      const scheme = url.startsWith("wss:") ? "https" : "http";
+      const probe = scheme + "://" + url.replace(/^wss?:\/\//, "").split("/")[0];
+      fetch(probe + "/devices", { method: "GET" })
+        .then((r) => {
+          if (r.status === 401 || r.status === 404) {
+            lastError = "gateway rejected the device connection - check Device ID and Token";
+          } else {
+            lastError = "gateway closed: " + event.code;
+          }
+        })
+        .catch(() => {
+          lastError = "gateway unreachable - check the gateway domain";
+        })
+        .finally(() => {
+          broadcastStatus(false);
+          scheduleGatewayReconnect();
+        });
+      return;
+    }
     lastError = "gateway closed: " + event.code;
     broadcastStatus(false);
     scheduleGatewayReconnect();
@@ -1111,6 +1135,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.extensionId) extensionId = message.extensionId;
     if (message.token !== undefined) authToken = message.token || null;
     if (message.deviceId !== undefined) deviceId = message.deviceId || null;
+    if (message.gatewayHost !== undefined) gatewayHost = message.gatewayHost || null;
     if (ws) {
       ws.onclose = null;
       ws.onerror = null;
