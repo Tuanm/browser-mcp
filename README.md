@@ -4,9 +4,7 @@
 
 **Chrome/Edge extension (Manifest V3) that turns the browser into an MCP server for AI agents — 67 browser tools, direct [code-mcp-gateway](https://github.com/Tuanm/code-mcp-gateway) mode, screen recording, TTS narration, page annotations.**
 
-[![Install extension](https://img.shields.io/badge/Install_extension-111111?style=for-the-badge&labelColor=111111&color=111111)](https://tuanm.github.io/browser-mcp/browser-mcp-extension.zip)
-
-> Download from [tuanm.github.io/browser-mcp](https://tuanm.github.io/browser-mcp) — the page shows the install guide after you click Download.
+[![Install extension](https://img.shields.io/badge/Install_extension-111111?style=for-the-badge&labelColor=111111&color=111111)](https://tuanm.github.io/browser-mcp)
 
 ## How it works
 
