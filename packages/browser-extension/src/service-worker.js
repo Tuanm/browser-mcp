@@ -762,6 +762,82 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
 
 // --- Type ---
 
+/**
+ * Select all content of an element using the page's OWN selection APIs
+ * (native el.select() for inputs/textareas, Range for contenteditable).
+ * Input.insertText then REPLACES the selection instead of appending.
+ * Far more reliable than synthetic Ctrl+A key events, which React/SPA
+ * inputs and rich editors frequently ignore or race with.
+ * Returns { ok, reason, tag, editable }.
+ */
+async function selectAllInElement(tid, selector, pierce) {
+  const expression = `(function() {
+    function q(s) {
+      let e = document.querySelector(s);
+      if (e) return e;
+      function f(r) {
+        for (const n of r.querySelectorAll("*")) {
+          if (n.shadowRoot) {
+            const m = n.shadowRoot.querySelector(s);
+            if (m) return m;
+            const d = f(n.shadowRoot);
+            if (d) return d;
+          }
+        }
+        return null;
+      }
+      e = f(document);
+      if (e) return e;
+      for (const i of document.querySelectorAll("iframe")) {
+        try {
+          if (i.contentDocument) {
+            const m = i.contentDocument.querySelector(s);
+            if (m) return m;
+          }
+        } catch {}
+      }
+      return null;
+    }
+    const el = ${selector ? `q(${JSON.stringify(selector)})` : "document.activeElement"};
+    if (!el) return { ok: false, reason: "not-found" };
+    el.focus();
+    const tag = el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") {
+      el.select();
+      return { ok: true, tag, editable: false, selected: true };
+    }
+    if (el.isContentEditable) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return { ok: true, tag, editable: true, selected: true };
+    }
+    // Fall through: element itself isn't a text field — try an inner editable
+    const inner = el.querySelector("input, textarea, [contenteditable]");
+    if (inner) {
+      inner.focus();
+      if (inner.tagName === "INPUT" || inner.tagName === "TEXTAREA") inner.select();
+      else {
+        const range = document.createRange();
+        range.selectNodeContents(inner);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      return { ok: true, tag: inner.tagName, editable: true, selected: true };
+    }
+    return { ok: false, reason: "not-editable", tag };
+  })()`;
+  await ensureCdpDomain(tid, "Runtime");
+  const result = await sendDebuggerCommand(tid, "Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+  });
+  return result.result?.value || { ok: false, reason: "no-result" };
+}
+
 async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierce }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
@@ -802,28 +878,36 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierc
   }
 
   if (clearFirst) {
-    // Select all + delete
-    await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-      type: "keyDown",
-      key: "a",
-      code: "KeyA",
-      modifiers: 2, // Ctrl
-    });
-    await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-      type: "keyUp",
-      key: "a",
-      code: "KeyA",
-    });
-    await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-      type: "keyDown",
-      key: "Backspace",
-      code: "Backspace",
-    });
-    await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-      type: "keyUp",
-      key: "Backspace",
-      code: "Backspace",
-    });
+    // Select all via the page's OWN selection APIs so Input.insertText REPLACES
+    // the existing value. Synthetic Ctrl+A + Backspace key events are unreliable:
+    // React/SPA inputs and rich editors often ignore them, causing insertText to
+    // APPEND at the caret (fill concatenating instead of filling).
+    const selRes = await selectAllInElement(tid, selector, pierce);
+    if (!selRes.ok || selRes.selected !== true) {
+      // Fallback for exotic fields that don't expose a native selection:
+      // synthetic Ctrl+A + Backspace
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "a",
+        code: "KeyA",
+        modifiers: 2, // Ctrl
+      });
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "a",
+        code: "KeyA",
+      });
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+        type: "keyDown",
+        key: "Backspace",
+        code: "Backspace",
+      });
+      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "Backspace",
+        code: "Backspace",
+      });
+    }
   }
 
   // Type text using CDP insertText (handles React/SPA events correctly)
@@ -5589,20 +5673,29 @@ async function handleVault({
         button: "left",
         clickCount: 1,
       });
-      // Select-all + delete to clear the field, then insert the secret
-      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-        type: "keyDown",
-        key: "a",
-        code: "KeyA",
-        modifiers: 2,
-      });
-      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA" });
-      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
-        type: "keyDown",
-        key: "Backspace",
-        code: "Backspace",
-      });
-      await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace" });
+      // Select all via the page's own selection API (native select()/Range) so
+      // Input.insertText REPLACES the field value instead of appending.
+      const selRes = await selectAllInElement(tid, null, false);
+      if (!selRes.ok || selRes.selected !== true) {
+        // Fallback: synthetic Ctrl+A + Backspace
+        await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: "a",
+          code: "KeyA",
+          modifiers: 2,
+        });
+        await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA" });
+        await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: "Backspace",
+          code: "Backspace",
+        });
+        await sendDebuggerCommand(tid, "Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "Backspace",
+          code: "Backspace",
+        });
+      }
       await sendDebuggerCommand(tid, "Input.insertText", { text: String(text) });
       return true;
     }
