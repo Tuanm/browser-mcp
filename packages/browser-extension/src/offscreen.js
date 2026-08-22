@@ -215,9 +215,16 @@ async function connectGateway() {
   const scheme = /^(localhost|127\.|192\.168\.|10\.|172\.16\.)/.test(host.replace(/^wss?:\/\//, "").split("/")[0])
     ? "ws"
     : "wss";
-  const url =
+  const base =
     scheme + "://" + host.replace(/^wss?:\/\//, "").replace(/\/$/, "") + "/ws/" + encodeURIComponent(deviceId);
-  console.log("[bmcp-offscreen] Connecting to gateway " + url + " (attempt " + gatewayRetries + ")");
+  // Authenticate the device at the gateway (per-device token) so no one can
+  // claim this deviceId or hijack/steal its connection.
+  const url = base + (authToken ? "?token=" + encodeURIComponent(authToken) : "");
+  console.log(
+    "[bmcp-offscreen] Connecting to gateway " +
+      (authToken ? url.replace(/token=[^&]+/, "token=***") : url + " (NO TOKEN - gateway may reject)") +
+      " (attempt " + gatewayRetries + ")"
+  );
   try {
     gatewayWs = new WebSocket(url);
   } catch (err) {

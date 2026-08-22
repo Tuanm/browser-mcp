@@ -1131,6 +1131,9 @@ async function handleExecute({ code, tabId, frameId }) {
       hint: "The executed script opened a JS dialog. Use the dialog tool to accept/dismiss it, then re-run if needed.",
     };
   }
+  if (evalResult.error) {
+    throw new Error(String(evalResult.error));
+  }
   const result = evalResult.value;
   if (result.exceptionDetails) {
     throw new Error(
@@ -6351,12 +6354,14 @@ async function ensureDebugger(tabId) {
       await chrome.debugger.attach({ tabId }, "1.3");
     } catch (err) {
       // Handle SW restart where debugger is already attached from prior lifecycle
-      if (!err.message?.includes("Already attached")) throw err;
+      // (message casing varies between browsers: "Already attached"/"already attached")
+      if (!/already attached/i.test((err && err.message) || "")) throw err;
     }
     debuggerAttached.add(tabId);
     // Page.enable kept eager — dialog/file-chooser events must be captured
-    // regardless of which handler the agent calls first
-    await sendDebuggerCommand(tabId, "Page.enable").catch(() => {});
+    // regardless of which handler the agent calls first. Use the raw command
+    // (not sendDebuggerCommand) so a stale-session retry cannot recurse here.
+    await chrome.debugger.sendCommand({ tabId }, "Page.enable").catch(() => {});
     let enabled = cdpDomainEnabled.get(tabId);
     if (!enabled) {
       enabled = new Set();
@@ -6400,8 +6405,22 @@ async function ensureCdpDomain(tabId, domain, params) {
   enabled.add(domain);
 }
 
-function sendDebuggerCommand(tabId, method, params) {
-  return chrome.debugger.sendCommand({ tabId }, method, params);
+async function sendDebuggerCommand(tabId, method, params, _retried) {
+  try {
+    return await chrome.debugger.sendCommand({ tabId }, method, params);
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    // The service worker may have restarted, orphaning our debugger session:
+    // the cached attach state is stale and every command fails with
+    // "not attached". Drop the stale state and re-attach once.
+    if (!_retried && /not attached/i.test(msg)) {
+      debuggerAttached.delete(tabId);
+      cdpDomainEnabled.delete(tabId);
+      await ensureDebugger(tabId);
+      return sendDebuggerCommand(tabId, method, params, true);
+    }
+    throw err;
+  }
 }
 
 async function getElementCenter(tabId, selector) {
