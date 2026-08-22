@@ -321,7 +321,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             connected: false,
             mode: direct ? "gateway" : "local",
             lastError: direct
-              ? "Gateway unreachable. Check your Device ID/Token at code-mcp.tuanm.dev."
+              ? "Gateway unreachable. Check your Device ID/Token at code-mcp.tuanm.workers.dev."
               : "Local server unreachable. Start it with: bun browser-mcp.ts (ws://localhost:7777)",
           });
         }, 1500);

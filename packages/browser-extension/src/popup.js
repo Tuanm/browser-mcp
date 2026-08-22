@@ -2,7 +2,7 @@
  * Popup Script - minimal black/white UI.
  *
  * Two fields configure the connection:
- *   ID    - device ID for the code-mcp-gateway registration (wss://code-mcp.tuanm.dev/ws/<id>)
+ *   ID    - device ID for the code-mcp-gateway registration (wss://code-mcp.tuanm.workers.dev/ws/<id>)
  *   Token - shared secret the gateway sends with each request; the extension
  *           verifies it before answering (defense in depth).
  *

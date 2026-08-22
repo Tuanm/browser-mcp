@@ -7,7 +7,7 @@ Two modes:
 
 - **Direct (default).** Enter a **Device ID** (+ optional **Token**) in the
   popup; the extension connects to the code-mcp gateway
-  (`wss://code-mcp.tuanm.dev/ws/<id>`) and serves MCP itself. No local server.
+  (`wss://code-mcp.tuanm.workers.dev/ws/<id>`) and serves MCP itself. No local server.
 - **Local bridge.** With `browser-mcp.ts` running, the extension connects over
   `ws://localhost:7777/browser/ws` and the server answers MCP over HTTP
   (`http://127.0.0.1:7777/mcp`). Use this for the file store

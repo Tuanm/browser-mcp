@@ -3,7 +3,7 @@
  *
  * Connects either to the local Browser MCP server (ws://localhost:7777/browser/ws)
  * or, when a device ID is configured, directly to the code-mcp gateway
- * (wss://code-mcp.tuanm.dev/ws/<id>) and relays MCP requests to the service
+ * (wss://code-mcp.tuanm.workers.dev/ws/<id>) and relays MCP requests to the service
  * worker, which answers them in place (extension = MCP server).
  */
 
@@ -18,7 +18,7 @@ const RECONNECT_DELAY_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 20000;
 const KEEPALIVE_INTERVAL_MS = 25000;
 /** Direct-gateway mode: the extension itself is the MCP server (no local server). */
-const DEFAULT_GATEWAY = "wss://code-mcp.tuanm.dev"; // host, path is /ws/<deviceId>
+const DEFAULT_GATEWAY = "wss://code-mcp.tuanm.workers.dev"; // host, path is /ws/<deviceId>
 const GW_BASE_DELAY_MS = 1000;
 const GW_MAX_DELAY_MS = 60000;
 const GW_WATCHDOG_MS = 75000;
