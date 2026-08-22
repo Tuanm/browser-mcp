@@ -113,31 +113,32 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 4px;
       }
-      .icon-btn {
-        background: none;
-        border: none;
-        padding: 0 2px;
+      #gatewayHostLabel {
         cursor: pointer;
-        font-size: 11px;
-        color: #999;
-        opacity: 0;
-        transition: opacity 0.15s ease;
-        line-height: 1;
+        padding: 1px 4px;
+        border-radius: 2px;
       }
-      .foot:hover .icon-btn,
-      .icon-btn:focus-visible {
-        opacity: 1;
-      }
-      .icon-btn:hover {
+      #gatewayHostLabel:hover {
         color: #111;
+        text-decoration: underline;
       }
-      .host-input {
+      #gatewayHostInput {
         display: none;
+        width: 100%;
         margin-top: 6px;
+        text-align: center;
+        border: none;
+        border-bottom: 1px solid #999;
+        border-radius: 0;
+        padding: 4px 0;
         font-size: 10px;
-        padding: 5px 8px;
+        background: transparent;
+        box-shadow: none;
+      }
+      #gatewayHostInput:focus {
+        box-shadow: none;
+        border-bottom-color: #111;
       }
     </style>
   </head>
@@ -158,11 +159,10 @@
     <div class="status" id="statusText">Disconnected</div>
 
     <button id="recordBtn" class="off" style="margin-top: 8px; display: none" disabled>Record this tab</button>
-    <div class="foot" id="gatewayRow" title="Gateway domain - click the pencil to change">
-      <span id="gatewayHostLabel"></span>
-      <button id="gatewayEditBtn" class="icon-btn" title="Change gateway domain" aria-label="Change gateway domain">&#9998;</button>
+    <div class="foot" id="gatewayRow">
+      <span id="gatewayHostLabel" title=""></span>
     </div>
-    <input type="text" id="gatewayHostInput" class="host-input" placeholder="wss://your-gateway.example.com" autocomplete="off" spellcheck="false" />
+    <input type="text" id="gatewayHostInput" placeholder="code-mcp.tuanm.workers.dev" autocomplete="off" spellcheck="false" />
 
     <script src="popup.js"></script>
   </body>

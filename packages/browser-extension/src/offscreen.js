@@ -211,12 +211,15 @@ async function connectGateway() {
     return;
   }
   gatewayRetries++;
-  let host = gatewayHost || DEFAULT_GATEWAY;
-  const scheme = /^(localhost|127\.|192\.168\.|10\.|172\.16\.)/.test(host.replace(/^wss?:\/\//, "").split("/")[0])
+  // Normalize the gateway host: accept wss://, https://, ws://, http:// or a
+  // bare host (users paste whatever the gateway page shows). Strip any scheme
+  // and trailing slashes; local hosts get ws, everything else wss.
+  let host = String(gatewayHost || DEFAULT_GATEWAY).trim();
+  host = host.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
+  const scheme = /^(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host.split("/")[0])
     ? "ws"
     : "wss";
-  const base =
-    scheme + "://" + host.replace(/^wss?:\/\//, "").replace(/\/$/, "") + "/ws/" + encodeURIComponent(deviceId);
+  const base = scheme + "://" + host + "/ws/" + encodeURIComponent(deviceId);
   // Authenticate the device at the gateway (per-device token) so no one can
   // claim this deviceId or hijack/steal its connection.
   const url = base + (authToken ? "?token=" + encodeURIComponent(authToken) : "");

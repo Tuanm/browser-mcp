@@ -20,7 +20,6 @@ const deviceIdInput = document.getElementById("deviceId");
 const tokenInput = document.getElementById("authToken");
 const connectBtn = document.getElementById("connectBtn");
 const gatewayHostLabel = document.getElementById("gatewayHostLabel");
-const gatewayEditBtn = document.getElementById("gatewayEditBtn");
 const gatewayHostInput = document.getElementById("gatewayHostInput");
 
 let gatewayHost = null; // custom code-mcp-gateway domain (null = default)
@@ -113,8 +112,7 @@ function saveGatewayHost() {
 function openGatewayEditor() {
   if (!gatewayHostInput) return;
   renderGatewayHost();
-  gatewayHostLabel.style.display = "none";
-  if (gatewayEditBtn) gatewayEditBtn.style.display = "none";
+  if (gatewayHostLabel) gatewayHostLabel.style.display = "none";
   gatewayHostInput.style.display = "block";
   gatewayHostInput.focus();
   gatewayHostInput.select();
@@ -124,14 +122,11 @@ function closeGatewayEditor() {
   if (!gatewayHostInput) return;
   gatewayHostInput.style.display = "none";
   if (gatewayHostLabel) gatewayHostLabel.style.display = "";
-  if (gatewayEditBtn) gatewayEditBtn.style.display = "";
 }
 
-if (gatewayEditBtn) {
-  gatewayEditBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    openGatewayEditor();
-  });
+// Click the gateway URL label itself to edit it.
+if (gatewayHostLabel) {
+  gatewayHostLabel.addEventListener("click", () => openGatewayEditor());
 }
 if (gatewayHostInput) {
   gatewayHostInput.addEventListener("keydown", (e) => {
