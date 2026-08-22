@@ -842,6 +842,52 @@ async function selectAllInElement(tid, selector, pierce) {
   return result.result?.value || { ok: false, reason: "no-result" };
 }
 
+/**
+ * Type text with a human-like typing animation: the text is inserted in small
+ * chunks with tiny pauses (like a person typing) instead of pasting the whole
+ * line at once. The animation is BUDGET-BOUNDED: the whole loop must finish in
+ * <= ~500ms no matter how long the text is or how slow the CDP round-trips are
+ * (longer texts use bigger chunks; if the budget runs out the remainder is
+ * inserted in one final call). Uses CDP Input.insertText per chunk, which
+ * fires proper input events and works with React/SPA controlled inputs.
+ * Returns { dialog_opened } if a JS dialog blocked the input so the caller
+ * can hand off to the dialog tool.
+ */
+async function typeTextAnimated(tid, text) {
+  const s = String(text == null ? "" : text);
+  if (!s) return {};
+  const totalMs = 500; // hard cap on the typing animation
+  const chunkMs = 50; // perceived typing cadence between chunks
+  const maxChunks = 8; // never more than this many visible steps
+  const chunkSize = Math.max(1, Math.ceil(s.length / maxChunks));
+  const start = Date.now();
+  let i = 0;
+  let last = {};
+  while (i < s.length) {
+    const remaining = totalMs - (Date.now() - start);
+    if (remaining <= 0) {
+      // Budget exhausted: paste the rest in one shot so we never exceed the cap.
+      const ins = await raceWithDialog(tid, sendDebuggerCommand(tid, "Input.insertText", { text: s.slice(i) }));
+      if (ins.dialog_opened) last = { dialog_opened: true };
+      i = s.length;
+      break;
+    }
+    const chunk = s.slice(i, i + chunkSize);
+    const ins = await raceWithDialog(tid, sendDebuggerCommand(tid, "Input.insertText", { text: chunk }));
+    if (ins.dialog_opened) {
+      last = { dialog_opened: true };
+      break;
+    }
+    i += chunkSize;
+    if (i < s.length) {
+      // Wait at most min(chunkMs, remaining) so we never overshoot the budget.
+      const wait = Math.max(2, Math.min(chunkMs, remaining));
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+  return last;
+}
+
 async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierce }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
@@ -914,9 +960,13 @@ async function handleType({ text, selector, tabId, clearFirst, pressEnter, pierc
     }
   }
 
-  // Type text using CDP insertText (handles React/SPA events correctly)
-  const ins = await raceWithDialog(tid, sendDebuggerCommand(tid, "Input.insertText", { text }));
-  if (ins.dialog_opened) {
+  // Type with a natural typing animation: insert the text in small chunks
+  // with tiny pauses (like a human typing) instead of pasting the whole line
+  // at once. The total animation is capped at ~500ms no matter how long the
+  // text is (longer texts use bigger chunks). insertText handles React/SPA
+  // controlled inputs correctly.
+  const typed = await typeTextAnimated(tid, text);
+  if (typed.dialog_opened) {
     const dl = pendingDialogs.get(tid);
     return {
       tabId: tid,
@@ -5050,7 +5100,7 @@ async function stealthType({ text, selector, tabId, clearFirst, pressEnter }) {
   }
   const results = await chrome.scripting.executeScript({
     target: { tabId: tid },
-    func: (sel, txt, clear, enter) => {
+    func: async (sel, txt, clear, enter) => {
       // Shadow DOM + iframe deep search
       function deepQuery(s, root) {
         const el = (root || document).querySelector(s);
@@ -5098,14 +5148,44 @@ async function stealthType({ text, selector, tabId, clearFirst, pressEnter }) {
           el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
         }
 
-        const prevValue = el.value;
-        const newValue = clear ? txt : el.value + txt;
-        if (nativeSetter) nativeSetter.call(el, newValue);
-        else el.value = newValue;
-        // Reset React's _valueTracker so React detects the change
-        const tracker = el._valueTracker;
-        if (tracker) tracker.setValue(prevValue);
-        el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: txt }));
+        // Human-like typing animation: append the text in small chunks with
+        // tiny pauses instead of pasting it all at once. Budget-bounded to
+        // ~500ms no matter how long the text is (bigger chunks, then the rest
+        // in one shot if the budget runs out). Each chunk dispatches a native
+        // input event so React/SPA stay in sync.
+        const full = clear ? txt : el.value + txt;
+        const totalMs = 500;
+        const chunkMs = 50;
+        const maxChunks = 8;
+        const chunkSize = Math.max(1, Math.ceil(full.length / maxChunks));
+        const start = Date.now();
+        let typedSoFar = el.value;
+        let done = false;
+        for (let i = 0; i < full.length && !done; i += chunkSize) {
+          const remaining = totalMs - (Date.now() - start);
+          if (remaining <= 0) {
+            // Budget exhausted: set the full value in one final shot.
+            typedSoFar = full;
+            if (nativeSetter) nativeSetter.call(el, typedSoFar);
+            else el.value = typedSoFar;
+            const tracker = el._valueTracker;
+            if (tracker) tracker.setValue(typedSoFar);
+            el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: full }));
+            done = true;
+            break;
+          }
+          typedSoFar = full.slice(0, i + chunkSize);
+          const chunk = full.slice(i, i + chunkSize);
+          if (nativeSetter) nativeSetter.call(el, typedSoFar);
+          else el.value = typedSoFar;
+          const tracker = el._valueTracker;
+          if (tracker) tracker.setValue(typedSoFar);
+          el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: chunk }));
+          if (i + chunkSize < full.length) {
+            const wait = Math.max(2, Math.min(chunkMs, remaining));
+            await new Promise((resolve) => setTimeout(resolve, wait));
+          }
+        }
         el.dispatchEvent(new Event("change", { bubbles: true }));
       } else if (el.isContentEditable) {
         if (clear) {
@@ -6180,7 +6260,27 @@ async function handleTranscript({ action, text, durationMs, position, tabId }) {
  * are captured in recordings and screenshots.
  * Actions: draw (shape + coords), clear, status.
  */
-async function handlePaint({ action, shape, x, y, x1, y1, x2, y2, w, h, r, text, color, width, size, fill, tabId }) {
+async function handlePaint({
+  action,
+  shape,
+  x,
+  y,
+  x1,
+  y1,
+  x2,
+  y2,
+  w,
+  h,
+  r,
+  text,
+  color,
+  width,
+  size,
+  fill,
+  bg,
+  textColor,
+  tabId,
+}) {
   const act = action || "status";
   const tid = tabId || (await getActiveTabId());
   await chrome.scripting.executeScript({ target: { tabId: tid }, files: ["src/content-script.js"] }).catch(() => {});
@@ -6203,6 +6303,8 @@ async function handlePaint({ action, shape, x, y, x1, y1, x2, y2, w, h, r, text,
         width,
         size,
         fill,
+        bg,
+        text_color: textColor,
       })
       .catch((e) => ({ ok: false, error: (e && e.message) || "no content script (restricted page?)" }));
     return resp || { ok: false, error: "no response" };

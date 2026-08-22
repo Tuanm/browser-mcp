@@ -534,8 +534,44 @@ if (!window[Symbol.for("_x7cs")]) {
       el.setAttribute("font-size", String(Math.max(Number(args.size) || 24, 10)));
       el.setAttribute("font-weight", "700");
       el.textContent = String(args.text || "");
+    } else if (shape === "label") {
+      // Label = translucent highlight box + bold text in one call (a common
+      // annotation need: point the user at a UI element and say what it is).
+      const size = Math.max(Number(args.size) || 20, 10);
+      const text = String(args.text || "");
+      const padX = 10;
+      const padY = 6;
+      // Auto-size the box from the text when w/h are not provided.
+      const autoW = Math.ceil(text.length * size * 0.62) + padX * 2;
+      const autoH = size + padY * 2;
+      const bx = Number(args.x) || 0;
+      const by = Number(args.y) || 0;
+      const bw = Math.max(Number(args.w) || autoW, autoW);
+      const bh = Math.max(Number(args.h) || autoH, autoH);
+      const bg = document.createElementNS(ns, "rect");
+      bg.setAttribute("x", String(bx));
+      bg.setAttribute("y", String(by));
+      bg.setAttribute("width", String(bw));
+      bg.setAttribute("height", String(bh));
+      bg.setAttribute("rx", "6");
+      bg.setAttribute("fill", args.bg || "rgba(0,0,0,0.72)");
+      bg.setAttribute("id", _pfx + "-paint-" + Math.random().toString(36).slice(2, 8));
+      svg.appendChild(bg);
+      const tx = document.createElementNS(ns, "text");
+      tx.setAttribute("x", String(bx + padX));
+      tx.setAttribute("y", String(by + bh / 2 + size * 0.34));
+      tx.setAttribute("fill", args.text_color || "#fff");
+      tx.setAttribute("font-size", String(size));
+      tx.setAttribute("font-weight", "700");
+      tx.textContent = text;
+      tx.setAttribute("id", _pfx + "-paint-" + Math.random().toString(36).slice(2, 8));
+      svg.appendChild(tx);
+      return { ok: true, shape, drawn: svg.querySelectorAll("line,rect,circle,text").length };
     } else {
-      return { ok: false, error: "Unknown paint shape: " + shape + " (use rect, circle, arrow, highlight, or text)" };
+      return {
+        ok: false,
+        error: "Unknown paint shape: " + shape + " (use rect, circle, arrow, highlight, text, or label)",
+      };
     }
     svg.appendChild(el);
     return { ok: true, shape, drawn: svg.querySelectorAll("line,rect,circle,text").length };

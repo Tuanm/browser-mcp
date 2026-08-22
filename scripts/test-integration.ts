@@ -839,9 +839,10 @@ ok(
 );
 const paintTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "paint");
 ok(
-  "paint schema has draw/clear/status + shape enum",
+  "paint schema has draw/clear/status + shape enum (incl label)",
   !!paintTool?.inputSchema?.properties?.action?.enum?.includes("draw") &&
-    !!paintTool?.inputSchema?.properties?.shape?.enum?.includes("arrow"),
+    !!paintTool?.inputSchema?.properties?.shape?.enum?.includes("arrow") &&
+    !!paintTool?.inputSchema?.properties?.shape?.enum?.includes("label"),
 );
 // dialog tool exposes status (JS dialog inspection) + click passthrough of dialog_opened
 const dialogTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "dialog");

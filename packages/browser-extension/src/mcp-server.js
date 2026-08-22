@@ -1564,10 +1564,13 @@ export function createMcpHandler(dispatch) {
     {
       name: "paint",
       description:
-        "Draw over the page (fixed overlay, captured in recordings/screenshots). The agent can annotate the UI with arrows, boxes, circles, highlights, or text labels. Actions: draw (shape - rect/circle/arrow/highlight/text - with x/y/w/h/x1/y1/x2/y2/r/text/color/width/size), clear (remove all drawings), status.",
+        "Draw over the page (fixed overlay, captured in recordings/screenshots). The agent can annotate the UI with arrows, boxes, circles, highlights, text labels, or label (highlight box + text in one call). Actions: draw (shape - rect/circle/arrow/highlight/text/label - with x/y/w/h/x1/y1/x2/y2/r/text/color/width/size/bg/text_color), clear (remove all drawings), status.",
       parameters: {
         action: { type: "string", enum: ["draw", "clear", "status"] },
-        shape: { type: "string", enum: ["rect", "circle", "arrow", "highlight", "text"] },
+        shape: {
+          type: "string",
+          enum: ["rect", "circle", "arrow", "highlight", "text", "label"],
+        },
         x: { type: "number" },
         y: { type: "number" },
         x1: { type: "number" },
@@ -1582,6 +1585,8 @@ export function createMcpHandler(dispatch) {
         width: { type: "number" },
         size: { type: "number" },
         fill: { type: "boolean" },
+        bg: { type: "string", description: "Label box background color (label only; default rgba(0,0,0,0.72))" },
+        text_color: { type: "string", description: "Label text color (label only; default #fff)" },
         tab_id: { type: "number" },
       },
       required: [],
@@ -1603,6 +1608,8 @@ export function createMcpHandler(dispatch) {
           width: a.width,
           size: a.size,
           fill: a.fill,
+          bg: a.bg,
+          textColor: a.text_color,
           tabId: a.tab_id,
         });
         return { content: textBlocks(jsonOut(r)) };

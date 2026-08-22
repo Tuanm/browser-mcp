@@ -3438,7 +3438,7 @@ const tools: Record<string, ToolDef> = {
 
   paint: {
     description:
-      "Draw over the page (fixed overlay, captured in recordings/screenshots). Annotate the UI with arrows, boxes, circles, highlights, or text labels. Actions: draw (shape - rect/circle/arrow/highlight/text - with x/y/w/h/x1/y1/x2/y2/r/text/color/width/size), clear (remove all drawings), status.",
+      "Draw over the page (fixed overlay, captured in recordings/screenshots). Annotate the UI with arrows, boxes, circles, highlights, text labels, or label (highlight box + text in one call). Actions: draw (shape - rect/circle/arrow/highlight/text/label - with x/y/w/h/x1/y1/x2/y2/r/text/color/width/size/bg/text_color), clear (remove all drawings), status.",
     parameters: {
       action: {
         type: "string",
@@ -3447,23 +3447,25 @@ const tools: Record<string, ToolDef> = {
       },
       shape: {
         type: "string",
-        description: "Shape to draw: rect, circle, arrow, highlight, or text",
-        enum: ["rect", "circle", "arrow", "highlight", "text"],
+        description: "Shape to draw: rect, circle, arrow, highlight, text, or label",
+        enum: ["rect", "circle", "arrow", "highlight", "text", "label"],
       },
-      x: { type: "number", description: "X coordinate (rect/circle/highlight/text)" },
-      y: { type: "number", description: "Y coordinate (rect/circle/highlight/text)" },
+      x: { type: "number", description: "X coordinate (rect/circle/highlight/text/label)" },
+      y: { type: "number", description: "Y coordinate (rect/circle/highlight/text/label)" },
       x1: { type: "number", description: "Arrow start X" },
       y1: { type: "number", description: "Arrow start Y" },
       x2: { type: "number", description: "Arrow end X" },
       y2: { type: "number", description: "Arrow end Y" },
-      w: { type: "number", description: "Width (rect/highlight)" },
-      h: { type: "number", description: "Height (rect/highlight)" },
+      w: { type: "number", description: "Width (rect/highlight/label; auto from text for label)" },
+      h: { type: "number", description: "Height (rect/highlight/label; auto from text for label)" },
       r: { type: "number", description: "Radius (circle)" },
-      text: { type: "string", description: "Label text (text shape)" },
+      text: { type: "string", description: "Text (text/label shape)" },
       color: { type: "string", description: "Stroke/fill color (CSS; default #ff3b30)" },
       width: { type: "number", description: "Stroke width (default 3)" },
-      size: { type: "number", description: "Font size for text shape (default 24)" },
+      size: { type: "number", description: "Font size (text/label; default 24)" },
       fill: { type: "boolean", description: "Fill the shape (rect/circle; default outline)" },
+      bg: { type: "string", description: "Label box background color (label only; default rgba(0,0,0,0.72))" },
+      text_color: { type: "string", description: "Label text color (label only; default #fff)" },
       tab_id: { type: "number", description: "Tab to draw on (default: active tab)" },
     },
     required: [],
@@ -3486,6 +3488,8 @@ const tools: Record<string, ToolDef> = {
           width: args.width,
           size: args.size,
           fill: args.fill,
+          bg: args.bg,
+          textColor: args.text_color,
           tabId: args.tab_id,
         });
         return outJson(result);
