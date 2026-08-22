@@ -493,6 +493,10 @@ async function dispatchCommand(method, params) {
       return handleRecord(params);
     case "speak":
       return handleSpeak(params);
+    case "transcript":
+      return handleTranscript(params);
+    case "paint":
+      return handlePaint(params);
     case "wait":
       return handleWait(params);
     default:
@@ -6118,14 +6122,104 @@ async function handleSpeak({ action, text, voice, rate, pitch, volume, lang, blo
     const r = await chrome.tabs
       .sendMessage(tid, { type: "tts-speak", text, voice, rate, pitch, volume, lang, block: block !== false })
       .catch((e) => ({ ok: false, error: (e && e.message) || "no content script (restricted page?)" }));
+    // ALSO show the narration as a page caption: speechSynthesis output goes
+    // to the system speakers and CANNOT be captured by MediaRecorder, so the
+    // caption guarantees the agent's words appear in recordings/screenshots
+    // (the overlay is part of the page pixels). Auto-clears after a few
+    // seconds (longer for longer lines).
+    const capMs = Math.min(Math.max(String(text).length * 70, 2500), 12000);
+    await chrome.tabs
+      .sendMessage(tid, { type: "caption-show", text: String(text).slice(0, 400), duration_ms: capMs })
+      .catch(() => {});
     // ALSO narrate into the session recording audio (if a session is active),
-    // so the agent's explanations are captured in the session video.
+    // so the agent's voice is captured in the session video when the browser
+    // can route TTS audio into WebAudio.
     if (sessionRec.active) {
       await chrome.runtime.sendMessage({ source: "offscreen", type: "record-session-narrate", text }).catch(() => {});
     }
     return r || { ok: false, error: "no response" };
   }
   throw new Error("Unknown speak action: " + action + ". Use say, voices, stop, or status.");
+}
+
+/**
+ * transcript - show a movie-style caption bar over the page so the agent's
+ * narration is ALWAYS recorded (the overlay is part of the page pixels),
+ * even when the recording cannot carry the TTS voice.
+ * Actions: show (text + optional duration_ms/position), clear, status.
+ */
+async function handleTranscript({ action, text, durationMs, position, tabId }) {
+  const act = action || "status";
+  const tid = tabId || (await getActiveTabId());
+  await chrome.scripting.executeScript({ target: { tabId: tid }, files: ["src/content-script.js"] }).catch(() => {});
+  if (act === "show") {
+    if (!text) throw new Error("text is required for transcript action=show");
+    const r = await chrome.tabs
+      .sendMessage(tid, { type: "caption-show", text, duration_ms: durationMs, position })
+      .catch((e) => ({ ok: false, error: (e && e.message) || "no content script (restricted page?)" }));
+    return r || { ok: false, error: "no response" };
+  }
+  if (act === "clear") {
+    const r = await chrome.tabs
+      .sendMessage(tid, { type: "caption-clear" })
+      .catch((e) => ({ ok: false, error: (e && e.message) || "no content script (restricted page?)" }));
+    return r || { ok: false, error: "no response" };
+  }
+  if (act === "status") {
+    const r = await chrome.tabs
+      .sendMessage(tid, { type: "caption-status" })
+      .catch((e) => ({ ok: false, error: (e && e.message) || "no content script (restricted page?)" }));
+    return r || { ok: false, error: "no response" };
+  }
+  throw new Error("Unknown transcript action: " + action + ". Use show, clear, or status.");
+}
+
+/**
+ * paint - the agent draws over the page (arrows, boxes, circles, highlights,
+ * text) on a fixed SVG overlay. Drawings are part of the page pixels, so they
+ * are captured in recordings and screenshots.
+ * Actions: draw (shape + coords), clear, status.
+ */
+async function handlePaint({ action, shape, x, y, x1, y1, x2, y2, w, h, r, text, color, width, size, fill, tabId }) {
+  const act = action || "status";
+  const tid = tabId || (await getActiveTabId());
+  await chrome.scripting.executeScript({ target: { tabId: tid }, files: ["src/content-script.js"] }).catch(() => {});
+  if (act === "draw") {
+    const resp = await chrome.tabs
+      .sendMessage(tid, {
+        type: "paint-draw",
+        shape,
+        x,
+        y,
+        x1,
+        y1,
+        x2,
+        y2,
+        w,
+        h,
+        r,
+        text,
+        color,
+        width,
+        size,
+        fill,
+      })
+      .catch((e) => ({ ok: false, error: (e && e.message) || "no content script (restricted page?)" }));
+    return resp || { ok: false, error: "no response" };
+  }
+  if (act === "clear") {
+    const resp = await chrome.tabs
+      .sendMessage(tid, { type: "paint-clear" })
+      .catch((e) => ({ ok: false, error: (e && e.message) || "no content script (restricted page?)" }));
+    return resp || { ok: false, error: "no response" };
+  }
+  if (act === "status") {
+    const resp = await chrome.tabs
+      .sendMessage(tid, { type: "paint-status" })
+      .catch((e) => ({ ok: false, error: (e && e.message) || "no content script (restricted page?)" }));
+    return resp || { ok: false, error: "no response" };
+  }
+  throw new Error("Unknown paint action: " + action + ". Use draw, clear, or status.");
 }
 
 // ============================================================================

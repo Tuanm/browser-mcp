@@ -1508,7 +1508,7 @@ export function createMcpHandler(dispatch) {
     {
       name: "speak",
       description:
-        "Make the agent speak aloud via the browser's native text-to-speech (English-first; works in Chrome and Edge). Plays through the current tab so it is audible AND captured by tab recording. Actions: say (text + optional voice/rate/pitch/volume/block), voices (list available voices), stop, status.",
+        "Make the agent speak aloud via the browser's native text-to-speech (English-first; works in Chrome and Edge). say() also shows the narration as a page caption (transcript) so the words appear in recordings even when the TTS voice cannot be captured into the audio track. During session recording the voice is additionally routed into the WebM when the browser allows it. Actions: say (text + optional voice/rate/pitch/volume/block), voices, stop, status.",
       parameters: {
         action: { type: "string", enum: ["say", "voices", "stop", "status"] },
         text: { type: "string" },
@@ -1531,6 +1531,78 @@ export function createMcpHandler(dispatch) {
           volume: a.volume,
           lang: a.lang,
           block: a.block,
+          tabId: a.tab_id,
+        });
+        return { content: textBlocks(jsonOut(r)) };
+      },
+    },
+
+    {
+      name: "transcript",
+      description:
+        "Show the agent's narration as a movie-style caption bar over the page (like subtitles). speechSynthesis voice may not be capturable in recordings, so the caption guarantees the text appears in the video/screenshot (the overlay is part of the page pixels). Actions: show (text + optional duration_ms - auto-clear; position bottom|top), clear, status.",
+      parameters: {
+        action: { type: "string", enum: ["show", "clear", "status"] },
+        text: { type: "string" },
+        duration_ms: { type: "number" },
+        position: { type: "string", enum: ["bottom", "top"] },
+        tab_id: { type: "number" },
+      },
+      required: [],
+      run: async (a) => {
+        const r = await dispatch("transcript", {
+          action: a.action || "status",
+          text: a.text,
+          durationMs: a.duration_ms,
+          position: a.position,
+          tabId: a.tab_id,
+        });
+        return { content: textBlocks(jsonOut(r)) };
+      },
+    },
+
+    {
+      name: "paint",
+      description:
+        "Draw over the page (fixed overlay, captured in recordings/screenshots). The agent can annotate the UI with arrows, boxes, circles, highlights, or text labels. Actions: draw (shape - rect/circle/arrow/highlight/text - with x/y/w/h/x1/y1/x2/y2/r/text/color/width/size), clear (remove all drawings), status.",
+      parameters: {
+        action: { type: "string", enum: ["draw", "clear", "status"] },
+        shape: { type: "string", enum: ["rect", "circle", "arrow", "highlight", "text"] },
+        x: { type: "number" },
+        y: { type: "number" },
+        x1: { type: "number" },
+        y1: { type: "number" },
+        x2: { type: "number" },
+        y2: { type: "number" },
+        w: { type: "number" },
+        h: { type: "number" },
+        r: { type: "number" },
+        text: { type: "string" },
+        color: { type: "string" },
+        width: { type: "number" },
+        size: { type: "number" },
+        fill: { type: "boolean" },
+        tab_id: { type: "number" },
+      },
+      required: [],
+      run: async (a) => {
+        const r = await dispatch("paint", {
+          action: a.action || "status",
+          shape: a.shape,
+          x: a.x,
+          y: a.y,
+          x1: a.x1,
+          y1: a.y1,
+          x2: a.x2,
+          y2: a.y2,
+          w: a.w,
+          h: a.h,
+          r: a.r,
+          text: a.text,
+          color: a.color,
+          width: a.width,
+          size: a.size,
+          fill: a.fill,
           tabId: a.tab_id,
         });
         return { content: textBlocks(jsonOut(r)) };

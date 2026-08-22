@@ -365,6 +365,196 @@ if (!window[Symbol.for("_x7cs")]) {
   }
 
   // ========================================================================
+  // Transcript Captions - movie-style subtitle bar overlaying the page.
+  // Visible to the user AND captured in every recording mode (the overlay is
+  // part of the page pixels), so the agent's narration is always recorded
+  // even when the audio track cannot carry the TTS voice.
+  // ========================================================================
+
+  let captionEl = null;
+  let captionTimer = null;
+  let captionSeq = 0;
+
+  function showCaption(text, opts) {
+    const duration = Math.max(Number((opts && opts.duration_ms) || 0), 0);
+    const position = (opts && opts.position) || "bottom"; // bottom | top
+    if (!captionEl) {
+      captionEl = document.createElement("div");
+      captionEl.id = _pfx + "-caption";
+      Object.assign(captionEl.style, {
+        position: "fixed",
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: "2147483644", // below the agent cursor, above page + paint
+        pointerEvents: "none",
+        maxWidth: "86%",
+        background: "rgba(0,0,0,0.8)",
+        color: "#fff",
+        borderRadius: "10px",
+        padding: "10px 18px",
+        font: "600 20px/1.45 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
+        textAlign: "center",
+        letterSpacing: "0.2px",
+        boxShadow: "0 4px 18px rgba(0,0,0,0.4)",
+        opacity: "0",
+        transition: "opacity 0.25s ease-out",
+        whiteSpace: "pre-wrap",
+      });
+      (document.documentElement || document.body).appendChild(captionEl);
+    }
+    captionEl.textContent = String(text || "");
+    captionEl.style.top = position === "top" ? "22px" : "auto";
+    captionEl.style.bottom = position === "top" ? "auto" : "30px";
+    captionEl.style.opacity = "1";
+    captionSeq++;
+    if (captionTimer) {
+      clearTimeout(captionTimer);
+      captionTimer = null;
+    }
+    if (duration > 0) {
+      captionTimer = setTimeout(() => {
+        const seq = captionSeq;
+        if (captionEl) captionEl.style.opacity = "0";
+        setTimeout(() => {
+          if (captionSeq === seq && captionEl) captionEl.remove();
+          if (captionSeq === seq) captionEl = null;
+        }, 300);
+      }, duration);
+    }
+    return { ok: true, shown: String(text || "").slice(0, 120), duration_ms: duration };
+  }
+
+  function clearCaption() {
+    captionSeq++;
+    if (captionTimer) {
+      clearTimeout(captionTimer);
+      captionTimer = null;
+    }
+    if (captionEl) {
+      captionEl.style.opacity = "0";
+      setTimeout(() => {
+        if (captionEl) captionEl.remove();
+        captionEl = null;
+      }, 300);
+    }
+    return { ok: true, cleared: true };
+  }
+
+  function captionStatus() {
+    return {
+      ok: true,
+      showing: !!captionEl && captionEl.style.opacity === "1",
+      text: captionEl ? String(captionEl.textContent).slice(0, 160) : null,
+    };
+  }
+
+  // ========================================================================
+  // Paint Overlay - the agent draws arrows / boxes / highlights / text over
+  // the page (fixed SVG layer, pointer-events:none). Painted on top of the
+  // page pixels, so drawings are captured in every recording mode too.
+  // ========================================================================
+
+  let paintSvg = null;
+
+  function paintInit() {
+    if (paintSvg) return paintSvg;
+    paintSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    paintSvg.id = _pfx + "-paint";
+    Object.assign(paintSvg.style, {
+      position: "fixed",
+      left: "0",
+      top: "0",
+      width: "100vw",
+      height: "100vh",
+      zIndex: "2147483643", // below captions, above everything else
+      pointerEvents: "none",
+      overflow: "visible",
+    });
+    const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+    const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+    marker.setAttribute("id", _pfx + "-arrowhead");
+    marker.setAttribute("markerWidth", "10");
+    marker.setAttribute("markerHeight", "7");
+    marker.setAttribute("refX", "9");
+    marker.setAttribute("refY", "3.5");
+    marker.setAttribute("orient", "auto");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M0,0 L10,3.5 L0,7 z");
+    marker.appendChild(path);
+    defs.appendChild(marker);
+    paintSvg.appendChild(defs);
+    (document.documentElement || document.body).appendChild(paintSvg);
+    return paintSvg;
+  }
+
+  /** Draw a shape: rect | circle | arrow | highlight | text. Returns {ok, shape, id}. */
+  function paintDraw(args) {
+    const svg = paintInit();
+    const ns = "http://www.w3.org/2000/svg";
+    const shape = args.shape || "rect";
+    const color = args.color || "#ff3b30";
+    const width = Math.max(Number(args.width) || 3, 1);
+    // highlight is rendered as a translucent rect (no invalid <highlight> tag)
+    const tagName = shape === "text" ? "text" : shape === "arrow" ? "line" : shape === "highlight" ? "rect" : shape;
+    const el = document.createElementNS(ns, tagName);
+    el.setAttribute("id", _pfx + "-paint-" + Math.random().toString(36).slice(2, 8));
+    if (shape === "rect") {
+      el.setAttribute("x", String(Number(args.x) || 0));
+      el.setAttribute("y", String(Number(args.y) || 0));
+      el.setAttribute("width", String(Number(args.w) || 50));
+      el.setAttribute("height", String(Number(args.h) || 50));
+      el.setAttribute("fill", args.fill === true ? color : "none");
+      el.setAttribute("stroke", color);
+      el.setAttribute("stroke-width", String(width));
+    } else if (shape === "circle") {
+      el.setAttribute("cx", String(Number(args.x) || 0));
+      el.setAttribute("cy", String(Number(args.y) || 0));
+      el.setAttribute("r", String(Number(args.r) || 25));
+      el.setAttribute("fill", args.fill === true ? color : "none");
+      el.setAttribute("stroke", color);
+      el.setAttribute("stroke-width", String(width));
+    } else if (shape === "arrow") {
+      el.setAttribute("x1", String(Number(args.x1) || 0));
+      el.setAttribute("y1", String(Number(args.y1) || 0));
+      el.setAttribute("x2", String(Number(args.x2) || 0));
+      el.setAttribute("y2", String(Number(args.y2) || 0));
+      el.setAttribute("stroke", color);
+      el.setAttribute("stroke-width", String(width));
+      el.setAttribute("marker-end", "url(#" + _pfx + "-arrowhead)");
+    } else if (shape === "highlight") {
+      el.setAttribute("x", String(Number(args.x) || 0));
+      el.setAttribute("y", String(Number(args.y) || 0));
+      el.setAttribute("width", String(Number(args.w) || 100));
+      el.setAttribute("height", String(Number(args.h) || 40));
+      el.setAttribute("fill", color || "rgba(255,215,0,0.35)");
+    } else if (shape === "text") {
+      el.setAttribute("x", String(Number(args.x) || 0));
+      el.setAttribute("y", String(Number(args.y) || 0));
+      el.setAttribute("fill", color);
+      el.setAttribute("font-size", String(Math.max(Number(args.size) || 24, 10)));
+      el.setAttribute("font-weight", "700");
+      el.textContent = String(args.text || "");
+    } else {
+      return { ok: false, error: "Unknown paint shape: " + shape + " (use rect, circle, arrow, highlight, or text)" };
+    }
+    svg.appendChild(el);
+    return { ok: true, shape, drawn: svg.querySelectorAll("line,rect,circle,text").length };
+  }
+
+  function paintClear() {
+    if (paintSvg) {
+      const shapes = paintSvg.querySelectorAll("line,rect,circle,text");
+      shapes.forEach((s) => s.remove());
+    }
+    return { ok: true, cleared: true };
+  }
+
+  function paintStatus() {
+    const count = paintSvg ? paintSvg.querySelectorAll("line,rect,circle,text").length : 0;
+    return { ok: true, shapes: count };
+  }
+
+  // ========================================================================
   // Message Handlers
   // ========================================================================
 
@@ -441,6 +631,18 @@ if (!window[Symbol.for("_x7cs")]) {
       sendResponse(ttsListVoices());
     } else if (message.type === "tts-status") {
       sendResponse(ttsStatus());
+    } else if (message.type === "caption-show") {
+      sendResponse(showCaption(message.text, message));
+    } else if (message.type === "caption-clear") {
+      sendResponse(clearCaption());
+    } else if (message.type === "caption-status") {
+      sendResponse(captionStatus());
+    } else if (message.type === "paint-draw") {
+      sendResponse(paintDraw(message));
+    } else if (message.type === "paint-clear") {
+      sendResponse(paintClear());
+    } else if (message.type === "paint-status") {
+      sendResponse(paintStatus());
     }
     return false;
   });

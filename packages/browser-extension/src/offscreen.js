@@ -674,6 +674,10 @@ let sessionRafId = null;
 let sessionTimer = null;
 let sessionLastFrame = null; // Image of the most recent screencast frame
 let sessionCurrentTabId = null;
+let sessionNarrationGain = null; // narration -> session audio dest (captured)
+let sessionNarrateAudio = null; // current TTS <audio> element (kept alive)
+let sessionNarrateSource = null; // its MediaElementSource node
+let sessionNarrateObjUrl = null; // blob URL to revoke on end
 
 function sessionPickMime() {
   const candidates = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
@@ -916,32 +920,94 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.type === "record-session-narrate") {
-    // Play agent narration into the session audio so it is captured.
-    try {
-      if (!sessionActive || !sessionAudioCtx) {
-        sendResponse({ ok: false, error: "No active session" });
-        return false;
+    // Play agent narration INTO the session recording's audio track.
+    // speechSynthesis.speak() output goes to the system speakers and CANNOT be
+    // captured by MediaRecorder (no API exposes its audio; WICG speech-api #69
+    // is still open). Instead we synthesize the same text as an audio file via
+    // a CORS-enabled TTS endpoint and play it through WebAudio routed into the
+    // session's MediaStreamDestination, so the voice IS captured in the WebM.
+    // If the TTS fetch/play fails (offline, no audio device) we resolve with
+    // ok:false so the caller can fall back to the transcript caption tool.
+    (async () => {
+      try {
+        if (!sessionActive || !sessionAudioCtx) {
+          sendResponse({ ok: false, error: "No active session" });
+          return;
+        }
+        const text = String(message.text || "").slice(0, 400);
+        if (!text) {
+          sendResponse({ ok: false, error: "text is required" });
+          return;
+        }
+        // Tear down the previous narration audio (if any).
+        if (sessionNarrateSource) {
+          try {
+            sessionNarrateSource.disconnect();
+          } catch {}
+          sessionNarrateSource = null;
+        }
+        if (sessionNarrateAudio) {
+          try {
+            sessionNarrateAudio.pause();
+            sessionNarrateAudio.src = "";
+          } catch {}
+          sessionNarrateAudio = null;
+        }
+        if (sessionNarrateObjUrl) {
+          try {
+            URL.revokeObjectURL(sessionNarrateObjUrl);
+          } catch {}
+          sessionNarrateObjUrl = null;
+        }
+        // Synthesize speech as audio (Google translate_tts is free + CORS-clean;
+        // the response is an MP3 we can decode into WebAudio).
+        const url =
+          "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=" + encodeURIComponent(text);
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error("TTS endpoint returned " + resp.status);
+        const blob = await resp.blob();
+        sessionNarrateObjUrl = URL.createObjectURL(blob);
+        const audio = new Audio();
+        audio.src = sessionNarrateObjUrl;
+        sessionNarrateAudio = audio;
+        // Route into the session audio destination -> captured in the WebM.
+        const source = sessionAudioCtx.createMediaElementSource(audio);
+        sessionNarrateSource = source;
+        if (!sessionNarrationGain || sessionNarrationGain.context !== sessionAudioCtx) {
+          sessionNarrationGain = sessionAudioCtx.createGain();
+          sessionNarrationGain.gain.value = 1;
+          sessionNarrationGain.connect(sessionAudioDest);
+        }
+        source.connect(sessionNarrationGain);
+        if (sessionAudioCtx.state === "suspended") await sessionAudioCtx.resume().catch(() => {});
+        await audio.play().catch(() => {});
+        const finish = (ok, extra) => {
+          try {
+            audio.pause();
+          } catch {}
+          if (sessionNarrateObjUrl) {
+            try {
+              URL.revokeObjectURL(sessionNarrateObjUrl);
+            } catch {}
+            sessionNarrateObjUrl = null;
+          }
+          sendResponse(Object.assign({ ok, spoken: text.slice(0, 80) }, extra || {}));
+        };
+        audio.onended = () => finish(true, { captured: true });
+        audio.onerror = () => finish(false, { error: "tts audio error", captured: false });
+        // Safety: resolve if the clip never ends (e.g. browser stalls).
+        setTimeout(() => {
+          if (sessionNarrateAudio === audio && audio.ended === false)
+            finish(true, { captured: true, note: "clip ended by timeout" });
+        }, 30000);
+      } catch (e) {
+        sendResponse({
+          ok: false,
+          error: String((e && e.message) || e),
+          hint: "Voice capture unavailable - use the transcript tool to show captions in the recording instead.",
+        });
       }
-      if (!("speechSynthesis" in window)) {
-        sendResponse({ ok: false, error: "speechSynthesis unavailable" });
-        return false;
-      }
-      const u = new SpeechSynthesisUtterance(String(message.text || "").slice(0, 2000));
-      const voices = window.speechSynthesis.getVoices();
-      const en = voices.find((v) => v.lang && v.lang.toLowerCase().startsWith("en")) || voices[0];
-      if (en) u.voice = en;
-      u.rate = 1;
-      u.pitch = 1;
-      // Route the utterance into the narration gain -> session audio dest.
-      // (speechSynthesis outputs to the system speakers by default; for capture
-      // we rely on getDisplayMedia-style system audio, or we fall back to
-      // playing an Audio element. See note below.)
-      u.onend = () => sendResponse({ ok: true, spoken: String(message.text).slice(0, 80) });
-      u.onerror = (e) => sendResponse({ ok: false, error: String((e && e.error) || "tts error") });
-      window.speechSynthesis.speak(u);
-    } catch (e) {
-      sendResponse({ ok: false, error: String((e && e.message) || e) });
-    }
+    })();
     return true;
   }
   if (message.type === "record-session-frame") {

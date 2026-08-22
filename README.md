@@ -29,7 +29,7 @@ Requires Chrome or Edge >= 111.
 > The token must match the one configured for the device on the gateway. Leave
 > it empty and anyone reaching the gateway can control the browser.
 
-## Tools (65)
+## Tools (67)
 
 Element discovery uses the **@ref system**: `snapshot` returns an interactive
 element tree with `[ref=eN]` markers; every interaction tool accepts a ref or
@@ -51,7 +51,8 @@ a CSS selector.
   `console`, `errors`, `status`, `file_read`, `extension`
 - **Emulation & control** — `emulate`, `set`, `perms`, `auth`,
   `dialog`, `frames`, `touch`, `download`, `record`
-- **Recording** — `record`: record a tab (`start` — video-only via CDP screencast: **no toolbar click, no picker, no prompt**, works on any tab) or window/screen (`window`, Chrome's share dialog — required by the browser), `status`, `stop` — saved straight to the user's Downloads as WebM, no Save dialog (`save_as: true` opts into Save As). `include_audio: true` switches to `chrome.tabCapture` for real tab audio (needs one toolbar click on that tab — a Chrome security rule). **Multi-tab sessions**: `session_start` → `tab` (switch which tab is recorded into the SAME continuous video) → `session_stop` — records multi-step workflows across several tabs as one seamless WebM (no concatenation; a REC badge shows elapsed time + current tab in the video). All screencast-based recordings are fully agent-driven with zero human interaction
+- **Voice & captions** — `speak`: the agent narrates each step aloud via native text-to-speech (`say`/`voices`/`stop`/`status`; English-first). `say` also shows a movie-style caption bar (`transcript`) so the narration text is ALWAYS captured in recordings/screenshots even when the TTS voice cannot be routed into the audio track (browser limitation: `speechSynthesis` output plays to the system speakers and cannot be captured by MediaRecorder; during session recording the voice is additionally routed into the WebM via a TTS audio endpoint when the browser allows it). `transcript` tool: `show` (text + `duration_ms`/`position`), `clear`, `status`
+- **Annotation** — `paint`: the agent draws over the page — arrows, boxes, circles, highlights, text labels (`draw`/`clear`/`status`) on a fixed overlay that is part of the page pixels, so annotations appear in recordings and screenshots
 - **Voice** — `speak`: the agent narrates each step aloud via native text-to-speech (`say`/`voices`/`stop`/`status`; English-first, plays through the tab so it's captured in recordings)
 - **Vault** — `vault`: encrypted in-browser credential store (master
   password → PBKDF2 → AES-256-GCM, stored in `chrome.storage.local`, never

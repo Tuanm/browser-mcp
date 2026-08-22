@@ -77,8 +77,8 @@ ok("notification 204 no content", r.status === 204, "status " + r.status + " bod
 
 r = await mcpCall(A, { jsonrpc: "2.0", id: 3, method: "tools/list" });
 ok(
-  "tools/list 63 tools",
-  r.json?.result?.tools?.length === 65,
+  "tools/list 67 tools",
+  r.json?.result?.tools?.length === 67,
   "got " + (r.json?.result?.tools?.length ?? "?") + " tools",
 );
 const names = (r.json?.result?.tools ?? []).map((t: any) => t.name);
@@ -801,6 +801,8 @@ ok(
     "vault",
     "record",
     "speak",
+    "transcript",
+    "paint",
   ].every((t) => allNames.includes(t)),
   "missing: " +
     [
@@ -819,9 +821,27 @@ ok(
       "site_data",
       "extension",
       "vault",
+      "record",
+      "speak",
+      "transcript",
+      "paint",
     ]
       .filter((t) => !allNames.includes(t))
       .join(","),
+);
+// transcript/paint tools expose their action enums
+const transcriptTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "transcript");
+ok(
+  "transcript schema has show/clear/status",
+  !!transcriptTool?.inputSchema?.properties?.action?.enum?.includes("show") &&
+    !!transcriptTool?.inputSchema?.properties?.action?.enum?.includes("clear") &&
+    !!transcriptTool?.inputSchema?.properties?.action?.enum?.includes("status"),
+);
+const paintTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "paint");
+ok(
+  "paint schema has draw/clear/status + shape enum",
+  !!paintTool?.inputSchema?.properties?.action?.enum?.includes("draw") &&
+    !!paintTool?.inputSchema?.properties?.shape?.enum?.includes("arrow"),
 );
 // dialog tool exposes status (JS dialog inspection) + click passthrough of dialog_opened
 const dialogTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "dialog");

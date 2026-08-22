@@ -3361,7 +3361,7 @@ const tools: Record<string, ToolDef> = {
 
   speak: {
     description:
-      "Make the agent speak aloud via the browser's native text-to-speech (English-first; works in Chrome and Edge). Plays through the current tab so it is audible AND captured by tab recording. Actions: say (text + optional voice/rate/pitch/volume/block), voices (list available voices), stop, status.",
+      "Make the agent speak aloud via the browser's native text-to-speech (English-first; works in Chrome and Edge). say() also shows the narration as a page caption (transcript) so the words appear in recordings even when the TTS voice cannot be captured into the audio track. During session recording the voice is additionally routed into the WebM when the browser allows it. Actions: say (text + optional voice/rate/pitch/volume/block), voices, stop, status.",
     parameters: {
       action: {
         type: "string",
@@ -3392,6 +3392,100 @@ const tools: Record<string, ToolDef> = {
           volume: args.volume,
           lang: args.lang,
           block: args.block,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
+    },
+  },
+
+  transcript: {
+    description:
+      "Show the agent's narration as a movie-style caption bar over the page (like subtitles). speechSynthesis voice may not be capturable in recordings, so the caption guarantees the text appears in the video/screenshot (the overlay is part of the page pixels). Actions: show (text + optional duration_ms - auto-clear; position bottom|top), clear, status.",
+    parameters: {
+      action: {
+        type: "string",
+        description: "show, clear, or status",
+        enum: ["show", "clear", "status"],
+      },
+      text: { type: "string", description: "Caption text (show only)" },
+      duration_ms: { type: "number", description: "Auto-clear after this many ms (0 = sticky; default ~3-12s)" },
+      position: {
+        type: "string",
+        description: "Caption position (bottom or top; default bottom)",
+        enum: ["bottom", "top"],
+      },
+      tab_id: { type: "number", description: "Tab to show the caption on (default: active tab)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("transcript", {
+          action: args.action || "status",
+          text: args.text,
+          durationMs: args.duration_ms,
+          position: args.position,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
+    },
+  },
+
+  paint: {
+    description:
+      "Draw over the page (fixed overlay, captured in recordings/screenshots). Annotate the UI with arrows, boxes, circles, highlights, or text labels. Actions: draw (shape - rect/circle/arrow/highlight/text - with x/y/w/h/x1/y1/x2/y2/r/text/color/width/size), clear (remove all drawings), status.",
+    parameters: {
+      action: {
+        type: "string",
+        description: "draw, clear, or status",
+        enum: ["draw", "clear", "status"],
+      },
+      shape: {
+        type: "string",
+        description: "Shape to draw: rect, circle, arrow, highlight, or text",
+        enum: ["rect", "circle", "arrow", "highlight", "text"],
+      },
+      x: { type: "number", description: "X coordinate (rect/circle/highlight/text)" },
+      y: { type: "number", description: "Y coordinate (rect/circle/highlight/text)" },
+      x1: { type: "number", description: "Arrow start X" },
+      y1: { type: "number", description: "Arrow start Y" },
+      x2: { type: "number", description: "Arrow end X" },
+      y2: { type: "number", description: "Arrow end Y" },
+      w: { type: "number", description: "Width (rect/highlight)" },
+      h: { type: "number", description: "Height (rect/highlight)" },
+      r: { type: "number", description: "Radius (circle)" },
+      text: { type: "string", description: "Label text (text shape)" },
+      color: { type: "string", description: "Stroke/fill color (CSS; default #ff3b30)" },
+      width: { type: "number", description: "Stroke width (default 3)" },
+      size: { type: "number", description: "Font size for text shape (default 24)" },
+      fill: { type: "boolean", description: "Fill the shape (rect/circle; default outline)" },
+      tab_id: { type: "number", description: "Tab to draw on (default: active tab)" },
+    },
+    required: [],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("paint", {
+          action: args.action || "status",
+          shape: args.shape,
+          x: args.x,
+          y: args.y,
+          x1: args.x1,
+          y1: args.y1,
+          x2: args.x2,
+          y2: args.y2,
+          w: args.w,
+          h: args.h,
+          r: args.r,
+          text: args.text,
+          color: args.color,
+          width: args.width,
+          size: args.size,
+          fill: args.fill,
           tabId: args.tab_id,
         });
         return outJson(result);
