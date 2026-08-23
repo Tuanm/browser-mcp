@@ -1,5 +1,3 @@
-<p align="center"><img src="https://raw.githubusercontent.com/Tuanm/browser-mcp/main/assets/icon.svg" width="88" height="88" alt="Browser MCP"></p>
-
 # Browser MCP
 
 [![CI](https://github.com/Tuanm/browser-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Tuanm/browser-mcp/actions/workflows/ci.yml)

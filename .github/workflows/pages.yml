@@ -41,6 +41,7 @@ jobs:
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
             <title>Browser MCP — Extension</title>
+            <link rel="icon" type="image/svg+xml" href="favicon.svg" />
             <link rel="preconnect" href="https://fonts.googleapis.com" />
             <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
             <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
@@ -104,6 +105,7 @@ jobs:
         run: |
           mkdir -p _site
           cp dist/browser-extension.zip _site/browser-mcp-extension.zip
+          cp packages/browser-extension/icons/mcp-gray.svg _site/favicon.svg
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
