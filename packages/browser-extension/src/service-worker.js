@@ -165,13 +165,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Messages the SW itself forwarded to the offscreen — never re-handle.
   if (message.fromSw) return false;
 
+  // SECURITY: only extension-owned pages (offscreen doc, popup) may issue
+  // commands or read config. A content script running on ANY webpage can call
+  // chrome.runtime.sendMessage with a forged source:"offscreen" - without this
+  // origin check it could drive arbitrary browser tools (execute JS, navigate,
+  // read pages) or exfiltrate the saved gateway token via get-config.
+  const trustedSender =
+    !!sender &&
+    sender.id === chrome.runtime.id &&
+    typeof sender.url === "string" &&
+    sender.url.startsWith("chrome-extension://" + chrome.runtime.id);
+
   // Ensure offscreen exists on every non-offscreen message (handles SW restarts)
   if (!message.source || message.source !== "offscreen") {
     ensureOffscreen().catch(() => {});
   }
 
   // Commands from offscreen (WebSocket relay)
-  if (message.source === "offscreen" && message.type === "command") {
+  if (trustedSender && message.source === "offscreen" && message.type === "command") {
     handleCommand(message.id, message.method, message.params)
       .then((result) => sendResponse({ id: message.id, result }))
       .catch((err) => sendResponse({ id: message.id, error: { message: err.message } }));
@@ -180,7 +191,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Config pull: chrome.storage is NOT available in offscreen documents, so the
   // offscreen requests the saved config from the SW (the storage authority).
-  if (message.type === "get-config" && message.fromOffscreen) {
+  if (trustedSender && message.type === "get-config" && message.fromOffscreen) {
     chrome.storage.local
       .get(["serverUrl", "extensionId", "deviceId", "authToken", "gatewayHost"])
       .then((cfg) =>
@@ -197,7 +208,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // MCP requests from the offscreen in DIRECT gateway mode (extension = MCP server).
-  if (message.source === "offscreen" && message.type === "mcp-request") {
+  if (trustedSender && message.source === "offscreen" && message.type === "mcp-request") {
     handleMcp(message.request)
       .then((response) => sendResponse({ id: message.id, response }))
       .catch((err) =>
@@ -214,7 +225,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // Connection status broadcast from offscreen — flip toolbar icon + let popup hear it
-  if (message.source === "offscreen" && message.type === "connection-status") {
+  if (trustedSender && message.source === "offscreen" && message.type === "connection-status") {
     setActionIcon(!!message.connected);
     return false;
   }
@@ -227,19 +238,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Clicking the toolbar icon grants the activeTab-like invocation that
   // chrome.tabCapture requires. These handlers start/stop recording from that
   // context so tab capture needs no screen-picker dialog.
-  if (message.type === "record-start" && !message.source) {
+  if (trustedSender && message.type === "record-start" && !message.source) {
     handleRecord({ action: "start", includeAudio: false })
       .then((r) => sendResponse({ ok: !!r.recording, error: r.save_error || null, ...r }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }
-  if (message.type === "record-stop" && !message.source) {
+  if (trustedSender && message.type === "record-stop" && !message.source) {
     handleRecord({ action: "stop", saveAs: false })
       .then((r) => sendResponse({ ok: true, ...r }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }
-  if (message.type === "record-status" && !message.source) {
+  if (trustedSender && message.type === "record-status" && !message.source) {
     handleRecord({ action: "status" })
       .then((r) => sendResponse(r))
       .catch(() => sendResponse({ recording: false }));
@@ -248,7 +259,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // The offscreen session recorder asks the SW for a tabCapture streamId
   // (chrome.tabCapture is invocation-gated and unavailable in offscreen).
-  if (message.type === "tabcapture-stream" && message.source === "offscreen") {
+  if (trustedSender && message.type === "tabcapture-stream" && message.source === "offscreen") {
     chrome.tabCapture
       .getMediaStreamId({ targetTabId: message.tabId })
       .then((id) => sendResponse(id))
@@ -262,7 +273,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // forwards to the offscreen with retries until the offscreen is ready.
 
   // Connect: save ID/Token, ensure offscreen, forward with retry.
-  if (message.type === "reconnect" && !message.source) {
+  if (trustedSender && message.type === "reconnect" && !message.source) {
     const cfg = {};
     if (message.deviceId !== undefined) cfg.deviceId = message.deviceId || "";
     if (message.token !== undefined) cfg.authToken = message.token || "";
@@ -288,7 +299,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // Disconnect: forward to offscreen with retry.
-  if (message.type === "disconnect" && !message.source) {
+  if (trustedSender && message.type === "disconnect" && !message.source) {
     ensureOffscreen()
       .then(() => {
         let attempts = 0;
@@ -310,7 +321,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Status: the offscreen answers when alive; the SW falls back so the popup
   // never hangs and shows an actionable message when the local server is down.
-  if (message.type === "get-status" && !message.source) {
+  if (trustedSender && message.type === "get-status" && !message.source) {
     ensureOffscreen().catch(() => {});
     // Mode-aware fallback: with a device ID the extension connects to the
     // code-mcp gateway directly (no local server needed).
