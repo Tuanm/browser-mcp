@@ -20,8 +20,11 @@ const KEEPALIVE_INTERVAL_MS = 25000;
 /** Direct-gateway mode: the extension itself is the MCP server (no local server). */
 const DEFAULT_GATEWAY = "wss://code-mcp.tuanm.workers.dev"; // host, path is /ws/<deviceId>
 const GW_BASE_DELAY_MS = 1000;
-const GW_MAX_DELAY_MS = 60000;
-const GW_WATCHDOG_MS = 75000;
+// Cap reconnect gaps so a prolonged outage retries at most ~15s apart (was 60s),
+// and detect a half-open tunnel sooner (60s watchdog vs 75s) - the gateway now
+// replaces a stale tunnel on reconnect, so the extension recovers fast and stays live.
+const GW_MAX_DELAY_MS = 15000;
+const GW_WATCHDOG_MS = 60000;
 
 // ============================================================================
 // State

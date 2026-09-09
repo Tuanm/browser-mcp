@@ -3995,7 +3995,10 @@ function startGatewayClient(requestedDeviceId: string): void {
   const domain = gatewayDomain || DEFAULT_GATEWAY_DOMAIN;
   const localMcpUrl = "http://127.0.0.1:" + String(port) + "/mcp";
   const BASE_DELAY_MS = 1000;
-  const MAX_DELAY_MS = 60_000;
+  // Cap reconnect gaps (was 60s) so a prolonged outage retries ~15s apart, and
+  // watch-dog sooner (60s vs 75s) - the gateway replaces a stale tunnel on
+  // reconnect, so the tunnel stays live and recovers quickly.
+  const MAX_DELAY_MS = 15_000;
   let retries = 0;
 
   function connect() {
@@ -4016,7 +4019,7 @@ function startGatewayClient(requestedDeviceId: string): void {
 
     let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
     let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
-    const WATCHDOG_MS = 75_000;
+    const WATCHDOG_MS = 60_000;
     const armWatchdog = () => {
       if (watchdogTimer) clearTimeout(watchdogTimer);
       watchdogTimer = setTimeout(() => {
