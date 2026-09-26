@@ -1637,6 +1637,58 @@ const tools: Record<string, ToolDef> = {
     },
   },
 
+  webauthn: {
+    description:
+      "Drive WebAuthn/passkey ceremonies in-page with a CDP virtual authenticator so the native OS prompt (Windows Hello, security key, Okta/WAM broker) is never shown - an OS dialog is a native window that no extension can read or click. Actions: enable, status, add, list, remove, clear, disable. enable installs a virtual authenticator with automatic presence + user verification (passkey prompts are then answered silently); add preloads an existing account's credential for rp_id (a fresh ES256 key is generated in-browser when private_key is omitted).",
+    parameters: {
+      action: {
+        type: "string",
+        description: '"enable", "status", "add", "list", "remove", "clear", or "disable"',
+        enum: ["enable", "status", "add", "list", "remove", "clear", "disable"],
+      },
+      rp_id: { type: "string", description: "Relying-party id / effective domain (required for 'add')" },
+      credential_id: { type: "string", description: "Base64 credential id (for 'add'/'remove'; generated when omitted)" },
+      private_key: { type: "string", description: "Base64 PKCS#8 private key (for 'add'; generated when omitted)" },
+      user_handle: { type: "string", description: "Base64 user handle (for 'add')" },
+      sign_count: { type: "number", description: "Initial signature counter (default 0)" },
+      is_resident_credential: { type: "boolean", description: "Discoverable/resident credential (default true)" },
+      protocol: { type: "string", description: 'Virtual authenticator protocol: "ctap2" (default) or "u2f"', enum: ["ctap2", "u2f"] },
+      transport: { type: "string", description: 'Transport: "internal" (default), "usb", "nfc", or "ble"', enum: ["internal", "usb", "nfc", "ble"] },
+      has_resident_key: { type: "boolean", description: "Authenticator supports resident keys (default true)" },
+      has_user_verification: { type: "boolean", description: "Authenticator supports user verification (default true)" },
+      is_user_verified: { type: "boolean", description: "Report the user as already verified (default true)" },
+      automatic_presence_simulation: {
+        type: "boolean",
+        description: "Auto-answer presence checks so no prompt appears (default true)",
+      },
+      tab_id: { type: "number", description: "Target tab ID (optional)" },
+    },
+    required: ["action"],
+    handler: async (args) => {
+      try {
+        const result = await sendBrowserCommand("webauthn", {
+          action: args.action,
+          rpId: args.rp_id,
+          credentialId: args.credential_id,
+          privateKey: args.private_key,
+          userHandle: args.user_handle,
+          signCount: args.sign_count,
+          isResidentCredential: args.is_resident_credential,
+          protocol: args.protocol,
+          transport: args.transport,
+          hasResidentKey: args.has_resident_key,
+          hasUserVerification: args.has_user_verification,
+          isUserVerified: args.is_user_verified,
+          automaticPresenceSimulation: args.automatic_presence_simulation,
+          tabId: args.tab_id,
+        });
+        return outJson(result);
+      } catch (e) {
+        return outError(e);
+      }
+    },
+  },
+
   perms: {
     description:
       'Grant, deny, or reset browser permissions for a site. Controls access to camera, microphone, geolocation, notifications, clipboard, MIDI, and other web APIs. Grant permissions before interacting with features that need them (e.g., grant "geolocation" before testing a map app).',

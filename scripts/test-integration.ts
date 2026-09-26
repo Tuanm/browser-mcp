@@ -77,8 +77,8 @@ ok("notification 204 no content", r.status === 204, "status " + r.status + " bod
 
 r = await mcpCall(A, { jsonrpc: "2.0", id: 3, method: "tools/list" });
 ok(
-  "tools/list 67 tools",
-  r.json?.result?.tools?.length === 67,
+  "tools/list 68 tools",
+  r.json?.result?.tools?.length === 68,
   "got " + (r.json?.result?.tools?.length ?? "?") + " tools",
 );
 const names = (r.json?.result?.tools ?? []).map((t: any) => t.name);
@@ -850,6 +850,13 @@ ok("dialog schema has status action", !!dialogTool?.inputSchema?.properties?.act
 // vault schema exposes action enum
 const vaultTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "vault");
 ok("vault schema has action enum", !!vaultTool?.inputSchema?.properties?.action?.enum?.includes("unlock"));
+// webauthn tool exposes the virtual-authenticator actions (passkey OS-dialog bypass)
+const webauthnTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "webauthn");
+ok(
+  "webauthn schema has enable/disable actions",
+  !!webauthnTool?.inputSchema?.properties?.action?.enum?.includes("enable") &&
+    !!webauthnTool?.inputSchema?.properties?.action?.enum?.includes("disable"),
+);
 // ref param injected into click schema
 const clickTool = allNames.length ? null : null;
 const schemaTool = (r.json?.result?.tools ?? []).find((x: any) => x.name === "click");

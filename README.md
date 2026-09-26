@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Tuanm/browser-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Tuanm/browser-mcp/actions/workflows/ci.yml)
 
-**Chrome/Edge extension (Manifest V3) that turns the browser into an MCP server for AI agents — 67 browser tools, direct [code-mcp-gateway](https://github.com/Tuanm/code-mcp-gateway) mode, screen recording, TTS narration, page annotations.**
+**Chrome/Edge extension (Manifest V3) that turns the browser into an MCP server for AI agents — 68 browser tools, direct [code-mcp-gateway](https://github.com/Tuanm/code-mcp-gateway) mode, screen recording, TTS narration, page annotations.**
 
 [![Install extension](https://img.shields.io/badge/Install_extension-111111?style=for-the-badge&labelColor=111111&color=111111)](https://tuanm.github.io/browser-mcp)
 
@@ -31,7 +31,7 @@ Requires Chrome or Edge ≥ 111.
 
 > The token must match the device's token configured on the [code-mcp-gateway](https://github.com/Tuanm/code-mcp-gateway). Leave it empty only if you accept that anyone reaching the gateway can control the browser.
 
-## Tools (67)
+## Tools (68)
 
 Element discovery uses the **@ref system**: `snapshot` returns an interactive element tree with `[ref=eN]` markers; every interaction tool accepts a ref or a CSS selector.
 
@@ -43,7 +43,7 @@ Element discovery uses the **@ref system**: `snapshot` returns an interactive el
 | Page reads | `extract`, `execute`, `screenshot` (image block), `pdf`, `wait`, `highlight` |
 | Network & DevTools | `network`, `intercept`, `har`, `ws`, `throttle`, `resources`, `coverage`, `pseudo`, `site_data`, `notify` |
 | State & debugging | `store`, `cookies`, `storage`, `console`, `errors`, `status`, `file_read`, `extension` |
-| Emulation & control | `emulate`, `set`, `perms`, `auth`, `dialog`, `frames`, `touch`, `download`, `record` |
+| Emulation & control | `emulate`, `set`, `perms`, `auth`, `webauthn`, `dialog`, `frames`, `touch`, `download`, `record` |
 | Media & narration | `speak`, `transcript`, `paint` |
 | Vault | `vault` |
 

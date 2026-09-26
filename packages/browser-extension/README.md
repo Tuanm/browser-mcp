@@ -32,7 +32,7 @@ flowchart LR
 
 ## Tools
 
-67 MCP tools, including:
+68 MCP tools, including:
 
 - **Discovery** — `snapshot` (interactive tree with `[ref=eN]` markers),
   `find`, `get`, `is`
@@ -46,7 +46,7 @@ flowchart LR
 - **State** — `store`, `cookies`, `storage`, `console`, `errors`,
   `network`, `status`
 - **Emulation** — `emulate`, `set` (viewport/device/geo/offline/headers),
-  `perms`, `auth`, `frames`, `touch`, `download`
+  `perms`, `auth`, `webauthn`, `frames`, `touch`, `download`
 
 ## Security
 

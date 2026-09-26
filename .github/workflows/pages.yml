@@ -70,7 +70,7 @@ jobs:
           <body>
             <h1>Browser MCP</h1>
             <div class="sub">chrome / edge extension</div>
-            <p class="desc">Turns the browser into an MCP server for AI agents: 67 browser tools, direct code-mcp-gateway mode, screen recording, TTS narration, page annotations.</p>
+            <p class="desc">Turns the browser into an MCP server for AI agents: 68 browser tools, direct code-mcp-gateway mode, screen recording, TTS narration, page annotations.</p>
 
             <a class="dl" id="dl" href="browser-mcp-extension.zip">Download</a>
 

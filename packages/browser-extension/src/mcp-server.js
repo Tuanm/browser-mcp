@@ -1062,6 +1062,47 @@ export function createMcpHandler(dispatch) {
       },
     },
     {
+      name: "webauthn",
+      description:
+        "Drive WebAuthn/passkey ceremonies in-page with a CDP virtual authenticator so the native OS prompt (Windows Hello, security key, Okta/WAM broker) is never shown - an OS dialog is a native window that no extension can read or click. Actions: enable, status, add, list, remove, clear, disable. enable installs a virtual authenticator with automatic presence + user verification (passkey prompts are then answered silently); add preloads an existing account's credential for rpId (a fresh ES256 key is generated in-browser when private_key is omitted).",
+      parameters: {
+        action: { type: "string", enum: ["enable", "status", "add", "list", "remove", "clear", "disable"] },
+        rp_id: { type: "string" },
+        credential_id: { type: "string" },
+        private_key: { type: "string" },
+        user_handle: { type: "string" },
+        sign_count: { type: "number" },
+        is_resident_credential: { type: "boolean" },
+        protocol: { type: "string", enum: ["ctap2", "u2f"] },
+        transport: { type: "string", enum: ["internal", "usb", "nfc", "ble"] },
+        has_resident_key: { type: "boolean" },
+        has_user_verification: { type: "boolean" },
+        is_user_verified: { type: "boolean" },
+        automatic_presence_simulation: { type: "boolean" },
+        tab_id: { type: "number" },
+      },
+      required: ["action"],
+      run: async (a) => {
+        const r = await dispatch("webauthn", {
+          action: a.action,
+          rpId: a.rp_id,
+          credentialId: a.credential_id,
+          privateKey: a.private_key,
+          userHandle: a.user_handle,
+          signCount: a.sign_count,
+          isResidentCredential: a.is_resident_credential,
+          protocol: a.protocol,
+          transport: a.transport,
+          hasResidentKey: a.has_resident_key,
+          hasUserVerification: a.has_user_verification,
+          isUserVerified: a.is_user_verified,
+          automaticPresenceSimulation: a.automatic_presence_simulation,
+          tabId: a.tab_id,
+        });
+        return { content: textBlocks(jsonOut(r)) };
+      },
+    },
+    {
       name: "store",
       description:
         "Store and retrieve data/scripts per-website in extension storage. Actions: set, get, list, delete, clear.",

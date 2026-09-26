@@ -58,6 +58,7 @@ const tabEmulation = new Map(); // tabId -> {metrics, hasTouch, userAgent} for s
 const tabSetOverrides = new Map(); // tabId -> {geo?, offline?, media?} from set (cleared by emulate action=clear)
 const pendingAuth = new Map(); // requestId -> { tabId, url, scheme, realm }
 const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status lookup)
+const webauthnAuthenticators = new Map(); // tabId -> authenticatorId (CDP virtual authenticator for passkeys)
 const recentDownloads = []; // Recent download events (from CDP Browser.downloadWillBegin), max 20
 const cdpCompletedUrls = new Map(); // url -> timestamp — CDP-confirmed download completions (separate from recentDownloads to survive consumeRecentDownload splice)
 
@@ -89,6 +90,8 @@ chrome.debugger.onDetach.addListener((source) => {
       for (const rid of reqIds) pendingAuth.delete(rid);
       pendingAuthByTab.delete(source.tabId);
     }
+    // A virtual authenticator lives in the CDP session, so a detach ends it.
+    webauthnAuthenticators.delete(source.tabId);
     // Invalidate stale frame contexts
     for (const key of frameContexts.keys()) {
       if (key.startsWith(`${source.tabId}:`)) frameContexts.delete(key);
@@ -371,6 +374,11 @@ async function handleCommand(id, method, params) {
   if (indicatorTab) showActivityCursor(indicatorTab);
   try {
     return await dispatchCommand(method, params);
+  } catch (err) {
+    // Chrome's raw "Extension manifest must request permission ..." gives the
+    // agent nothing to act on. Translate it into guidance - including the native
+    // OS-dialog case, which no extension can read or click.
+    throw await explainPageAccessError(err, params);
   } finally {
     if (indicatorTab) hideAgentIndicator(indicatorTab);
   }
@@ -424,6 +432,8 @@ async function dispatchCommand(method, params) {
       return handleDownload(params);
     case "auth":
       return handleAuth(params);
+    case "webauthn":
+      return handleWebauthn(params);
     case "permissions":
       return handlePermissions(params);
     case "store":
@@ -2781,6 +2791,138 @@ async function handleAuth({ action, username, password, tabId, vaultName }) {
   }
 
   throw new Error(`Unknown auth action: ${action}. Use "status", "provide", or "cancel".`);
+}
+
+// --- WebAuthn / passkeys ---
+//
+// By default Chrome hands a WebAuthn ceremony to the OS (Windows Hello, a
+// security key, the Okta/WAM broker). That dialog is a native window: an
+// extension can neither read nor click it, the agent goes blind, and pages
+// behind it surface "Cannot access contents of the page". A CDP virtual
+// authenticator makes navigator.credentials.create/get resolve inside the
+// renderer, so the OS prompt is never shown and the agent keeps control.
+// Credentials live only in this CDP session; a generated private key is created
+// in-browser and never leaves it.
+
+async function handleWebauthn(params) {
+  const p = params || {};
+  const tid = p.tabId || (await getActiveTabId());
+  await ensureDebugger(tid);
+
+  if (p.action === "enable") {
+    // enableUI:false - the virtual authenticator answers the ceremony, so
+    // Chrome must not offer its own WebAuthn UI (nor hand off to the OS).
+    await ensureCdpDomain(tid, "WebAuthn", { enableUI: false });
+    const existing = webauthnAuthenticators.get(tid);
+    if (existing) {
+      await sendDebuggerCommand(tid, "WebAuthn.removeVirtualAuthenticator", { authenticatorId: existing }).catch(() => {});
+      webauthnAuthenticators.delete(tid);
+    }
+    const options = {
+      protocol: p.protocol === "u2f" ? "u2f" : "ctap2",
+      transport: ["usb", "nfc", "ble", "internal"].indexOf(p.transport) !== -1 ? p.transport : "internal",
+      hasResidentKey: p.hasResidentKey !== false,
+      hasUserVerification: p.hasUserVerification !== false,
+      // isUserVerified + automatic presence => ceremonies complete with no prompt.
+      isUserVerified: p.isUserVerified !== false,
+      automaticPresenceSimulation: p.automaticPresenceSimulation !== false,
+    };
+    const res = await sendDebuggerCommand(tid, "WebAuthn.addVirtualAuthenticator", { options });
+    const authenticatorId = res && res.authenticatorId;
+    webauthnAuthenticators.set(tid, authenticatorId);
+    // Some Chrome builds only honour these as explicit setters.
+    await sendDebuggerCommand(tid, "WebAuthn.setAutomaticPresenceSimulation", {
+      authenticatorId,
+      enabled: options.automaticPresenceSimulation,
+    }).catch(() => {});
+    await sendDebuggerCommand(tid, "WebAuthn.setUserVerified", {
+      authenticatorId,
+      isUserVerified: options.isUserVerified,
+    }).catch(() => {});
+    return {
+      tabId: tid,
+      enabled: true,
+      authenticatorId,
+      options,
+      hint: "Passkey prompts (including the Windows Hello / security-key OS dialog) are now answered by a virtual authenticator, so they will not appear. Use action=add to preload an existing account credential.",
+    };
+  }
+
+  const authenticatorId = webauthnAuthenticators.get(tid);
+
+  if (p.action === "status") {
+    if (!authenticatorId) return { tabId: tid, enabled: false };
+    let credentials = [];
+    try {
+      const r = await sendDebuggerCommand(tid, "WebAuthn.getCredentials", { authenticatorId });
+      credentials = (r && r.credentials) || [];
+    } catch {}
+    return { tabId: tid, enabled: true, authenticatorId, credentials: credentials.map(summarizeCredential) };
+  }
+
+  if (!authenticatorId)
+    throw new Error('No virtual authenticator on this tab yet - run webauthn action="enable" first.');
+
+  if (p.action === "add") {
+    if (!p.rpId) throw new Error("webauthn add requires rpId (the site's effective domain, e.g. example.com)");
+    let key = p.privateKey;
+    let cid = p.credentialId;
+    if (!key) {
+      // Generate ES256 in-browser so the agent never has to handle key material.
+      const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+      key = b64encode(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+    }
+    if (!cid) cid = b64encode(crypto.getRandomValues(new Uint8Array(32)));
+    await sendDebuggerCommand(tid, "WebAuthn.addCredential", {
+      authenticatorId,
+      credential: {
+        credentialId: cid,
+        isResidentCredential: p.isResidentCredential !== false,
+        rpId: p.rpId,
+        privateKey: key,
+        userHandle: p.userHandle || undefined,
+        signCount: typeof p.signCount === "number" ? p.signCount : 0,
+      },
+    });
+    return { tabId: tid, added: true, rpId: p.rpId, credentialId: cid, generatedKey: !p.privateKey };
+  }
+
+  if (p.action === "list") {
+    const r = await sendDebuggerCommand(tid, "WebAuthn.getCredentials", { authenticatorId });
+    return { tabId: tid, credentials: ((r && r.credentials) || []).map(summarizeCredential) };
+  }
+
+  if (p.action === "remove") {
+    if (!p.credentialId) throw new Error("webauthn remove requires credentialId");
+    await sendDebuggerCommand(tid, "WebAuthn.removeCredential", { authenticatorId, credentialId: p.credentialId });
+    return { tabId: tid, removed: p.credentialId };
+  }
+
+  if (p.action === "clear") {
+    await sendDebuggerCommand(tid, "WebAuthn.clearCredentials", { authenticatorId });
+    return { tabId: tid, cleared: true };
+  }
+
+  if (p.action === "disable") {
+    await sendDebuggerCommand(tid, "WebAuthn.removeVirtualAuthenticator", { authenticatorId });
+    webauthnAuthenticators.delete(tid);
+    return { tabId: tid, enabled: false };
+  }
+
+  throw new Error(
+    "Unknown webauthn action: " + p.action + '. Use "enable", "status", "add", "list", "remove", "clear", or "disable".',
+  );
+}
+
+/** Trim a CDP credential record for agent output (drop the private-key blob). */
+function summarizeCredential(c) {
+  return {
+    credentialId: c.credentialId,
+    rpId: c.rpId,
+    isResidentCredential: c.isResidentCredential,
+    signCount: c.signCount,
+    userHandle: c.userHandle || null,
+  };
 }
 
 // --- Browser Permissions ---
@@ -6629,6 +6771,90 @@ function consumeRecentDownload(tabId, withinMs = 3000) {
   const idx = recentDownloads.findIndex((d) => d.tabId === tabId && d.timestamp >= cutoff);
   if (idx === -1) return null;
   return recentDownloads.splice(idx, 1)[0];
+}
+
+// ---------------------------------------------------------------------------
+// Page access: describe targets the extension can never script, and turn
+// Chrome's bare injection failures into something an agent can act on.
+// ---------------------------------------------------------------------------
+
+/** Browser-internal / restricted surfaces no extension may inject into. */
+const RESTRICTED_SCHEME_RE =
+  /^(chrome|chrome-untrusted|chrome-search|edge|brave|opera|vivaldi|chromium|devtools|view-source|about|data|filesystem|mailto|tel|javascript):/i;
+/** Extension stores block content scripts as well. */
+const RESTRICTED_HOST_RE =
+  /^https?:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore|microsoftedge\.microsoft\.com\/addons)/i;
+
+/** True when a content script may plausibly be injected into this URL. */
+function isScriptableUrl(url) {
+  if (!url) return false;
+  if (RESTRICTED_SCHEME_RE.test(url)) return false;
+  if (RESTRICTED_HOST_RE.test(url)) return false;
+  return /^(https?|file|ftp):/i.test(url);
+}
+
+/** Why a URL cannot be scripted (null when it looks scriptable). */
+function describePageAccess(url) {
+  if (!url) return "the tab has no URL yet (it may still be loading)";
+  if (RESTRICTED_SCHEME_RE.test(url)) {
+    return url + " is a browser-internal page (" + url.split(":")[0] + "://), which extensions cannot script";
+  }
+  if (RESTRICTED_HOST_RE.test(url)) return url + " is an extension-store page, which extensions cannot script";
+  if (/^file:/i.test(url)) {
+    return (
+      url +
+      ' is a file:// page without file-URL access - enable "Allow access to file URLs" on this extension in chrome://extensions'
+    );
+  }
+  if (!/^(https?|ftp):/i.test(url)) return url + " is not a web page this extension can script";
+  return null;
+}
+
+/**
+ * Translate Chrome's injection failures ("Cannot access contents of the page.
+ * Extension manifest must request permission to access the respective host.")
+ * into an actionable message naming the target and the scriptable alternatives.
+ */
+async function explainPageAccessError(err, params) {
+  const msg = String((err && err.message) || err);
+  const looksLikeAccessError =
+    /cannot access (contents of the page|contents of url|a chrome|a edge|this page|a file|local file)/i.test(msg) ||
+    /manifest must request permission/i.test(msg) ||
+    /must request permission to access/i.test(msg) ||
+    /cannot be scripted/i.test(msg) ||
+    /extensions gallery/i.test(msg);
+  if (!looksLikeAccessError) return err instanceof Error ? err : new Error(msg);
+
+  let url = null;
+  try {
+    const tid = params?.tabId || (await getActiveTabId());
+    const tab = await chrome.tabs.get(tid);
+    url = (tab && tab.url) || null;
+  } catch {}
+
+  let candidates = "";
+  try {
+    const tabs = await chrome.tabs.query({});
+    const usable = tabs
+      .filter((t) => t.id != null && isScriptableUrl(t.url || ""))
+      .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
+      .slice(0, 4)
+      .map((t) => "tab " + t.id + " (" + (t.title || "untitled") + ") -> " + t.url);
+    if (usable.length) candidates = " Scriptable tabs right now: " + usable.join("; ") + ".";
+  } catch {}
+
+  return new Error(
+    "Cannot read this page" +
+      (url ? " (" + url + ")" : "") +
+      ": " +
+      (describePageAccess(url) || "Chrome blocked the script injection") +
+      ". Extensions cannot script chrome://, devtools://, other extensions' pages, browser-internal " +
+      "surfaces, the Web Store, or file:// pages without the file-URL toggle. If a native OS " +
+      "authentication dialog is on screen (Windows Hello, passkey, security key, or an Okta/WAM broker " +
+      "window) it lives outside the page: no extension can read or click it - use the webauthn tool to " +
+      "satisfy passkey challenges in-page so the OS prompt is never shown." +
+      candidates,
+  );
 }
 
 async function getActiveTabId() {
