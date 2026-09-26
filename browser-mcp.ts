@@ -1639,14 +1639,14 @@ const tools: Record<string, ToolDef> = {
 
   webauthn: {
     description:
-      "Drive WebAuthn/passkey ceremonies in-page with a CDP virtual authenticator so the native OS prompt (Windows Hello, security key, Okta/WAM broker) is never shown - an OS dialog is a native window that no extension can read or click. Actions: enable, status, auto, add, list, remove, clear, disable. enable installs a virtual authenticator with automatic presence + user verification (passkey prompts are then answered silently); auto (default ON) arms the tab's virtual authenticator before every agent click/navigation so a redirect into an Okta/Entra page that fires WebAuthn on load cannot open the OS dialog; add preloads an existing account's credential for rp_id (a fresh ES256 key is generated in-browser when private_key is omitted).",
+      "Automatic OS-dialog prevention for the tab the agent is driving, plus explicit WebAuthn control. While the extension is connected and the agent runs commands, native prompts that no extension can read or click are suppressed up front with NO tool call required: the WebAuthn/passkey dialog (Windows Hello, security key, Okta/WAM broker) is answered by a CDP virtual authenticator installed before every click/navigation, HTTP Basic/Digest is intercepted so Chrome never renders its own prompt, and the download bubble/shelf stays hidden. Actions: enable, status, auto, add, list, remove, clear, disable. auto (default ON) toggles the whole guard; add preloads an existing account's credential for rp_id (a fresh ES256 key is generated in-browser when private_key is omitted).",
     parameters: {
       action: {
         type: "string",
         description: '"enable", "status", "auto", "add", "list", "remove", "clear", or "disable"',
         enum: ["enable", "status", "auto", "add", "list", "remove", "clear", "disable"],
       },
-      enabled: { type: "boolean", description: "Auto mode toggle for action 'auto' (default true)" },
+      enabled: { type: "boolean", description: "OS-dialog guard toggle for action 'auto' (default true)" },
       rp_id: { type: "string", description: "Relying-party id / effective domain (required for 'add')" },
       credential_id: { type: "string", description: "Base64 credential id (for 'add'/'remove'; generated when omitted)" },
       private_key: { type: "string", description: "Base64 PKCS#8 private key (for 'add'; generated when omitted)" },

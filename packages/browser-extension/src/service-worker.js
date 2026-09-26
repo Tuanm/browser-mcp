@@ -115,7 +115,7 @@ chrome.debugger.onDetach.addListener((source) => {
 // so a WebAuthn ceremony fired on load is intercepted. Gated on agent activity
 // so ordinary user tabs are never touched.
 chrome.tabs.onCreated.addListener((tab) => {
-  if (tab && tab.id != null && Date.now() < agentActiveUntil) autoArmWebauthn(tab.id);
+  if (tab && tab.id != null && Date.now() < agentActiveUntil) guardOsDialogs(tab.id);
 });
 
 // ============================================================================
@@ -238,6 +238,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Connection status broadcast from offscreen — flip toolbar icon + let popup hear it
   if (trustedSender && message.source === "offscreen" && message.type === "connection-status") {
     setActionIcon(!!message.connected);
+    // Agent connected: pre-arm the current tab immediately, so the guard is in
+    // place before the agent's first command and no tool call is needed.
+    if (message.connected) {
+      getActiveTabId()
+        .then((tid) => guardOsDialogs(tid))
+        .catch(() => {});
+    }
     return false;
   }
 
@@ -380,6 +387,9 @@ async function handleCommand(id, method, params) {
       indicatorTab = await getActiveTabId();
     } catch {}
   }
+  // Automatic OS-dialog guard for the tab the agent is driving (fire-and-forget;
+  // click/navigate/keypress additionally await it so it lands before they act).
+  if (indicatorTab && !params?.stealth) guardOsDialogs(indicatorTab);
   if (indicatorTab) await showAgentIndicator(indicatorTab);
   // The persistent mouse pointer follows the agent on every command.
   if (indicatorTab) showActivityCursor(indicatorTab);
@@ -545,7 +555,7 @@ async function handleNavigate({ url, tabId, waitFor, stealth }) {
   // redirected into (Okta/Entra) can fire a WebAuthn ceremony while loading, and
   // a CDP virtual authenticator survives the cross-origin redirect in the tab.
   // Skipped in stealth mode, which must not attach the debugger.
-  if (!stealth) await autoArmWebauthn(tabId);
+  if (!stealth) await guardOsDialogs(tabId);
   let tab;
   if (tabId) {
     tab = await chrome.tabs.update(tabId, { url });
@@ -553,7 +563,7 @@ async function handleNavigate({ url, tabId, waitFor, stealth }) {
     tab = await chrome.tabs.create({ url });
   }
   // Newly created tab: arm it as well so a ceremony on load is intercepted.
-  if (!tabId) await autoArmWebauthn(tab.id);
+  if (!tabId) await guardOsDialogs(tab.id);
 
   // Wait for page load
   const preNavTs = Date.now();
@@ -707,7 +717,7 @@ async function handleClick({ selector, x, y, tabId, button, clickCount: count, p
   await ensureDebugger(tid);
   // A click can redirect straight into an IdP that prompts for a passkey while
   // loading, so arm BEFORE the click dispatches (no-op once already armed).
-  await autoArmWebauthn(tid);
+  await guardOsDialogs(tid);
 
   let clickX = x;
   let clickY = y;
@@ -1680,7 +1690,7 @@ async function handleKeypress({ key, modifiers, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
   // Enter can submit a login form that redirects into a passkey prompt.
-  await autoArmWebauthn(tid);
+  await guardOsDialogs(tid);
 
   const mods = modifiers || [];
   let modifierFlags =
@@ -2890,19 +2900,35 @@ async function setWebauthnAuto(enabled) {
   return webauthnAutoCache;
 }
 
-/** Best-effort arm of a tab's virtual authenticator. Never throws. */
-async function autoArmWebauthn(tabId) {
+/**
+ * Automatic OS-dialog guard for a tab the agent is driving.
+ *
+ * While an agent is connected and issuing commands, native prompts block or
+ * steal the flow and none of them can be read or clicked by an extension:
+ *   - the WebAuthn/passkey dialog (Windows Hello, security key, Okta/WAM broker),
+ *   - the HTTP Basic/Digest prompt,
+ *   - Chrome's download Keep/Discard bubble and downloads shelf.
+ * The only way to keep the agent in control is to stop them appearing at all:
+ * this attaches the debugger (which also applies Browser.setDownloadBehavior and
+ * hides the downloads UI), arms the CDP virtual authenticator for passkeys, and
+ * turns on auth-challenge interception so Chrome never renders its own prompt.
+ *
+ * Idempotent and best-effort - it must never throw, because a failed guard must
+ * not break the command that triggered it. Skipped entirely under stealth.
+ */
+async function guardOsDialogs(tabId) {
   try {
     if (!tabId) return false;
-    if (webauthnAuthenticators.has(tabId)) return true;
     if (!(await webauthnAutoEnabled())) return false;
     const tab = await chrome.tabs.get(tabId);
     const url = (tab && tab.url) || "";
     if (url && !isScriptableUrl(url)) return false;
+    await ensureDebugger(tabId);
     await ensureVirtualAuthenticator(tabId);
+    if (!fetchAuthEnabled.has(tabId)) await setFetchAuth(tabId, true, true);
     return true;
   } catch {
-    return false; // arming must never break the actual command
+    return false; // the guard must never break the actual command
   }
 }
 
@@ -4254,12 +4280,20 @@ async function handleWindow({ action, url, windowId }) {
 // (Fetch.authRequired) and network interception (Fetch.requestPaused parking).
 // ============================================================================
 
-const fetchConfigByTab = new Map(); // tabId -> { auth: boolean, patterns: string[] | null }
+const fetchConfigByTab = new Map(); // tabId -> { auth: boolean, patterns: string[] | null, authOnly: boolean }
 
 async function applyFetchConfig(tabId) {
-  const cfg = fetchConfigByTab.get(tabId) || { auth: false, patterns: null };
+  const cfg = fetchConfigByTab.get(tabId) || { auth: false, patterns: null, authOnly: false };
   const params = { handleAuthRequests: cfg.auth };
-  if (cfg.patterns && cfg.patterns.length) params.patterns = cfg.patterns.map((p) => ({ urlPattern: p }));
+  if (cfg.patterns && cfg.patterns.length) {
+    params.patterns = cfg.patterns.map((p) => ({ urlPattern: p }));
+  } else if (cfg.authOnly) {
+    // Auth-challenge interception ONLY. handleAuthRequests is independent of
+    // patterns, so an explicit (empty) pattern list means no ordinary request is
+    // paused: no per-request round-trip and no chance of stalling the network,
+    // while 401/407 challenges still reach us instead of raising a native prompt.
+    params.patterns = [];
+  }
   await sendDebuggerCommand(tabId, "Fetch.enable", params);
   let enabled = cdpDomainEnabled.get(tabId);
   if (!enabled) {
@@ -4271,9 +4305,12 @@ async function applyFetchConfig(tabId) {
   else fetchAuthEnabled.delete(tabId);
 }
 
-async function setFetchAuth(tabId, auth) {
-  const cfg = fetchConfigByTab.get(tabId) || { auth: false, patterns: null };
+async function setFetchAuth(tabId, auth, authOnly) {
+  const cfg = fetchConfigByTab.get(tabId) || { auth: false, patterns: null, authOnly: false };
   cfg.auth = auth;
+  // Only change the mode when the caller asks, so the auth tool never silently
+  // downgrades the guard's no-pause mode (or vice versa).
+  if (authOnly !== undefined) cfg.authOnly = authOnly === true;
   fetchConfigByTab.set(tabId, cfg);
   await applyFetchConfig(tabId);
 }
