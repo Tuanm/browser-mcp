@@ -59,6 +59,7 @@ const tabSetOverrides = new Map(); // tabId -> {geo?, offline?, media?} from set
 const pendingAuth = new Map(); // requestId -> { tabId, url, scheme, realm }
 const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status lookup)
 const webauthnAuthenticators = new Map(); // tabId -> authenticatorId (CDP virtual authenticator for passkeys)
+let agentActiveUntil = 0; // ms epoch; while in the future the agent is actively driving
 const recentDownloads = []; // Recent download events (from CDP Browser.downloadWillBegin), max 20
 const cdpCompletedUrls = new Map(); // url -> timestamp — CDP-confirmed download completions (separate from recentDownloads to survive consumeRecentDownload splice)
 
@@ -108,6 +109,13 @@ chrome.debugger.onDetach.addListener((source) => {
     wsUrls.delete(source.tabId);
     cancelAgentUiHide(source.tabId);
   }
+});
+
+// Auto-arm tabs the AGENT opens while it is driving (e.g. an SSO popup to Okta),
+// so a WebAuthn ceremony fired on load is intercepted. Gated on agent activity
+// so ordinary user tabs are never touched.
+chrome.tabs.onCreated.addListener((tab) => {
+  if (tab && tab.id != null && Date.now() < agentActiveUntil) autoArmWebauthn(tab.id);
 });
 
 // ============================================================================
@@ -362,6 +370,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ============================================================================
 
 async function handleCommand(id, method, params) {
+  // While a command is in flight (plus a short grace) the agent is "driving":
+  // tabs it opens in that window get their virtual authenticator auto-armed.
+  agentActiveUntil = Date.now() + 15000;
   // Show glow indicator on target tab
   let indicatorTab = params?.tabId || null;
   if (!indicatorTab) {
@@ -529,13 +540,20 @@ async function dispatchCommand(method, params) {
 
 // --- Navigate ---
 
-async function handleNavigate({ url, tabId, waitFor }) {
+async function handleNavigate({ url, tabId, waitFor, stealth }) {
+  // Arm the virtual authenticator BEFORE navigating: an IdP the agent is
+  // redirected into (Okta/Entra) can fire a WebAuthn ceremony while loading, and
+  // a CDP virtual authenticator survives the cross-origin redirect in the tab.
+  // Skipped in stealth mode, which must not attach the debugger.
+  if (!stealth) await autoArmWebauthn(tabId);
   let tab;
   if (tabId) {
     tab = await chrome.tabs.update(tabId, { url });
   } else {
     tab = await chrome.tabs.create({ url });
   }
+  // Newly created tab: arm it as well so a ceremony on load is intercepted.
+  if (!tabId) await autoArmWebauthn(tab.id);
 
   // Wait for page load
   const preNavTs = Date.now();
@@ -687,6 +705,9 @@ function raceWithDialog(tid, promise) {
 async function handleClick({ selector, x, y, tabId, button, clickCount: count, pierce, intercept_file_chooser }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
+  // A click can redirect straight into an IdP that prompts for a passkey while
+  // loading, so arm BEFORE the click dispatches (no-op once already armed).
+  await autoArmWebauthn(tid);
 
   let clickX = x;
   let clickY = y;
@@ -1658,6 +1679,8 @@ function resolvePressKey(k) {
 async function handleKeypress({ key, modifiers, tabId }) {
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
+  // Enter can submit a login form that redirects into a passkey prompt.
+  await autoArmWebauthn(tid);
 
   const mods = modifiers || [];
   let modifierFlags =
@@ -2804,60 +2827,129 @@ async function handleAuth({ action, username, password, tabId, vaultName }) {
 // Credentials live only in this CDP session; a generated private key is created
 // in-browser and never leaves it.
 
+/** Install (or reuse) a CDP virtual authenticator on a tab. Idempotent. */
+async function ensureVirtualAuthenticator(tid, opts) {
+  const o = opts || {};
+  await ensureDebugger(tid);
+  // enableUI:false - the virtual authenticator answers the ceremony, so Chrome
+  // must not offer its own WebAuthn UI (nor hand the request to the OS).
+  await ensureCdpDomain(tid, "WebAuthn", { enableUI: false });
+  const existing = webauthnAuthenticators.get(tid);
+  if (existing) return existing;
+  const options = {
+    protocol: o.protocol === "u2f" ? "u2f" : "ctap2",
+    transport: ["usb", "nfc", "ble", "internal"].indexOf(o.transport) !== -1 ? o.transport : "internal",
+    hasResidentKey: o.hasResidentKey !== false,
+    hasUserVerification: o.hasUserVerification !== false,
+    // isUserVerified + automatic presence => ceremonies complete with no prompt.
+    isUserVerified: o.isUserVerified !== false,
+    automaticPresenceSimulation: o.automaticPresenceSimulation !== false,
+  };
+  const res = await sendDebuggerCommand(tid, "WebAuthn.addVirtualAuthenticator", { options });
+  const authenticatorId = res && res.authenticatorId;
+  webauthnAuthenticators.set(tid, authenticatorId);
+  // Some Chrome builds only honour these as explicit setters.
+  await sendDebuggerCommand(tid, "WebAuthn.setAutomaticPresenceSimulation", {
+    authenticatorId,
+    enabled: options.automaticPresenceSimulation,
+  }).catch(() => {});
+  await sendDebuggerCommand(tid, "WebAuthn.setUserVerified", {
+    authenticatorId,
+    isUserVerified: options.isUserVerified,
+  }).catch(() => {});
+  return authenticatorId;
+}
+
+// --- Automatic passkey handling -------------------------------------------
+//
+// The agent cannot know in advance that a click will redirect into an IdP that
+// fires a WebAuthn ceremony while loading (Okta, Entra, ...). With auto mode on
+// (default) the extension installs the virtual authenticator on the tab BEFORE
+// the click/navigation, and it rides along across the redirect - the ceremony is
+// then answered in-renderer and the OS prompt never opens. Disable with
+// webauthn action=auto enabled=false.
+let webauthnAutoCache = null;
+
+async function webauthnAutoEnabled() {
+  if (webauthnAutoCache === null) {
+    try {
+      const v = await chrome.storage.local.get("webauthnAuto");
+      webauthnAutoCache = v.webauthnAuto !== false; // default ON
+    } catch {
+      webauthnAutoCache = true;
+    }
+  }
+  return webauthnAutoCache;
+}
+
+async function setWebauthnAuto(enabled) {
+  webauthnAutoCache = !!enabled;
+  try {
+    await chrome.storage.local.set({ webauthnAuto: webauthnAutoCache });
+  } catch {}
+  return webauthnAutoCache;
+}
+
+/** Best-effort arm of a tab's virtual authenticator. Never throws. */
+async function autoArmWebauthn(tabId) {
+  try {
+    if (!tabId) return false;
+    if (webauthnAuthenticators.has(tabId)) return true;
+    if (!(await webauthnAutoEnabled())) return false;
+    const tab = await chrome.tabs.get(tabId);
+    const url = (tab && tab.url) || "";
+    if (url && !isScriptableUrl(url)) return false;
+    await ensureVirtualAuthenticator(tabId);
+    return true;
+  } catch {
+    return false; // arming must never break the actual command
+  }
+}
+
 async function handleWebauthn(params) {
   const p = params || {};
+
+  // Toggle auto mode without touching the debugger.
+  if (p.action === "auto") {
+    const enabled = await setWebauthnAuto(p.enabled !== false);
+    return {
+      auto: enabled,
+      hint: enabled
+        ? "Auto mode ON: the virtual authenticator is installed before agent clicks/navigations, so a redirect into an IdP that fires WebAuthn on load does not open the OS dialog."
+        : "Auto mode OFF: passkey ceremonies use the OS authenticator again.",
+    };
+  }
+
   const tid = p.tabId || (await getActiveTabId());
   await ensureDebugger(tid);
 
   if (p.action === "enable") {
-    // enableUI:false - the virtual authenticator answers the ceremony, so
-    // Chrome must not offer its own WebAuthn UI (nor hand off to the OS).
-    await ensureCdpDomain(tid, "WebAuthn", { enableUI: false });
     const existing = webauthnAuthenticators.get(tid);
     if (existing) {
       await sendDebuggerCommand(tid, "WebAuthn.removeVirtualAuthenticator", { authenticatorId: existing }).catch(() => {});
       webauthnAuthenticators.delete(tid);
     }
-    const options = {
-      protocol: p.protocol === "u2f" ? "u2f" : "ctap2",
-      transport: ["usb", "nfc", "ble", "internal"].indexOf(p.transport) !== -1 ? p.transport : "internal",
-      hasResidentKey: p.hasResidentKey !== false,
-      hasUserVerification: p.hasUserVerification !== false,
-      // isUserVerified + automatic presence => ceremonies complete with no prompt.
-      isUserVerified: p.isUserVerified !== false,
-      automaticPresenceSimulation: p.automaticPresenceSimulation !== false,
-    };
-    const res = await sendDebuggerCommand(tid, "WebAuthn.addVirtualAuthenticator", { options });
-    const authenticatorId = res && res.authenticatorId;
-    webauthnAuthenticators.set(tid, authenticatorId);
-    // Some Chrome builds only honour these as explicit setters.
-    await sendDebuggerCommand(tid, "WebAuthn.setAutomaticPresenceSimulation", {
-      authenticatorId,
-      enabled: options.automaticPresenceSimulation,
-    }).catch(() => {});
-    await sendDebuggerCommand(tid, "WebAuthn.setUserVerified", {
-      authenticatorId,
-      isUserVerified: options.isUserVerified,
-    }).catch(() => {});
+    const authenticatorId = await ensureVirtualAuthenticator(tid, p);
     return {
       tabId: tid,
       enabled: true,
+      auto: await webauthnAutoEnabled(),
       authenticatorId,
-      options,
-      hint: "Passkey prompts (including the Windows Hello / security-key OS dialog) are now answered by a virtual authenticator, so they will not appear. Use action=add to preload an existing account credential.",
+      hint: "Passkey prompts (including the Windows Hello / security-key OS dialog) are now answered by a virtual authenticator, so they will not appear. Use action=add to preload an existing account credential. A ceremony that needs a credential held only by the platform authenticator (your real Windows Hello passkey) still reaches the OS - enroll a passkey into this virtual authenticator, or preload its key with action=add.",
     };
   }
 
   const authenticatorId = webauthnAuthenticators.get(tid);
 
   if (p.action === "status") {
-    if (!authenticatorId) return { tabId: tid, enabled: false };
+    const auto = await webauthnAutoEnabled();
+    if (!authenticatorId) return { tabId: tid, enabled: false, auto };
     let credentials = [];
     try {
       const r = await sendDebuggerCommand(tid, "WebAuthn.getCredentials", { authenticatorId });
       credentials = (r && r.credentials) || [];
     } catch {}
-    return { tabId: tid, enabled: true, authenticatorId, credentials: credentials.map(summarizeCredential) };
+    return { tabId: tid, enabled: true, auto, authenticatorId, credentials: credentials.map(summarizeCredential) };
   }
 
   if (!authenticatorId)

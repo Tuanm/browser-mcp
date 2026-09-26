@@ -66,6 +66,18 @@ Encrypted in-browser credential store: master password → PBKDF2 → AES-256-GC
 | `fill` | Fill a login form from the vault — secrets never leave the extension |
 | `auth` (`vault_name`) | Supply HTTP Basic/Digest credentials from the unlocked vault instead of tool arguments |
 
+### Passkeys / WebAuthn
+
+`webauthn` installs a CDP virtual authenticator per tab, so a passkey ceremony is answered inside the renderer instead of being handed to the OS (Windows Hello, security key, Okta/WAM).
+
+| Action | Purpose |
+| --- | --- |
+| `enable`, `disable`, `status` | Install / remove / inspect the virtual authenticator for a tab |
+| `auto` | Auto-arm mode (**default on**): the authenticator is armed *before* every agent click/navigation, and it survives the redirect — so a click that bounces into an Okta/Entra page which fires WebAuthn while loading cannot open the OS dialog. Toggle with `enabled: false` |
+| `add`, `list`, `remove`, `clear` | Manage credentials (resident passkeys). `add` generates an ES256 key in-browser when `private_key` is omitted |
+
+An OS dialog that is *already* on screen cannot be read or clicked by any extension — the virtual authenticator stops it from appearing for ceremonies it can satisfy. A `get()` that needs a credential held only by the platform authenticator (your real Windows Hello passkey) still reaches the OS; enroll a passkey into the virtual authenticator, or preload its key with `add`.
+
 ## Local server
 
 ```bash

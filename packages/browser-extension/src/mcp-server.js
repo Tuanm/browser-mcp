@@ -1064,9 +1064,10 @@ export function createMcpHandler(dispatch) {
     {
       name: "webauthn",
       description:
-        "Drive WebAuthn/passkey ceremonies in-page with a CDP virtual authenticator so the native OS prompt (Windows Hello, security key, Okta/WAM broker) is never shown - an OS dialog is a native window that no extension can read or click. Actions: enable, status, add, list, remove, clear, disable. enable installs a virtual authenticator with automatic presence + user verification (passkey prompts are then answered silently); add preloads an existing account's credential for rpId (a fresh ES256 key is generated in-browser when private_key is omitted).",
+        "Drive WebAuthn/passkey ceremonies in-page with a CDP virtual authenticator so the native OS prompt (Windows Hello, security key, Okta/WAM broker) is never shown - an OS dialog is a native window that no extension can read or click. Actions: enable, status, auto, add, list, remove, clear, disable. enable installs a virtual authenticator with automatic presence + user verification (passkey prompts are then answered silently); auto (default ON) arms the tab's virtual authenticator before every agent click/navigation so a redirect into an Okta/Entra page that fires WebAuthn on load cannot open the OS dialog; add preloads an existing account's credential for rpId (a fresh ES256 key is generated in-browser when private_key is omitted).",
       parameters: {
-        action: { type: "string", enum: ["enable", "status", "add", "list", "remove", "clear", "disable"] },
+        action: { type: "string", enum: ["enable", "status", "auto", "add", "list", "remove", "clear", "disable"] },
+        enabled: { type: "boolean" },
         rp_id: { type: "string" },
         credential_id: { type: "string" },
         private_key: { type: "string" },
@@ -1085,6 +1086,7 @@ export function createMcpHandler(dispatch) {
       run: async (a) => {
         const r = await dispatch("webauthn", {
           action: a.action,
+          enabled: a.enabled,
           rpId: a.rp_id,
           credentialId: a.credential_id,
           privateKey: a.private_key,

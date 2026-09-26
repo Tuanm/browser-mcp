@@ -1639,13 +1639,14 @@ const tools: Record<string, ToolDef> = {
 
   webauthn: {
     description:
-      "Drive WebAuthn/passkey ceremonies in-page with a CDP virtual authenticator so the native OS prompt (Windows Hello, security key, Okta/WAM broker) is never shown - an OS dialog is a native window that no extension can read or click. Actions: enable, status, add, list, remove, clear, disable. enable installs a virtual authenticator with automatic presence + user verification (passkey prompts are then answered silently); add preloads an existing account's credential for rp_id (a fresh ES256 key is generated in-browser when private_key is omitted).",
+      "Drive WebAuthn/passkey ceremonies in-page with a CDP virtual authenticator so the native OS prompt (Windows Hello, security key, Okta/WAM broker) is never shown - an OS dialog is a native window that no extension can read or click. Actions: enable, status, auto, add, list, remove, clear, disable. enable installs a virtual authenticator with automatic presence + user verification (passkey prompts are then answered silently); auto (default ON) arms the tab's virtual authenticator before every agent click/navigation so a redirect into an Okta/Entra page that fires WebAuthn on load cannot open the OS dialog; add preloads an existing account's credential for rp_id (a fresh ES256 key is generated in-browser when private_key is omitted).",
     parameters: {
       action: {
         type: "string",
-        description: '"enable", "status", "add", "list", "remove", "clear", or "disable"',
-        enum: ["enable", "status", "add", "list", "remove", "clear", "disable"],
+        description: '"enable", "status", "auto", "add", "list", "remove", "clear", or "disable"',
+        enum: ["enable", "status", "auto", "add", "list", "remove", "clear", "disable"],
       },
+      enabled: { type: "boolean", description: "Auto mode toggle for action 'auto' (default true)" },
       rp_id: { type: "string", description: "Relying-party id / effective domain (required for 'add')" },
       credential_id: { type: "string", description: "Base64 credential id (for 'add'/'remove'; generated when omitted)" },
       private_key: { type: "string", description: "Base64 PKCS#8 private key (for 'add'; generated when omitted)" },
@@ -1668,6 +1669,7 @@ const tools: Record<string, ToolDef> = {
       try {
         const result = await sendBrowserCommand("webauthn", {
           action: args.action,
+          enabled: args.enabled,
           rpId: args.rp_id,
           credentialId: args.credential_id,
           privateKey: args.private_key,
