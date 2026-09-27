@@ -55,7 +55,7 @@ const DIALOG_GUARD_METHODS = new Set([
   "execute",
 ]);
 
-/** Methods with a genuine CDP-free implementation in dispatchStealthCommand. */
+/** Methods with a genuine CDP-free implementation (dispatchCdpFree). */
 const CDP_FREE_FALLBACK_METHODS = new Set([
   "click",
   "type",
@@ -65,6 +65,15 @@ const CDP_FREE_FALLBACK_METHODS = new Set([
   "execute",
   "screenshot",
   "extract",
+  "check",
+  "uncheck",
+  "styles",
+  "frames",
+  "file_upload",
+  "drag",
+  "console",
+  "errors",
+  "dialog",
 ]);
 
 /** Turn a missing-chrome.debugger failure into actionable guidance. */
@@ -139,7 +148,10 @@ const wsUrls = new Map(); // tabId -> Map<webSocketId, url>
 const notifyUrlMap = new Map(); // notificationId -> url to open on click
 
 // Clean up debugger state on detach (registered once at module scope)
-chrome.debugger.onDetach.addListener((source) => {
+// Guarded: chrome.debugger does not exist on WebKit, and an unguarded top-level
+// access would abort service-worker evaluation entirely (no bridge, no tools).
+if (chrome.debugger && chrome.debugger.onDetach)
+  chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId) {
     debuggerAttached.delete(source.tabId);
     cdpDomainEnabled.delete(source.tabId);
@@ -529,6 +541,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ received: true });
   }
 
+  // Page instrumentation relayed from the MAIN world by page-instrument.js
+  // (browsers without chrome.debugger). Only the sender's own tab is ever
+  // touched, and the relay has already validated the per-document nonce.
+  if (message.type === "page-instrument" && sender && sender.tab && sender.tab.id != null) {
+    ingestPageInstrumentEvent(sender.tab.id, message.kind, message.payload);
+    return false;
+  }
+  // The relay asks for the current dialog answers as it loads, so a choice made
+  // earlier survives navigation.
+  if (message.type === "dialog-defaults-request") {
+    chrome.storage.local
+      .get("dialogAuto")
+      .then((cfg) => {
+        const auto = cfg.dialogAuto || { confirm: false, prompt: null };
+        sendResponse({ confirm: !!auto.confirm, prompt: auto.prompt === undefined ? null : auto.prompt });
+      })
+      .catch(() => sendResponse({ confirm: false, prompt: null }));
+    return true;
+  }
+
   // ---- Popup-driven recording (invocation context: user clicked the toolbar) ----
   // Clicking the toolbar icon grants the activeTab-like invocation that
   // chrome.tabCapture requires. These handlers start/stop recording from that
@@ -710,13 +742,477 @@ async function handleCommand(id, method, params) {
   }
 }
 
+// ============================================================================
+// CDP-free implementations (chrome.scripting only)
+// ============================================================================
+//
+// Used when the browser has no chrome.debugger (WebKit: Safari, Orion on
+// iPadOS). Nothing here modifies runDispatchSwitch or dispatchStealthCommand, so
+// Chrome's normal and stealth paths are untouched: this code is only reachable
+// through dispatchCdpFree below.
+
+/** Unwrap an injected function's result, turning a reported error into a throw. */
+function cdpFreeResult(results, what) {
+  const r = results && results[0] && results[0].result;
+  if (!r) throw new Error(what + " failed: no result from the page");
+  if (r.error) throw new Error(r.error);
+  return r;
+}
+
+async function cdpFreeCheck(params, want) {
+  const src = params || {};
+  const tid = src.tabId || src.tab_id || (await getActiveTabId());
+  const action = want ? "check" : "uncheck";
+  if (!src.selector) throw new Error(action + " requires a selector");
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: (sel, wantChecked) => {
+      const el = document.querySelector(sel);
+      if (!el) return { error: "Element not found: " + sel };
+      const type = String(el.type || "").toLowerCase();
+      if (el.tagName !== "INPUT" || (type !== "checkbox" && type !== "radio")) {
+        return { error: "Element is not a checkbox/radio: <" + el.tagName + ' type="' + String(el.type || "") + '">' };
+      }
+      if (el.disabled) return { error: "Element is disabled: " + sel };
+      const before = !!el.checked;
+      if (before === wantChecked) return { checked: before, changed: false };
+      // A real click keeps the page's own listeners, validation and change
+      // events intact, and gets radio-group behaviour for free.
+      el.click();
+      if (!!el.checked !== wantChecked) {
+        // Frameworks that swallow synthetic clicks: set the property and emit
+        // the standard input/change pair so state and listeners stay in sync.
+        el.checked = wantChecked;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return { checked: !!el.checked, changed: true };
+    },
+    args: [src.selector, !!want],
+  });
+  const r = cdpFreeResult(results, action);
+  return { tabId: tid, checked: r.checked, changed: r.changed };
+}
+
+async function cdpFreeStyles(params) {
+  const src = params || {};
+  const tid = src.tab_id || src.tabId || (await getActiveTabId());
+  if (!src.selector) throw new Error("selector is required");
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: (sel, prop) => {
+      const el = document.querySelector(sel);
+      if (!el) return { error: "Element not found: " + sel };
+      const cs = getComputedStyle(el);
+      const out = {};
+      if (prop) {
+        out[prop] = cs.getPropertyValue(prop);
+        return { computed: out };
+      }
+      const names = [];
+      for (let i = 0; i < cs.length; i++) names.push(cs[i]);
+      names.sort();
+      for (const n of names) out[n] = cs.getPropertyValue(n);
+      return { computed: out };
+    },
+    args: [src.selector, src.property || null],
+  });
+  const r = cdpFreeResult(results, "styles");
+  return {
+    tab_id: tid,
+    selector: src.selector,
+    computed: r.computed,
+    matched_rules: [],
+    note: "matched CSS rules need the Chrome DevTools Protocol, which this browser does not provide - computed values only",
+  };
+}
+
+async function cdpFreeFrames(params) {
+  const src = params || {};
+  const tid = src.tabId || src.tab_id || (await getActiveTabId());
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid, allFrames: true },
+    world: "MAIN",
+    func: () => {
+      let depth = 0;
+      let crossOriginParent = false;
+      try {
+        let w = window;
+        while (w !== w.parent && depth <= 16) {
+          w = w.parent;
+          depth++;
+        }
+      } catch {
+        crossOriginParent = true;
+      }
+      return {
+        url: location.href,
+        name: window.name || "",
+        securityOrigin: location.origin,
+        depth: depth,
+        crossOriginParent: crossOriginParent,
+      };
+    },
+  });
+  const frames = (results || [])
+    .map((entry) => {
+      const res = entry.result || {};
+      return {
+        frameId: entry.frameId,
+        parentFrameId: null, // only exposed through the CDP frame tree
+        url: res.url || "",
+        name: res.name || "",
+        securityOrigin: res.securityOrigin || "",
+        depth: res.depth || 0,
+      };
+    })
+    .sort((a, b) => a.depth - b.depth);
+  return { tabId: tid, frames: frames, note: "parentFrameId requires the Chrome DevTools Protocol" };
+}
+
+async function cdpFreeFileUpload(params) {
+  const src = params || {};
+  const tid = src.tabId || src.tab_id || (await getActiveTabId());
+  if (!src.selector) throw new Error("file_upload requires a selector for the <input type=file>");
+  if (!src.content) {
+    throw new Error(
+      "file_upload by fileId needs the local server file store, which this browser build cannot reach; pass content (base64) instead",
+    );
+  }
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: (sel, b64, name) => {
+      const el = document.querySelector(sel);
+      if (!el) return { error: "Element not found: " + sel };
+      if (el.tagName !== "INPUT" || String(el.type || "").toLowerCase() !== "file") {
+        return { error: "Element is not a file input: <" + el.tagName + " type=" + String(el.type || "") + ">" };
+      }
+      let bytes;
+      try {
+        const bin = atob(String(b64).replace(/^data:[^,]*,/, ""));
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      } catch {
+        return { error: "content is not valid base64" };
+      }
+      const file = new File([bytes], name, { type: "application/octet-stream" });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      el.files = dt.files;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { files: el.files ? el.files.length : 0, name: file.name, size: file.size };
+    },
+    args: [src.selector, src.content, src.filename || "upload.bin"],
+  });
+  const r = cdpFreeResult(results, "file_upload");
+  return { tabId: tid, selector: src.selector, uploaded: r };
+}
+
+async function cdpFreeDrag(params) {
+  const src = params || {};
+  const tid = src.tabId || src.tab_id || (await getActiveTabId());
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tid },
+    world: "MAIN",
+    func: (fromSel, fx, fy, toSel, tx, ty, wantSteps) => {
+      const at = (el) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      };
+      const fromEl = fromSel ? document.querySelector(fromSel) : null;
+      const toEl = toSel ? document.querySelector(toSel) : null;
+      if (fromSel && !fromEl) return { error: "Source not found: " + fromSel };
+      if (toSel && !toEl) return { error: "Target not found: " + toSel };
+      const a = fromEl ? at(fromEl) : { x: fx, y: fy };
+      const b = toEl ? at(toEl) : { x: tx, y: ty };
+      if (a.x == null || b.x == null) return { error: "drag needs selectors or coordinates for both ends" };
+      const hit = (pt) => document.elementFromPoint(pt.x, pt.y) || document.body;
+      const fire = (pt, type, down) =>
+        hit(pt).dispatchEvent(
+          new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+            clientX: pt.x,
+            clientY: pt.y,
+            screenX: pt.x,
+            screenY: pt.y,
+            button: 0,
+            buttons: down ? 1 : 0,
+          }),
+        );
+      const firePointer = (pt, type) => {
+        try {
+          hit(pt).dispatchEvent(
+            new PointerEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              clientX: pt.x,
+              clientY: pt.y,
+              pointerId: 1,
+              pointerType: "mouse",
+              isPrimary: true,
+              button: 0,
+              buttons: type === "pointerup" ? 0 : 1,
+            }),
+          );
+        } catch {}
+      };
+      const steps = Math.max(2, Math.min(wantSteps || 10, 40));
+      fire(a, "mousedown", true);
+      firePointer(a, "pointerdown");
+      for (let i = 1; i <= steps; i++) {
+        const pt = { x: a.x + ((b.x - a.x) * i) / steps, y: a.y + ((b.y - a.y) * i) / steps };
+        fire(pt, "mousemove", true);
+        firePointer(pt, "pointermove");
+      }
+      fire(b, "mouseup", false);
+      firePointer(b, "pointerup");
+      // Native HTML5 drag-and-drop listeners only fire for draggable sources.
+      let nativeDnd = false;
+      if (fromEl && toEl && fromEl.getAttribute("draggable") === "true") {
+        nativeDnd = true;
+        try {
+          const dt = new DataTransfer();
+          const ev = (type, el) => new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
+          fromEl.dispatchEvent(ev("dragstart", fromEl));
+          toEl.dispatchEvent(ev("dragenter", toEl));
+          toEl.dispatchEvent(ev("dragover", toEl));
+          toEl.dispatchEvent(ev("drop", toEl));
+          fromEl.dispatchEvent(ev("dragend", fromEl));
+        } catch {}
+      }
+      return { from: a, to: b, steps: steps, nativeDnd: nativeDnd };
+    },
+    args: [
+      src.fromSelector || null,
+      src.fromX != null ? src.fromX : null,
+      src.fromY != null ? src.fromY : null,
+      src.toSelector || null,
+      src.toX != null ? src.toX : null,
+      src.toY != null ? src.toY : null,
+      src.steps || 10,
+    ],
+  });
+  const r = cdpFreeResult(results, "drag");
+  return { tabId: tid, from: r.from, to: r.to, steps: r.steps, native_dnd: r.nativeDnd };
+}
+
+/**
+ * Register the page-side console/error/dialog capture. Chrome and Edge get all
+ * of this from the DevTools Protocol, so registration happens ONLY on browsers
+ * without chrome.debugger - Chrome behaviour is completely unaffected.
+ */
+const PAGE_INSTRUMENT_IDS = ["bmcp-page-instrument-relay", "bmcp-page-instrument-main"];
+let pageInstrumentRegistered = false;
+
+async function registerPageInstrumentation() {
+  if (HAS_DEBUGGER) return false;
+  if (!chrome.scripting || typeof chrome.scripting.registerContentScripts !== "function") return false;
+  if (pageInstrumentRegistered) return true;
+  try {
+    const existing = await chrome.scripting.getRegisteredContentScripts().catch(() => []);
+    const have = new Set((existing || []).map((s) => s.id));
+    const missing = [];
+    // The relay must run before the shim: it mints the nonce the shim needs.
+    if (!have.has(PAGE_INSTRUMENT_IDS[0])) {
+      missing.push({
+        id: PAGE_INSTRUMENT_IDS[0],
+        matches: ["<all_urls>"],
+        js: ["src/page-instrument.js"],
+        runAt: "document_start",
+        allFrames: true,
+        persistAcrossSessions: true,
+      });
+    }
+    if (!have.has(PAGE_INSTRUMENT_IDS[1])) {
+      missing.push({
+        id: PAGE_INSTRUMENT_IDS[1],
+        matches: ["<all_urls>"],
+        js: ["src/page-instrument.js"],
+        runAt: "document_start",
+        allFrames: true,
+        world: "MAIN",
+        persistAcrossSessions: true,
+      });
+    }
+    if (missing.length) await chrome.scripting.registerContentScripts(missing);
+    pageInstrumentRegistered = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Fold a relayed page-instrument event into the very same maps CDP fills. */
+function ingestPageInstrumentEvent(tabId, kind, payload) {
+  const p = payload || {};
+  if (kind === "console") {
+    pushCapped(
+      consoleLogs,
+      tabId,
+      { type: p.type || "log", text: String(p.text || "").slice(0, 1000), ts: Date.now() },
+      100,
+    );
+    return;
+  }
+  if (kind === "error") {
+    pushCapped(
+      pageErrors,
+      tabId,
+      {
+        text: String(p.text || "Unknown error").slice(0, 500),
+        url: p.url || "",
+        line: p.line != null ? p.line : null,
+        column: p.column != null ? p.column : null,
+        ts: Date.now(),
+      },
+      50,
+    );
+    return;
+  }
+  if (kind === "dialog") {
+    pendingDialogs.set(tabId, {
+      type: p.type,
+      message: p.message,
+      defaultPrompt: p.defaultPrompt,
+      answered: true,
+      via: "page-instrument",
+    });
+  }
+}
+
+async function cdpFreeConsole(params) {
+  const src = params || {};
+  const tid = src.tabId || src.tab_id || (await getActiveTabId());
+  if (src.action === "clear") {
+    consoleLogs.delete(tid);
+    return { cleared: true };
+  }
+  let logs = consoleLogs.get(tid) || [];
+  if (Array.isArray(src.types) && src.types.length) logs = logs.filter((l) => src.types.includes(l.type));
+  if (src.filter) {
+    logs = logs.filter((l) => String(l.text || "").toLowerCase().includes(String(src.filter).toLowerCase()));
+  }
+  const captured = logs.length > 0;
+  if (src.clear) consoleLogs.delete(tid);
+  const out = logs.slice(-100);
+  return {
+    count: out.length,
+    messages: out,
+    note: captured
+      ? ""
+      : "No console output captured yet. This browser captures it with an injected page script that applies to new page loads - reload the tab and retry.",
+  };
+}
+
+async function cdpFreeErrors(params) {
+  const src = params || {};
+  const tid = src.tabId || src.tab_id || (await getActiveTabId());
+  if (src.action === "clear") {
+    pageErrors.delete(tid);
+    return { cleared: true };
+  }
+  let errors = pageErrors.get(tid) || [];
+  if (src.filter) {
+    errors = errors.filter((e) => String(e.text || "").toLowerCase().includes(String(src.filter).toLowerCase()));
+  }
+  if (src.clear) pageErrors.delete(tid);
+  return {
+    count: errors.length,
+    errors: errors.slice(-50),
+    note: errors.length
+      ? ""
+      : "No page errors captured yet. This browser captures them with an injected page script that applies to new page loads - reload the tab and retry.",
+  };
+}
+
+async function cdpFreeDialog(params) {
+  const src = params || {};
+  const tid = src.tabId || src.tab_id || (await getActiveTabId());
+
+  if (src.action === "auto") {
+    const confirm = src.confirm === true;
+    const prompt = src.promptText !== undefined ? src.promptText : null;
+    try {
+      await chrome.storage.local.set({ dialogAuto: { confirm: confirm, prompt: prompt } });
+    } catch {}
+    let reached = 0;
+    try {
+      await chrome.tabs.sendMessage(tid, { type: "dialog-defaults", confirm: confirm, prompt: prompt });
+      reached = 1;
+    } catch {}
+    return {
+      tabId: tid,
+      auto: true,
+      confirm: confirm,
+      prompt: prompt,
+      frames_reached: reached,
+      note: "Stored for this tab and future page loads. Without the DevTools Protocol a JS dialog cannot be paused, so answers must be chosen in advance.",
+    };
+  }
+
+  if (src.action === "clear") {
+    pendingDialogs.delete(tid);
+    return { tabId: tid, cleared: true };
+  }
+
+  const dialog = pendingDialogs.get(tid);
+  if (!dialog) return { tabId: tid, handled: false, message: "No dialog has been recorded on this tab" };
+  return {
+    tabId: tid,
+    handled: false,
+    pending: false,
+    type: dialog.type,
+    message: dialog.message,
+    defaultPrompt: dialog.defaultPrompt,
+    answered_with_default: true,
+    note: "This browser has no DevTools Protocol, so a JS dialog cannot be paused: it was answered immediately with the safe default (alert dismissed, confirm false, prompt null) and recorded here. Choose the answers in advance with dialog action=auto, or use Chrome/Edge for interactive handling.",
+  };
+}
+
+/**
+ * CDP-free dispatch, used when the browser has no chrome.debugger. Falls back to
+ * the existing stealth implementations, which are also chrome.scripting only.
+ */
+async function dispatchCdpFree(method, params) {
+  switch (method) {
+    case "check":
+      return cdpFreeCheck(params, true);
+    case "uncheck":
+      return cdpFreeCheck(params, false);
+    case "styles":
+      return cdpFreeStyles(params);
+    case "frames":
+      return cdpFreeFrames(params);
+    case "file_upload":
+      return cdpFreeFileUpload(params);
+    case "drag":
+      return cdpFreeDrag(params);
+    case "console":
+      return cdpFreeConsole(params);
+    case "errors":
+      return cdpFreeErrors(params);
+    case "dialog":
+      return cdpFreeDialog(params);
+    default:
+      return dispatchStealthCommand(method, params);
+  }
+}
+
 async function dispatchCommand(method, params) {
   // Stealth mode: use chrome.scripting instead of CDP to avoid bot detection
   if (params?.stealth) return dispatchStealthCommand(method, params);
   // WebKit browsers have no chrome.debugger at all. Use the scripting
   // implementation where one exists, and explain precisely when none does.
   if (!HAS_DEBUGGER) {
-    if (CDP_FREE_FALLBACK_METHODS.has(method)) return dispatchStealthCommand(method, params);
+    if (CDP_FREE_FALLBACK_METHODS.has(method)) return dispatchCdpFree(method, params);
     try {
       return await runDispatchSwitch(method, params);
     } catch (err) {
@@ -2178,7 +2674,8 @@ const pendingDialogs = new Map(); // tabId -> { type, message, defaultPrompt }
 const pendingFileChoosers = new Map(); // tabId -> { backendNodeId, mode }
 
 // Listen for JavaScript dialogs and frame execution contexts
-chrome.debugger.onEvent.addListener((source, method, params) => {
+if (chrome.debugger && chrome.debugger.onEvent)
+  chrome.debugger.onEvent.addListener((source, method, params) => {
   if (method === "Page.javascriptDialogOpening" && source.tabId) {
     pendingDialogs.set(source.tabId, {
       type: params.type,
@@ -2331,19 +2828,46 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 });
 
 // Open the URL attached to a notification when the user clicks it
-chrome.notifications.onClicked.addListener((notificationId) => {
+if (chrome.notifications && chrome.notifications.onClicked)
+  chrome.notifications.onClicked.addListener((notificationId) => {
   const url = notifyUrlMap.get(notificationId);
   if (url) {
     chrome.tabs.create({ url });
     chrome.notifications.clear(notificationId).catch(() => {});
   }
 });
-chrome.notifications.onClosed.addListener((notificationId) => {
+if (chrome.notifications && chrome.notifications.onClosed)
+  chrome.notifications.onClosed.addListener((notificationId) => {
   notifyUrlMap.delete(notificationId);
 });
 
-async function handleDialog({ action, promptText, tabId }) {
+async function handleDialog({ action, promptText, tabId, confirm }) {
   const tid = tabId || (await getActiveTabId());
+
+  // "auto" and "clear" are transport-agnostic and must be handled BEFORE the
+  // accept/dismiss fall-through below, which would otherwise answer a live
+  // dialog. On Chrome/Edge dialogs are paused via CDP and answered interactively,
+  // so the stored answers are just a preference used by the CDP-free path in
+  // browsers without chrome.debugger.
+  if (action === "auto") {
+    const answer = confirm === true;
+    const promptAnswer = promptText !== undefined ? promptText : null;
+    try {
+      await chrome.storage.local.set({ dialogAuto: { confirm: answer, prompt: promptAnswer } });
+    } catch {}
+    return {
+      tabId: tid,
+      auto: true,
+      confirm: answer,
+      prompt: promptAnswer,
+      note: "Preferred answers stored. This browser pauses JS dialogs over the DevTools Protocol - answer the one on screen with accept/dismiss.",
+    };
+  }
+  if (action === "clear") {
+    pendingDialogs.delete(tid);
+    return { tabId: tid, cleared: true };
+  }
+
   await ensureDebugger(tid);
 
   const dialog = pendingDialogs.get(tid);
@@ -7354,6 +7878,9 @@ function waitForTab(tabId, event) {
 // Bring the tunnel up on every SW activation (covers restarts): offscreen when
 // the browser has it, otherwise the in-worker bridge.
 initBridge().catch(() => {});
+// Console/error/dialog capture for browsers without chrome.debugger (no-op on
+// Chrome, which uses the DevTools Protocol for these).
+registerPageInstrumentation().catch(() => {});
 
 // Re-sync toolbar icon after SW restarts (offscreen may already be connected).
 setTimeout(() => {
@@ -7367,6 +7894,7 @@ setTimeout(() => {
 chrome.runtime.onInstalled.addListener(async () => {
   console.log("[bmcp] Browser extension installed");
   await initBridge().catch(() => {});
+  await registerPageInstrumentation().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(async () => {

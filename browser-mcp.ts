@@ -1352,16 +1352,20 @@ const tools: Record<string, ToolDef> = {
 
   dialog: {
     description:
-      'Handle a JavaScript dialog (alert, confirm, or prompt). Actions: "status" (inspect an open dialog without dismissing), "accept" (click OK, optional prompt_text for prompt dialogs), or "dismiss" (click Cancel).',
+      'Handle a JavaScript dialog (alert, confirm, or prompt). Actions: "status" (inspect an open dialog without dismissing), "accept" (click OK, optional prompt_text for prompt dialogs), "dismiss" (click Cancel), "auto" (on browsers without the DevTools Protocol a dialog cannot be paused, so pick the answers in advance: confirm for confirm(), prompt_text for prompt()), or "clear" (drop the recorded dialog).',
     parameters: {
       action: {
         type: "string",
-        description: '"accept" (click OK, default) or "dismiss" (click Cancel)',
-        enum: ["status", "accept", "dismiss"],
+        description: '"accept" (click OK, default), "dismiss" (click Cancel), "auto", or "clear"',
+        enum: ["status", "accept", "dismiss", "auto", "clear"],
       },
       prompt_text: {
         type: "string",
         description: "Text to enter in a prompt() dialog (optional)",
+      },
+      confirm: {
+        type: "boolean",
+        description: 'For action "auto": the answer returned by confirm() (default false - never auto-accept)',
       },
       tab_id: { type: "number", description: "Target tab ID (optional)" },
     },
@@ -1371,6 +1375,7 @@ const tools: Record<string, ToolDef> = {
         const result = await sendBrowserCommand("dialog", {
           action: args.action || "accept",
           promptText: args.prompt_text,
+          confirm: args.confirm,
           tabId: args.tab_id,
         });
         const out: Record<string, unknown> = {

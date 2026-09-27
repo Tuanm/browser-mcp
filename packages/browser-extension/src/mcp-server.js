@@ -435,10 +435,11 @@ export function createMcpHandler(dispatch) {
     {
       name: "dialog",
       description:
-        "Handle a JavaScript dialog. Actions: status (inspect an open dialog without dismissing), accept (OK/Enter, optional prompt_text for prompt dialogs), dismiss (Cancel).",
+        "Handle a JavaScript dialog. Actions: status (inspect an open dialog without dismissing), accept (OK/Enter, optional prompt_text for prompt dialogs), dismiss (Cancel), auto (choose the answers used on browsers without the DevTools Protocol, where a dialog cannot be paused - optional confirm for confirm() and prompt_text for prompt(); clear drops the recorded dialog).",
       parameters: {
-        action: { type: "string", enum: ["status", "accept", "dismiss"] },
+        action: { type: "string", enum: ["status", "accept", "dismiss", "auto", "clear"] },
         prompt_text: { type: "string" },
+        confirm: { type: "boolean" },
         tab_id: { type: "number" },
       },
       required: [],
@@ -446,6 +447,7 @@ export function createMcpHandler(dispatch) {
         const r = await dispatch("dialog", {
           action: a.action || "accept",
           promptText: a.prompt_text,
+          confirm: a.confirm,
           tabId: a.tab_id,
         });
         const out = { handled: r.handled, type: r.type, tab_id: r.tabId };

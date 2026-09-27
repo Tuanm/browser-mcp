@@ -36,7 +36,15 @@ Requires Chrome or Edge ≥ 111.
 | Browser | Gateway tunnel | Notes |
 | --- | --- | --- |
 | Chrome / Edge ≥ 111 | offscreen document | Full feature set (CDP tools, recordings, OS-dialog guard) |
-| Safari, **Orion on iOS/iPadOS** (WebKit) | **service-worker bridge** (automatic fallback) | No `chrome.offscreen`, so the extension hosts the same tunnel inside the service worker. The gateway connection works; CDP-only features (screen recording, `tabCapture`, the debugger-based OS-dialog guard, stealth) are unavailable and report a clear error |
+| Safari, **Orion on iOS/iPadOS** (WebKit) | **service-worker bridge** (automatic fallback) | No `chrome.offscreen` **and no `chrome.debugger`**, so the extension hosts the tunnel in the service worker and drives the page with `chrome.scripting` instead of CDP. Most tools work; see below |
+
+On WebKit the extension automates what CDP would otherwise provide:
+
+- **Tools that never needed CDP** keep working unchanged: `snapshot`, `find`, `get`, `is`, `fill`, `focus`, `dblclick`, `navigate`, `tabs`, `cookies`, `storage`, `store`, `highlight`, `speak`, `transcript`, `notify`, `bookmarks`, `reload`, `back`, `forward`, `close`, and more.
+- **Routed to scripting implementations**: `click`, `type`, `keypress`, `scroll`, `hover`, `execute`, `screenshot` (viewport), `extract`, plus `check`/`uncheck`, `styles` (computed values), `frames`, `file_upload` (inline base64 content), `drag`.
+- **Injected page instrumentation** replaces the Runtime/Page CDP domains: `console`, `errors`, and `dialog`. Because a JS dialog cannot be paused without CDP, `alert`/`confirm`/`prompt` are answered with a **safe default** (alert dismissed, `confirm` → `false`, `prompt` → `null`) and recorded for `dialog action=status`; choose the answers up front with `dialog {action:"auto", confirm:true}`.
+
+**Not available on WebKit** (no workaround exists): passkey/WebAuthn virtual authenticator (so no OS passkey-dialog prevention), network internals (`network`, `intercept`, `har`, `ws`, `throttle`), device emulation, HTTP-auth credential injection, `tabCapture`/screencast recording, and true full-page screenshots.
 
 The capabilities actually available are reported by `extension {action:"state"}` (`bridge`, `capabilities.offscreen`, `capabilities.debugger`, `capabilities.tab_capture`), and the popup says exactly which API is missing instead of a generic "check your Device ID/Token".
 
