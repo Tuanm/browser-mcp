@@ -22,6 +22,11 @@ const handleMcp = createMcpHandler((method, params) => handleCommand(null, metho
 // ============================================================================
 
 let offscreenReady = false;
+// chrome.offscreen is Chromium-only. WebKit-based browsers (Safari, and hosts
+// built on it such as Orion on iPadOS) do not implement it, which used to leave
+// the gateway tunnel impossible to open with a confusing "gateway unreachable"
+// message. Feature-detect once and fall back to a service-worker bridge.
+const HAS_OFFSCREEN = typeof chrome !== "undefined" && !!(chrome.offscreen && chrome.offscreen.createDocument);
 const debuggerAttached = new Set(); // Set of tabIds with debugger attached
 const debuggerPending = new Map(); // tabId -> Promise (serializes attachment)
 const cdpDomainEnabled = new Map(); // tabId -> Set<domainName> — tracks which CDP domains are enabled per tab
@@ -123,6 +128,12 @@ chrome.tabs.onCreated.addListener((tab) => {
 // ============================================================================
 
 async function ensureOffscreen() {
+  if (!HAS_OFFSCREEN) {
+    throw new Error(
+      "This browser does not implement chrome.offscreen, so the offscreen WebSocket bridge is unavailable. " +
+        "The extension falls back to the service-worker bridge instead - press Connect with a Device ID and Token.",
+    );
+  }
   // Always verify — offscreen doc can crash under memory pressure
   const existing = await chrome.offscreen.hasDocument();
   if (existing) {
@@ -155,6 +166,216 @@ async function ensureOffscreen() {
     }
   } catch {}
   offscreenReady = true;
+}
+
+// ============================================================================
+// Service-worker gateway bridge (fallback when chrome.offscreen is missing)
+// ============================================================================
+//
+// Chrome/Edge hold the gateway tunnel in an offscreen document so it survives
+// service-worker idle teardown. WebKit-based browsers do not implement
+// chrome.offscreen - Safari, and extension hosts built on it such as Orion on
+// iPadOS. Without a fallback the socket could never be opened at all and the
+// popup only said "gateway unreachable / check your Device ID+Token", which is
+// misleading when the credentials are correct. When the offscreen API is missing
+// we host the same register / keepalive / JSON-RPC tunnel right here.
+
+const SW_BRIDGE_KEEPALIVE_MS = 25000;
+const SW_BRIDGE_WATCHDOG_MS = 60000;
+const SW_BRIDGE_BASE_DELAY_MS = 1000;
+const SW_BRIDGE_MAX_DELAY_MS = 15000;
+const SW_BRIDGE_DEFAULT_GATEWAY = "wss://code-mcp.tuanm.workers.dev";
+
+let swBridgeWs = null;
+let swBridgeKeepalive = null;
+let swBridgeWatchdog = null;
+let swBridgeRetryTimer = null;
+let swBridgeRetries = 0;
+let swBridgeConnected = false;
+let swBridgeTarget = null; // { url, deviceId }
+let swBridgeLastError = null;
+let swBridgeGeneration = 0;
+
+function swBridgeTeardown() {
+  swBridgeGeneration++;
+  swBridgeConnected = false;
+  if (swBridgeRetryTimer) {
+    clearTimeout(swBridgeRetryTimer);
+    swBridgeRetryTimer = null;
+  }
+  if (swBridgeKeepalive) {
+    clearInterval(swBridgeKeepalive);
+    swBridgeKeepalive = null;
+  }
+  if (swBridgeWatchdog) {
+    clearTimeout(swBridgeWatchdog);
+    swBridgeWatchdog = null;
+  }
+  const ws = swBridgeWs;
+  swBridgeWs = null;
+  if (ws) {
+    try {
+      ws.close();
+    } catch {}
+  }
+}
+
+function swBridgeStop() {
+  swBridgeTeardown();
+  swBridgeTarget = null;
+  swBridgeLastError = null;
+  setActionIcon(false);
+}
+
+/** Gateway URL from the popup config (same normalisation as offscreen.js). */
+function swBridgeUrlFor(host, deviceId, token) {
+  let h = String(host || SW_BRIDGE_DEFAULT_GATEWAY).trim();
+  h = h.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
+  const local = /^(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h.split("/")[0]);
+  const base = (local ? "ws" : "wss") + "://" + h + "/ws/" + encodeURIComponent(deviceId);
+  return base + (token ? "?token=" + encodeURIComponent(token) : "");
+}
+
+function swBridgeArmWatchdog(gen) {
+  if (swBridgeWatchdog) clearTimeout(swBridgeWatchdog);
+  swBridgeWatchdog = setTimeout(() => {
+    if (gen !== swBridgeGeneration) return;
+    swBridgeLastError = "no traffic from the gateway for " + Math.round(SW_BRIDGE_WATCHDOG_MS / 1000) + "s";
+    try {
+      if (swBridgeWs) swBridgeWs.close();
+    } catch {}
+  }, SW_BRIDGE_WATCHDOG_MS);
+}
+
+function swBridgeScheduleRetry(gen) {
+  if (gen !== swBridgeGeneration || !swBridgeTarget) return;
+  const delay =
+    Math.min(SW_BRIDGE_MAX_DELAY_MS, SW_BRIDGE_BASE_DELAY_MS * Math.pow(2, Math.min(swBridgeRetries, 4))) +
+    Math.floor(Math.random() * 400);
+  swBridgeRetries++;
+  if (swBridgeRetryTimer) clearTimeout(swBridgeRetryTimer);
+  swBridgeRetryTimer = setTimeout(() => {
+    swBridgeRetryTimer = null;
+    if (gen === swBridgeGeneration && swBridgeTarget) swBridgeConnect();
+  }, delay);
+}
+
+function swBridgeConnect() {
+  const target = swBridgeTarget;
+  if (!target) return;
+  const gen = swBridgeGeneration;
+  let ws;
+  try {
+    ws = new WebSocket(target.url);
+  } catch (err) {
+    swBridgeLastError = "websocket failed: " + ((err && err.message) || err);
+    swBridgeScheduleRetry(gen);
+    return;
+  }
+  swBridgeWs = ws;
+
+  ws.addEventListener("open", () => {
+    if (gen !== swBridgeGeneration) {
+      try {
+        ws.close();
+      } catch {}
+      return;
+    }
+    swBridgeConnected = true;
+    swBridgeRetries = 0;
+    swBridgeLastError = null;
+    setActionIcon(true);
+    try {
+      ws.send(JSON.stringify({ type: "register", deviceId: target.deviceId }));
+    } catch {}
+    swBridgeArmWatchdog(gen);
+    if (swBridgeKeepalive) clearInterval(swBridgeKeepalive);
+    swBridgeKeepalive = setInterval(() => {
+      if (gen !== swBridgeGeneration) return;
+      try {
+        ws.send(JSON.stringify({ type: "keepalive" }));
+      } catch {}
+    }, SW_BRIDGE_KEEPALIVE_MS);
+  });
+
+  ws.addEventListener("message", (event) => {
+    if (gen !== swBridgeGeneration) return;
+    swBridgeArmWatchdog(gen);
+    let msg;
+    try {
+      msg = JSON.parse(typeof event.data === "string" ? event.data : "");
+    } catch {
+      return;
+    }
+    if (!msg || msg.type === "keepalive-ack") return;
+    if (msg.id == null || !msg.request) return;
+    // In this mode the service worker IS the MCP server: answer in place.
+    handleMcp(msg.request)
+      .then((response) => {
+        if (gen === swBridgeGeneration && ws.readyState === 1) ws.send(JSON.stringify({ id: msg.id, response }));
+      })
+      .catch((err) => {
+        if (gen === swBridgeGeneration && ws.readyState === 1) {
+          ws.send(
+            JSON.stringify({
+              id: msg.id,
+              response: {
+                jsonrpc: "2.0",
+                id: msg.id,
+                error: { code: -32000, message: String((err && err.message) || err) },
+              },
+            }),
+          );
+        }
+      });
+  });
+
+  ws.addEventListener("close", () => {
+    if (swBridgeKeepalive) {
+      clearInterval(swBridgeKeepalive);
+      swBridgeKeepalive = null;
+    }
+    if (swBridgeWatchdog) {
+      clearTimeout(swBridgeWatchdog);
+      swBridgeWatchdog = null;
+    }
+    if (gen !== swBridgeGeneration) return;
+    swBridgeConnected = false;
+    swBridgeWs = null;
+    setActionIcon(false);
+    if (!swBridgeLastError) swBridgeLastError = "the gateway closed the tunnel";
+    swBridgeScheduleRetry(gen);
+  });
+
+  ws.addEventListener("error", () => {
+    if (gen !== swBridgeGeneration) return;
+    if (!swBridgeLastError) swBridgeLastError = "gateway unreachable (check the domain and network)";
+  });
+}
+
+/** (Re)start the service-worker bridge from stored config plus overrides. */
+async function swBridgeStartFromStorage(overrides) {
+  const cfg = await chrome.storage.local.get(["deviceId", "authToken", "gatewayHost"]);
+  const o = overrides || {};
+  const deviceId = (o.deviceId !== undefined ? o.deviceId : cfg.deviceId) || "";
+  if (!deviceId) {
+    swBridgeStop();
+    return false;
+  }
+  const token = (o.token !== undefined ? o.token : cfg.authToken) || "";
+  const host = (o.gatewayHost !== undefined ? o.gatewayHost : cfg.gatewayHost) || SW_BRIDGE_DEFAULT_GATEWAY;
+  swBridgeTarget = { url: swBridgeUrlFor(host, deviceId, token), deviceId };
+  swBridgeRetries = 0;
+  swBridgeLastError = null;
+  swBridgeTeardown();
+  swBridgeConnect();
+  return true;
+}
+
+/** Bring up whichever tunnel transport this browser supports. */
+async function initBridge() {
+  if (HAS_OFFSCREEN) return ensureOffscreen();
+  return swBridgeStartFromStorage();
 }
 
 // ============================================================================
@@ -297,6 +518,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.token !== undefined) cfg.authToken = message.token || "";
     if (message.gatewayHost !== undefined) cfg.gatewayHost = message.gatewayHost || "";
     chrome.storage.local.set(cfg).catch(() => {});
+    if (!HAS_OFFSCREEN) {
+      // No offscreen API in this browser: host the tunnel in the worker itself.
+      swBridgeStartFromStorage({ deviceId: message.deviceId, token: message.token, gatewayHost: message.gatewayHost })
+        .then((started) => sendResponse?.({ ok: started }))
+        .catch((err) => sendResponse?.({ ok: false, error: String((err && err.message) || err) }));
+      return true;
+    }
     ensureOffscreen()
       .then(() => {
         let attempts = 0;
@@ -318,6 +546,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Disconnect: forward to offscreen with retry.
   if (trustedSender && message.type === "disconnect" && !message.source) {
+    if (!HAS_OFFSCREEN) {
+      swBridgeStop();
+      sendResponse?.({ ok: true });
+      return true;
+    }
     ensureOffscreen()
       .then(() => {
         let attempts = 0;
@@ -340,6 +573,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Status: the offscreen answers when alive; the SW falls back so the popup
   // never hangs and shows an actionable message when the local server is down.
   if (trustedSender && message.type === "get-status" && !message.source) {
+    if (!HAS_OFFSCREEN) {
+      // Answer from the service-worker bridge so the popup shows the real state
+      // (and a precise reason) instead of a misleading Device ID/Token hint.
+      sendResponse({
+        connected: swBridgeConnected,
+        mode: swBridgeTarget ? "gateway" : "local",
+        bridge: "service-worker",
+        lastError: swBridgeConnected
+          ? undefined
+          : swBridgeTarget
+            ? swBridgeLastError || "connecting to the gateway..."
+            : "No Device ID configured - enter your gateway Device ID and Token, then press Connect.",
+      });
+      return true;
+    }
     ensureOffscreen().catch(() => {});
     // Mode-aware fallback: with a device ID the extension connects to the
     // code-mcp gateway directly (no local server needed).
@@ -4945,6 +5193,12 @@ async function handleExtension({ action }) {
       device_id: cfg.deviceId || null,
       has_token: !!cfg.authToken,
       offscreen_ready: offscreenReady,
+      bridge: HAS_OFFSCREEN ? "offscreen" : "service-worker",
+      capabilities: {
+        offscreen: HAS_OFFSCREEN,
+        debugger: typeof chrome !== "undefined" && !!chrome.debugger,
+        tab_capture: typeof chrome !== "undefined" && !!chrome.tabCapture,
+      },
       debugger_attached_tabs: [...debuggerAttached],
       network_capture_tabs: [...networkLogs.keys()],
       ws_capture_tabs: [...wsLogs.keys()],
@@ -7027,8 +7281,9 @@ function waitForTab(tabId, event) {
 // Initialization
 // ============================================================================
 
-// Ensure offscreen doc exists on every SW activation (covers restarts)
-ensureOffscreen().catch(() => {});
+// Bring the tunnel up on every SW activation (covers restarts): offscreen when
+// the browser has it, otherwise the in-worker bridge.
+initBridge().catch(() => {});
 
 // Re-sync toolbar icon after SW restarts (offscreen may already be connected).
 setTimeout(() => {
@@ -7041,11 +7296,11 @@ setTimeout(() => {
 
 chrome.runtime.onInstalled.addListener(async () => {
   console.log("[bmcp] Browser extension installed");
-  await ensureOffscreen();
+  await initBridge().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  await ensureOffscreen();
+  await initBridge().catch(() => {});
 });
 
 // Clean up all state on tab close

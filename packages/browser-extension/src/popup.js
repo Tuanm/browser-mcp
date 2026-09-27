@@ -203,10 +203,13 @@ connectBtn.addEventListener("click", () => {
   setTimeout(checkStatus, 2000);
   setTimeout(() => {
     checkStatus();
-    // If still disconnected, guide the user toward the likely cause.
-    if (connectBtn.dataset.connected !== "true") {
-      statusText.textContent = "Disconnected - check your Device ID/Token and try again.";
-    }
+    // Only fall back to the generic hint when the worker reported no specific
+    // reason - e.g. a browser that lacks chrome.offscreen now says so instead.
+    setTimeout(() => {
+      if (connectBtn.dataset.connected !== "true" && statusText.textContent === "Disconnected") {
+        statusText.textContent = "Disconnected - check your Device ID/Token and try again.";
+      }
+    }, 400);
   }, 5000);
 });
 

@@ -31,6 +31,15 @@ Requires Chrome or Edge ≥ 111.
 
 > The token must match the device's token configured on the [code-mcp-gateway](https://github.com/Tuanm/code-mcp-gateway). Leave it empty only if you accept that anyone reaching the gateway can control the browser.
 
+### Browser support
+
+| Browser | Gateway tunnel | Notes |
+| --- | --- | --- |
+| Chrome / Edge ≥ 111 | offscreen document | Full feature set (CDP tools, recordings, OS-dialog guard) |
+| Safari, **Orion on iOS/iPadOS** (WebKit) | **service-worker bridge** (automatic fallback) | No `chrome.offscreen`, so the extension hosts the same tunnel inside the service worker. The gateway connection works; CDP-only features (screen recording, `tabCapture`, the debugger-based OS-dialog guard, stealth) are unavailable and report a clear error |
+
+The capabilities actually available are reported by `extension {action:"state"}` (`bridge`, `capabilities.offscreen`, `capabilities.debugger`, `capabilities.tab_capture`), and the popup says exactly which API is missing instead of a generic "check your Device ID/Token".
+
 ## Tools (68)
 
 Element discovery uses the **@ref system**: `snapshot` returns an interactive element tree with `[ref=eN]` markers; every interaction tool accepts a ref or a CSS selector.
