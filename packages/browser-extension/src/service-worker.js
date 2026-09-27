@@ -27,6 +27,62 @@ let offscreenReady = false;
 // the gateway tunnel impossible to open with a confusing "gateway unreachable"
 // message. Feature-detect once and fall back to a service-worker bridge.
 const HAS_OFFSCREEN = typeof chrome !== "undefined" && !!(chrome.offscreen && chrome.offscreen.createDocument);
+// chrome.debugger (CDP) is Chromium-only too: WebKit browsers - Safari, and hosts
+// built on it such as Orion on iPadOS - do not provide it. Tools that already have
+// a scripting-based implementation are routed to it automatically, instead of
+// dying with "chrome.debugger is undefined".
+const HAS_DEBUGGER = typeof chrome !== "undefined" && !!(chrome.debugger && chrome.debugger.sendCommand);
+/**
+ * Page-interaction methods that can plausibly trigger an authentication flow and
+ * therefore need the OS-dialog guard armed BEFORE they run. Read-only/metadata
+ * tools (tabs, bookmarks, history, status, ...) are deliberately excluded so the
+ * guard never attaches the debugger as a side effect of a harmless call.
+ */
+const DIALOG_GUARD_METHODS = new Set([
+  "navigate",
+  "click",
+  "dblclick",
+  "type",
+  "fill",
+  "keypress",
+  "press",
+  "select",
+  "check",
+  "uncheck",
+  "drag",
+  "touch",
+  "file_upload",
+  "execute",
+]);
+
+/** Methods with a genuine CDP-free implementation in dispatchStealthCommand. */
+const CDP_FREE_FALLBACK_METHODS = new Set([
+  "click",
+  "type",
+  "keypress",
+  "scroll",
+  "hover",
+  "execute",
+  "screenshot",
+  "extract",
+]);
+
+/** Turn a missing-chrome.debugger failure into actionable guidance. */
+function cdpUnavailableError(method, err) {
+  const msg = String((err && err.message) || err);
+  const looksLikeMissingApi =
+    /debugger/i.test(msg) && /undefined|null|not a function|cannot read propert/i.test(msg);
+  if (!looksLikeMissingApi) return err instanceof Error ? err : new Error(msg);
+  return new Error(
+    'The "' +
+      method +
+      '" tool needs the Chrome DevTools Protocol (chrome.debugger), which this browser does not implement ' +
+      "(WebKit: Safari, Orion on iOS/iPadOS) - use Chrome or Edge for CDP-only tools. " +
+      "Scripting-based tools keep working here: snapshot, find, get, is, fill, focus, dblclick, click, type, " +
+      "keypress, scroll, hover, execute, screenshot, extract, navigate, tabs, cookies, storage, store, " +
+      "highlight, speak, transcript, notify, bookmarks, reload, back, forward, close.",
+  );
+}
 const debuggerAttached = new Set(); // Set of tabIds with debugger attached
 const debuggerPending = new Map(); // tabId -> Promise (serializes attachment)
 const cdpDomainEnabled = new Map(); // tabId -> Set<domainName> — tracks which CDP domains are enabled per tab
@@ -635,9 +691,10 @@ async function handleCommand(id, method, params) {
       indicatorTab = await getActiveTabId();
     } catch {}
   }
-  // Automatic OS-dialog guard for the tab the agent is driving (fire-and-forget;
-  // click/navigate/keypress additionally await it so it lands before they act).
-  if (indicatorTab && !params?.stealth) guardOsDialogs(indicatorTab);
+  // Automatic OS-dialog guard, only for page-interaction commands (fire-and-
+  // forget; navigate/click/keypress additionally await it inside their handlers
+  // so it lands before the action dispatches).
+  if (indicatorTab && !params?.stealth && DIALOG_GUARD_METHODS.has(method)) guardOsDialogs(indicatorTab);
   if (indicatorTab) await showAgentIndicator(indicatorTab);
   // The persistent mouse pointer follows the agent on every command.
   if (indicatorTab) showActivityCursor(indicatorTab);
@@ -656,6 +713,20 @@ async function handleCommand(id, method, params) {
 async function dispatchCommand(method, params) {
   // Stealth mode: use chrome.scripting instead of CDP to avoid bot detection
   if (params?.stealth) return dispatchStealthCommand(method, params);
+  // WebKit browsers have no chrome.debugger at all. Use the scripting
+  // implementation where one exists, and explain precisely when none does.
+  if (!HAS_DEBUGGER) {
+    if (CDP_FREE_FALLBACK_METHODS.has(method)) return dispatchStealthCommand(method, params);
+    try {
+      return await runDispatchSwitch(method, params);
+    } catch (err) {
+      throw cdpUnavailableError(method, err);
+    }
+  }
+  return runDispatchSwitch(method, params);
+}
+
+async function runDispatchSwitch(method, params) {
   switch (method) {
     case "navigate":
       return handleNavigate(params);
@@ -3089,9 +3160,12 @@ async function handleAuth({ action, username, password, tabId, vaultName }) {
 async function ensureVirtualAuthenticator(tid, opts) {
   const o = opts || {};
   await ensureDebugger(tid);
-  // enableUI:false - the virtual authenticator answers the ceremony, so Chrome
-  // must not offer its own WebAuthn UI (nor hand the request to the OS).
-  await ensureCdpDomain(tid, "WebAuthn", { enableUI: false });
+  // WebAuthn.enable() with Chrome's default UI setting: a ceremony the virtual
+  // authenticator can satisfy is answered with no UI (automatic presence +
+  // user-verified), while one it cannot satisfy still prompts/falls back to the
+  // platform authenticator exactly as it does without this extension, instead of
+  // silently failing. Dialog-free where possible, never a behaviour change.
+  await ensureCdpDomain(tid, "WebAuthn");
   const existing = webauthnAuthenticators.get(tid);
   if (existing) return existing;
   const options = {
@@ -3154,12 +3228,15 @@ async function setWebauthnAuto(enabled) {
  * While an agent is connected and issuing commands, native prompts block or
  * steal the flow and none of them can be read or clicked by an extension:
  *   - the WebAuthn/passkey dialog (Windows Hello, security key, Okta/WAM broker),
- *   - the HTTP Basic/Digest prompt,
  *   - Chrome's download Keep/Discard bubble and downloads shelf.
  * The only way to keep the agent in control is to stop them appearing at all:
  * this attaches the debugger (which also applies Browser.setDownloadBehavior and
- * hides the downloads UI), arms the CDP virtual authenticator for passkeys, and
- * turns on auth-challenge interception so Chrome never renders its own prompt.
+ * hides the downloads UI) and arms the CDP virtual authenticator for passkeys.
+ *
+ * The HTTP Basic/Digest prompt is deliberately NOT part of this: Chromium rejects
+ * handleAuthRequests with an empty pattern list and only emits authRequired for
+ * pattern-matched jobs, so intercepting it would pause every matching request on
+ * every agent-driven tab. That stays opt-in via the auth tool.
  *
  * Idempotent and best-effort - it must never throw, because a failed guard must
  * not break the command that triggered it. Skipped entirely under stealth.
@@ -3173,7 +3250,6 @@ async function guardOsDialogs(tabId) {
     if (url && !isScriptableUrl(url)) return false;
     await ensureDebugger(tabId);
     await ensureVirtualAuthenticator(tabId);
-    if (!fetchAuthEnabled.has(tabId)) await setFetchAuth(tabId, true, true);
     return true;
   } catch {
     return false; // the guard must never break the actual command
@@ -4528,20 +4604,17 @@ async function handleWindow({ action, url, windowId }) {
 // (Fetch.authRequired) and network interception (Fetch.requestPaused parking).
 // ============================================================================
 
-const fetchConfigByTab = new Map(); // tabId -> { auth: boolean, patterns: string[] | null, authOnly: boolean }
+const fetchConfigByTab = new Map(); // tabId -> { auth: boolean, patterns: string[] | null }
 
 async function applyFetchConfig(tabId) {
-  const cfg = fetchConfigByTab.get(tabId) || { auth: false, patterns: null, authOnly: false };
+  const cfg = fetchConfigByTab.get(tabId) || { auth: false, patterns: null };
   const params = { handleAuthRequests: cfg.auth };
-  if (cfg.patterns && cfg.patterns.length) {
-    params.patterns = cfg.patterns.map((p) => ({ urlPattern: p }));
-  } else if (cfg.authOnly) {
-    // Auth-challenge interception ONLY. handleAuthRequests is independent of
-    // patterns, so an explicit (empty) pattern list means no ordinary request is
-    // paused: no per-request round-trip and no chance of stalling the network,
-    // while 401/407 challenges still reach us instead of raising a native prompt.
-    params.patterns = [];
-  }
+  // NOTE: Chromium rejects handleAuthRequests with an empty patterns list
+  // ("Can't specify empty patterns with handleAuth set") and only emits
+  // authRequired for jobs that matched a pattern, so auth interception always
+  // pauses matched requests. It is therefore opt-in via the auth tool rather
+  // than enabled by the automatic guard.
+  if (cfg.patterns && cfg.patterns.length) params.patterns = cfg.patterns.map((p) => ({ urlPattern: p }));
   await sendDebuggerCommand(tabId, "Fetch.enable", params);
   let enabled = cdpDomainEnabled.get(tabId);
   if (!enabled) {
@@ -4553,12 +4626,9 @@ async function applyFetchConfig(tabId) {
   else fetchAuthEnabled.delete(tabId);
 }
 
-async function setFetchAuth(tabId, auth, authOnly) {
-  const cfg = fetchConfigByTab.get(tabId) || { auth: false, patterns: null, authOnly: false };
+async function setFetchAuth(tabId, auth) {
+  const cfg = fetchConfigByTab.get(tabId) || { auth: false, patterns: null };
   cfg.auth = auth;
-  // Only change the mode when the caller asks, so the auth tool never silently
-  // downgrades the guard's no-pause mode (or vice versa).
-  if (authOnly !== undefined) cfg.authOnly = authOnly === true;
   fetchConfigByTab.set(tabId, cfg);
   await applyFetchConfig(tabId);
 }

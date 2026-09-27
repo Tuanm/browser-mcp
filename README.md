@@ -81,11 +81,12 @@ While the extension is **connected** and an agent is driving a tab, native promp
 
 | Suppressed | How |
 | --- | --- |
-| WebAuthn / passkey dialog (Windows Hello, security key, Okta/WAM) | A CDP virtual authenticator is armed **before** every agent click/navigation and survives the redirect, so a click that bounces into an Okta/Entra page which fires WebAuthn on load is answered inside the renderer |
-| HTTP Basic/Digest prompt | Auth-challenge interception is enabled on the tab, so Chrome never renders its own prompt (auto-cancelled after 60 s instead of hanging) |
+| WebAuthn / passkey dialog (Windows Hello, security key, Okta/WAM) | A CDP virtual authenticator is armed **before** every agent click/navigation and survives the redirect, so a click that bounces into an Okta/Entra page which fires WebAuthn on load is answered inside the renderer. Chrome's normal WebAuthn UI stays enabled, so a ceremony the virtual authenticator *cannot* satisfy still behaves exactly as it does without the extension |
 | Download Keep/Discard bubble + downloads shelf | `Browser.setDownloadBehavior` + downloads UI hidden whenever the debugger attaches |
 
-The guard runs on connect (active tab), on every agent command, and on tabs the agent opens while it is driving; it is skipped under `stealth`. Turn it off with `webauthn {action:"auto", enabled:false}`.
+The guard arms on connect (active tab), before page-interaction commands (`navigate`, `click`, `type`, `fill`, `keypress`, `select`, `drag`, `execute`, … — never on read-only calls like `tabs` or `bookmarks`), and on tabs the agent opens while it is driving. It is skipped under `stealth`. Turn it off with `webauthn {action:"auto", enabled:false}`.
+
+> **HTTP Basic/Digest is opt-in.** Chromium rejects `handleAuthRequests` with an empty pattern list and only emits `authRequired` for pattern-matched requests, so intercepting it would pause every matching request on every agent-driven tab. Call the `auth` tool when a site needs it instead.
 
 `webauthn` also exposes explicit control when the agent wants it:
 
