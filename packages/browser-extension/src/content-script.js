@@ -20,19 +20,28 @@ if (!window[Symbol.for("_x7cs")]) {
   let _pfx = "_x" + Math.random().toString(36).slice(2, 8);
 
   // ========================================================================
-  // Capture flash - a brief border flash AFTER a screenshot is taken
+  // Capture flash - one short "camera shutter" pulse AFTER a screenshot
   // ========================================================================
   //
   // The always-on glowing border is gone: the agent no longer tints the page
-  // while it works. This flash is the only capture feedback, it runs AFTER the
-  // pixels are taken, and the worker clears it before every capture - so it can
-  // never end up inside the screenshot itself.
+  // while it works, and this pulse is the only capture feedback. It runs AFTER
+  // the pixels are taken and the worker clears it before every capture, so it
+  // can never end up inside the image.
+  //
+  // Style: a crisp ring (reads as "the tab was framed") plus a very light veil,
+  // so it is noticed even when the user is looking at the middle of the page
+  // rather than the edges. Deliberately a SINGLE pulse, never a repeating blink:
+  // a burst of captures cannot strobe because a pulse that is still active (or
+  // one that just finished) is never restarted. Reduced-motion users get the
+  // same single fade, dimmer and without the inner glow.
 
   let flashEl = null;
   let flashStyleEl = null;
   let flashTimer = null;
+  let flashBusyUntil = 0; // pulse in flight, plus a short anti-strobe cooldown
 
   function clearCaptureFlash() {
+    flashBusyUntil = 0;
     if (flashTimer) {
       clearTimeout(flashTimer);
       flashTimer = null;
@@ -48,14 +57,27 @@ if (!window[Symbol.for("_x7cs")]) {
   }
 
   function flashCapture(durationMs) {
+    const now = Date.now();
+    // Still pulsing, or inside the cooldown after the last one: leave it alone.
+    // Agents often capture several times in a row and a restarting flash would
+    // read as a strobe.
+    if (now < flashBusyUntil) return;
     clearCaptureFlash();
-    const ms = Math.max(150, Math.min(Number(durationMs) || 450, 2000));
+
+    let reduceMotion = false;
+    try {
+      reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch {}
+
+    const ms = Math.max(180, Math.min(Number(durationMs) || 300, 2000));
+    flashBusyUntil = now + ms + 150;
+
     flashStyleEl = document.createElement("style");
     flashStyleEl.id = `${_pfx}-flash-style`;
     flashStyleEl.textContent = `
       @keyframes ${_pfx}-capture-flash {
         0% { opacity: 0; }
-        12% { opacity: 1; }
+        10% { opacity: 1; }
         100% { opacity: 0; }
       }
     `;
@@ -72,8 +94,9 @@ if (!window[Symbol.for("_x7cs")]) {
       zIndex: "2147483647",
       pointerEvents: "none",
       boxSizing: "border-box",
-      border: "6px solid rgba(255,255,255,0.95)",
-      boxShadow: "inset 0 0 48px 12px rgba(255,255,255,0.7)",
+      border: (reduceMotion ? "3px" : "4px") + " solid rgba(255,255,255," + (reduceMotion ? "0.55" : "0.9") + ")",
+      background: "rgba(255,255,255," + (reduceMotion ? "0.06" : "0.16") + ")",
+      boxShadow: reduceMotion ? "none" : "inset 0 0 32px 4px rgba(255,255,255,0.35)",
       animation: `${_pfx}-capture-flash ${ms}ms ease-out forwards`,
     });
     document.documentElement.appendChild(flashEl);

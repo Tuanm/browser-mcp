@@ -7863,7 +7863,7 @@ function clearCaptureFlash(tabId) {
 function flashCapture(tabId, durationMs) {
   if (!tabId) return;
   try {
-    const sent = chrome.tabs.sendMessage(tabId, { type: "flash-capture", duration: durationMs || 450 });
+    const sent = chrome.tabs.sendMessage(tabId, { type: "flash-capture", duration: durationMs || 300 });
     if (sent && typeof sent.catch === "function") sent.catch(() => {});
   } catch {}
 }

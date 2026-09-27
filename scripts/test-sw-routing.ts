@@ -338,6 +338,27 @@ console.log("\n== Capture feedback: no border glow, flash only for screenshots =
   else bad("the flash is fired only after the capture", JSON.stringify(shotTypes));
 }
 
+console.log("\n== content script: capture flash shape ==");
+{
+  const src = await Bun.file(new URL("../packages/browser-extension/src/content-script.js", import.meta.url)).text();
+  // Match identifiers, not prose: the comments legitimately explain that the glow
+  // was removed.
+  if (!/overlayEl|overlayCount|showAgentOverlay|hideAgentOverlay/.test(src))
+    ok("content script carries no glow/overlay code");
+  else bad("content script carries no glow/overlay code", "a glow/overlay identifier is back");
+  if (/-agent-overlay|-overlay-style/.test(src))
+    ok("the old overlay ids stay listed so stale elements are cleaned up");
+  else bad("the old overlay ids stay listed so stale elements are cleaned up", "cleanup ids removed");
+  if (/flashBusyUntil/.test(src)) ok("capture flash keeps its anti-strobe guard");
+  else bad("capture flash keeps its anti-strobe guard", "flashBusyUntil missing");
+  if (/prefers-reduced-motion/.test(src)) ok("capture flash honours prefers-reduced-motion");
+  else bad("capture flash honours prefers-reduced-motion", "no reduced-motion check");
+  if (/clear-capture-flash/.test(src) && /flash-capture/.test(src)) ok("both flash messages are handled");
+  else bad("both flash messages are handled", "handler missing");
+  if (/flash-capture/.test(src) && !/agent-overlay\(\)/.test(src)) ok("the overlay is no longer rendered");
+  else bad("the overlay is no longer rendered", "showAgentOverlay is still callable");
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 if (failures.length) {
   console.log("Failures:");
