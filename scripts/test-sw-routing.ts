@@ -371,6 +371,12 @@ console.log("\n== recordings: no burnt-in REC badge ==");
   if (!/1280,\s*\n?\s*720/.test(src) || !/captureStream/.test(src))
     ok("no 1280x720 canvas re-encode of the capture");
   else bad("no 1280x720 canvas re-encode of the capture", "canvas captureStream is back");
+  const recs = src.match(/videoBitsPerSecond:\s*[^,\n}]+/g) || [];
+  const scaled = recs.filter((r) => /pickVideoBitrate|bitrateForTrack/.test(r));
+  if (recs.length === 2 && scaled.length === 2) ok("both recorders scale the bitrate to the capture");
+  else bad("both recorders scale the bitrate to the capture", JSON.stringify(recs));
+  if (!/videoBitsPerSecond:\s*4_000_000/.test(src)) ok("no flat 4 Mbps bitrate remains");
+  else bad("no flat 4 Mbps bitrate remains", "the hardcoded bitrate is back");
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

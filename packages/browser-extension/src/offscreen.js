@@ -461,6 +461,34 @@ function pickMimeType() {
   return "video/webm";
 }
 
+/**
+ * Pick a video bitrate from the real capture geometry.
+ *
+ * Recordings used to be letterboxed to a fixed 1280x720 canvas, so a flat
+ * 4 Mbps was tuned to that one size. Now that captures keep their source
+ * resolution, the budget has to scale with it. Screen content is mostly static
+ * with sharp text, which needs more bits per pixel than camera video: ~0.15
+ * bits per pixel per frame keeps small text legible, i.e.
+ *   ~4 Mbps at 720p30 (the session canvas), ~9 Mbps at 1080p30,
+ *   ~17 Mbps at 1440p30 - clamped so a tiny window is not starved and a large
+ *   capture cannot balloon the file.
+ */
+function pickVideoBitrate(width, height, fps) {
+  const w = Number(width) > 0 ? Number(width) : 1280;
+  const h = Number(height) > 0 ? Number(height) : 720;
+  const rate = Number(fps) > 0 ? Number(fps) : 30;
+  return Math.round(Math.min(Math.max(w * h * rate * 0.15, 2_500_000), 30_000_000));
+}
+
+/** Bitrate for a live capture track, from its own reported settings. */
+function bitrateForTrack(track) {
+  let settings = {};
+  try {
+    settings = (track && typeof track.getSettings === "function" && track.getSettings()) || {};
+  } catch {}
+  return pickVideoBitrate(settings.width, settings.height, settings.frameRate);
+}
+
 async function startRecording(streamId, includeAudio, mode, targetTabId) {
   try {
     if (recorder) throw new Error("A recording is already in progress. Stop it first (record action=stop).");
@@ -490,7 +518,10 @@ async function startRecording(streamId, includeAudio, mode, targetTabId) {
     // rate are preserved and the file gets no overlay at all.
     const recStream = stream;
     const mime = pickMimeType();
-    const r = new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+    const r = new MediaRecorder(recStream, {
+      mimeType: mime,
+      videoBitsPerSecond: bitrateForTrack(recStream.getVideoTracks()[0]),
+    });
     recorderChunks = [];
     r.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) recorderChunks.push(e.data);
@@ -618,7 +649,10 @@ async function sessionStart(initialTabId, includeAudio) {
 
     const tracks = [...sessionCanvasStream.getVideoTracks(), ...sessionAudioDest.stream.getAudioTracks()];
     const mime = sessionPickMime();
-    sessionRecorder = new MediaRecorder(new MediaStream(tracks), { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+    sessionRecorder = new MediaRecorder(new MediaStream(tracks), {
+      mimeType: mime,
+      videoBitsPerSecond: pickVideoBitrate(sessionCanvas.width, sessionCanvas.height, 30),
+    });
     sessionChunks = [];
     sessionRecorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) sessionChunks.push(e.data);
