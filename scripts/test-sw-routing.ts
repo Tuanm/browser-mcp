@@ -359,6 +359,20 @@ console.log("\n== content script: capture flash shape ==");
   else bad("the overlay is no longer rendered", "showAgentOverlay is still callable");
 }
 
+console.log("\n== recordings: no burnt-in REC badge ==");
+{
+  const src = await Bun.file(new URL("../packages/browser-extension/src/offscreen.js", import.meta.url)).text();
+  if (!/paintRecBadge|withRecOverlay|stopRecOverlay/.test(src))
+    ok("offscreen carries no REC badge / overlay pipeline");
+  else bad("offscreen carries no REC badge / overlay pipeline", "a badge/overlay symbol is back");
+  if (/const recStream = stream;/.test(src))
+    ok("recordings use the capture stream directly (native resolution + fps)");
+  else bad("recordings use the capture stream directly", "recStream no longer aliases the source");
+  if (!/1280,\s*\n?\s*720/.test(src) || !/captureStream/.test(src))
+    ok("no 1280x720 canvas re-encode of the capture");
+  else bad("no 1280x720 canvas re-encode of the capture", "canvas captureStream is back");
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 if (failures.length) {
   console.log("Failures:");

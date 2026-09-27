@@ -452,35 +452,6 @@ let recorderChunks = [];
 let recorderStartTime = 0;
 let recorderMode = null; // "tab" | "window" | "screen"
 
-/**
- * Shared REC badge painter (red dot + "REC mm:ss" + optional tab id).
- * Used by the overlay pipeline, the session canvas, and per-frame painting.
- */
-function paintRecBadge(ctx, canvas, tabId, startTime) {
-  try {
-    const pad = 14;
-    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
-    const ss = String(elapsed % 60).padStart(2, "0");
-    const label = "REC " + mm + ":" + ss + (tabId ? "  tab " + tabId : "");
-    ctx.font = "bold 18px ui-monospace, SFMono-Regular, Menlo, monospace";
-    const w = ctx.measureText(label).width;
-    const x = canvas.width - w - pad * 2;
-    const y = pad;
-    ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(x - pad, y - pad, w + pad * 2, 30, 6);
-    else ctx.rect(x - pad, y - pad, w + pad * 2, 30);
-    ctx.fill();
-    ctx.fillStyle = "#ff3b30";
-    ctx.beginPath();
-    ctx.arc(x - pad + 9, y + 6, 6, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#fff";
-    ctx.fillText(label, x + 4, y + 14);
-  } catch {}
-}
-
 function pickMimeType() {
   const candidates = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"];
   for (const c of candidates) {
@@ -488,104 +459,6 @@ function pickMimeType() {
       return c;
   }
   return "video/webm";
-}
-
-// ============================================================================
-// Shared REC overlay: routes any capture stream through a canvas that draws a
-// red REC badge + live elapsed time + current tab id, so EVERY recording mode
-// (single tab, window/screen, session) shows the same indicator in the video.
-// ============================================================================
-
-let overlayCanvas = null;
-let overlayCtx = null;
-let overlayVideo = null;
-let overlayVideoTrack = null;
-let overlayRaf = null;
-let overlayTimer = null;
-let overlayStart = 0;
-let overlayTabId = null;
-
-/** Stop the overlay pipeline (does NOT stop the source stream tracks). */
-function stopRecOverlay() {
-  if (overlayRaf) cancelAnimationFrame(overlayRaf);
-  overlayRaf = null;
-  if (overlayTimer) clearInterval(overlayTimer);
-  overlayTimer = null;
-  if (overlayVideo) {
-    try {
-      overlayVideo.srcObject = null;
-    } catch {}
-    overlayVideo = null;
-  }
-  if (overlayVideoTrack) {
-    try {
-      overlayVideoTrack.stop();
-    } catch {}
-    overlayVideoTrack = null;
-  }
-  overlayCanvas = null;
-  overlayCtx = null;
-  overlayStart = 0;
-  overlayTabId = null;
-}
-
-/**
- * Wrap a source MediaStream so the recording includes the REC badge overlay.
- * Returns a NEW MediaStream (canvas video + source audio); call stopRecOverlay()
- * on stop. The source stream itself is left untouched (caller owns its tracks).
- */
-function withRecOverlay(sourceStream, tabId) {
-  stopRecOverlay();
-  overlayCanvas = document.createElement("canvas");
-  overlayCanvas.width = 1280;
-  overlayCanvas.height = 720;
-  overlayCtx = overlayCanvas.getContext("2d");
-  overlayStart = Date.now();
-  overlayTabId = tabId || null;
-
-  overlayVideo = document.createElement("video");
-  overlayVideo.muted = true;
-  overlayVideo.playsInline = true;
-  overlayVideo.srcObject = sourceStream;
-  overlayVideo.play().catch(() => {});
-
-  // NOTE: offscreen documents are HIDDEN pages - requestAnimationFrame is
-  // throttled/paused there, so a rAF-only paint loop leaves the canvas blank
-  // and canvas.captureStream() emits no frames -> 0-byte recordings.
-  // Drive the paint with setInterval instead; rAF is only an optional bonus.
-  const capStream = overlayCanvas.captureStream(30);
-  overlayVideoTrack = capStream.getVideoTracks()[0];
-
-  const draw = () => {
-    if (!overlayCtx || !overlayCanvas) return;
-    try {
-      const vw = overlayVideo.videoWidth;
-      const vh = overlayVideo.videoHeight;
-      if (vw && vh) {
-        // Scale to canvas without resizing (resizing a canvas with an active
-        // captureStream can stall frame production in some Chrome versions).
-        const scale = Math.min(overlayCanvas.width / vw, overlayCanvas.height / vh);
-        const dw = vw * scale;
-        const dh = vh * scale;
-        const dx = (overlayCanvas.width - dw) / 2;
-        const dy = (overlayCanvas.height - dh) / 2;
-        overlayCtx.fillStyle = "#000";
-        overlayCtx.fillRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-        overlayCtx.drawImage(overlayVideo, dx, dy, dw, dh);
-      } else {
-        overlayCtx.fillStyle = "#111";
-        overlayCtx.fillRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-      }
-    } catch {}
-    paintRecBadge(overlayCtx, overlayCanvas, overlayTabId, overlayStart);
-  };
-  overlayRaf = requestAnimationFrame(draw);
-  overlayTimer = setInterval(draw, 50); // ~20fps guaranteed paint -> real bytes
-
-  const tracks = [overlayVideoTrack];
-  const audioTracks = sourceStream.getAudioTracks();
-  if (audioTracks.length) tracks.push(...audioTracks);
-  return new MediaStream(tracks);
 }
 
 async function startRecording(streamId, includeAudio, mode, targetTabId) {
@@ -611,9 +484,11 @@ async function startRecording(streamId, includeAudio, mode, targetTabId) {
         preferCurrentTab: mode === "tab",
       });
     }
-    // Route the capture through the shared REC overlay so the video shows the
-    // red REC badge + live elapsed time + tab id (all recording modes).
-    const recStream = withRecOverlay(stream, mode === "tab" ? targetTabId : null);
+    // Record the capture stream directly. It used to be re-painted through a
+    // 1280x720 canvas just to burn in a REC badge, which cost a 20fps repaint and
+    // downscaled every capture; without the badge the source resolution and frame
+    // rate are preserved and the file gets no overlay at all.
+    const recStream = stream;
     const mime = pickMimeType();
     const r = new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
     recorderChunks = [];
@@ -621,7 +496,6 @@ async function startRecording(streamId, includeAudio, mode, targetTabId) {
       if (e.data && e.data.size > 0) recorderChunks.push(e.data);
     };
     r.onstop = () => {
-      stopRecOverlay();
       // Stop tracks so the tab indicator clears / camera light goes off
       if (stream) stream.getTracks().forEach((t) => t.stop());
     };
@@ -632,7 +506,6 @@ async function startRecording(streamId, includeAudio, mode, targetTabId) {
     recorderMode = mode;
     return { ok: true, mode, mime };
   } catch (err) {
-    stopRecOverlay();
     console.error("[bmcp-offscreen] startRecording failed:", err);
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -767,7 +640,7 @@ async function sessionStart(initialTabId, includeAudio) {
   }
 }
 
-/** Draw the current tab's video (or last screencast frame) + REC badge. */
+/** Draw the current tab's video (or last screencast frame) onto the canvas. */
 function sessionDrawLoop() {
   if (!sessionActive || !sessionCanvas) return;
   try {
@@ -803,7 +676,6 @@ function sessionDrawLoop() {
       ctx.fillStyle = "#111";
       ctx.fillRect(0, 0, sessionCanvas.width, sessionCanvas.height);
     }
-    paintRecBadge(ctx, sessionCanvas, sessionCurrentTabId, sessionStartTime);
   } catch {}
 }
 
@@ -1059,7 +931,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         try {
           sessionLastFrame = img;
           // Draw immediately so the frame appears even before the next paint
-          // tick; the interval loop keeps repainting it + the REC badge.
+          // tick; the interval loop keeps repainting it.
           const ctx = sessionCanvas.getContext("2d");
           const vw = img.width,
             vh = img.height;
@@ -1071,7 +943,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ctx.fillStyle = "#000";
           ctx.fillRect(0, 0, sessionCanvas.width, sessionCanvas.height);
           ctx.drawImage(img, dx, dy, dw, dh);
-          paintRecBadge(ctx, sessionCanvas, sessionCurrentTabId, sessionStartTime);
           // Track live size: frames are not MediaRecorder chunks, so feed a
           // synthetic chunk to the size counter for accurate status reporting.
           if (sessionRecorder) {

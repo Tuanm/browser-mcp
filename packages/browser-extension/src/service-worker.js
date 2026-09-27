@@ -7263,7 +7263,7 @@ async function handleRecord({ action, tabId, includeAudio, saveAs, filename }) {
   }
 
   if (act === "session_start") {
-    // Start the offscreen canvas session (REC overlay + MediaRecorder). Video
+    // Start the offscreen canvas session (composited tabs + MediaRecorder). Video
     // frames come from CDP screencast (no permission gate, any tab).
     const r = await chrome.runtime.sendMessage({
       source: "offscreen",
