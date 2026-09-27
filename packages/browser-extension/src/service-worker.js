@@ -423,7 +423,9 @@ function swBridgeConnect() {
 
 /** (Re)start the service-worker bridge from stored config plus overrides. */
 async function swBridgeStartFromStorage(overrides) {
-  const cfg = await chrome.storage.local.get(["deviceId", "authToken", "gatewayHost"]);
+  // Defensive: some WebKit hosts only implement the callback form, in which case
+  // the promise resolves to undefined rather than throwing.
+  const cfg = (await chrome.storage.local.get(["deviceId", "authToken", "gatewayHost"])) || {};
   const o = overrides || {};
   const deviceId = (o.deviceId !== undefined ? o.deviceId : cfg.deviceId) || "";
   if (!deviceId) {
@@ -554,7 +556,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.storage.local
       .get("dialogAuto")
       .then((cfg) => {
-        const auto = cfg.dialogAuto || { confirm: false, prompt: null };
+        const auto = (cfg && cfg.dialogAuto) || { confirm: false, prompt: null };
         sendResponse({ confirm: !!auto.confirm, prompt: auto.prompt === undefined ? null : auto.prompt });
       })
       .catch(() => sendResponse({ confirm: false, prompt: null }));
@@ -682,7 +684,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.storage.local
       .get(["deviceId", "serverUrl"])
       .then((cfg) => {
-        const direct = !!cfg.deviceId;
+        const direct = !!(cfg && cfg.deviceId);
         setTimeout(() => {
           sendResponse({
             connected: false,
@@ -751,6 +753,23 @@ async function handleCommand(id, method, params) {
 // Chrome's normal and stealth paths are untouched: this code is only reachable
 // through dispatchCdpFree below.
 
+/**
+ * Inject a function into a tab. Prefers the page's own world, but a WebKit host
+ * may not implement world:"MAIN" - the DOM is shared either way, so retry in the
+ * default world rather than failing the tool outright.
+ */
+async function runInPage(tabId, func, args, allFrames) {
+  const target = allFrames ? { tabId: tabId, allFrames: true } : { tabId: tabId };
+  const payload = { target: target, func: func, args: args || [] };
+  try {
+    return (await chrome.scripting.executeScript(Object.assign({ world: "MAIN" }, payload))) || [];
+  } catch (err) {
+    const message = String((err && err.message) || err);
+    if (!/world|MAIN/i.test(message)) throw err;
+    return (await chrome.scripting.executeScript(payload)) || [];
+  }
+}
+
 /** Unwrap an injected function's result, turning a reported error into a throw. */
 function cdpFreeResult(results, what) {
   const r = results && results[0] && results[0].result;
@@ -764,10 +783,9 @@ async function cdpFreeCheck(params, want) {
   const tid = src.tabId || src.tab_id || (await getActiveTabId());
   const action = want ? "check" : "uncheck";
   if (!src.selector) throw new Error(action + " requires a selector");
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tid },
-    world: "MAIN",
-    func: (sel, wantChecked) => {
+  const results = await runInPage(
+    tid,
+    (sel, wantChecked) => {
       const el = document.querySelector(sel);
       if (!el) return { error: "Element not found: " + sel };
       const type = String(el.type || "").toLowerCase();
@@ -789,8 +807,8 @@ async function cdpFreeCheck(params, want) {
       }
       return { checked: !!el.checked, changed: true };
     },
-    args: [src.selector, !!want],
-  });
+    [src.selector, !!want],
+  );
   const r = cdpFreeResult(results, action);
   return { tabId: tid, checked: r.checked, changed: r.changed };
 }
@@ -799,10 +817,9 @@ async function cdpFreeStyles(params) {
   const src = params || {};
   const tid = src.tab_id || src.tabId || (await getActiveTabId());
   if (!src.selector) throw new Error("selector is required");
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tid },
-    world: "MAIN",
-    func: (sel, prop) => {
+  const results = await runInPage(
+    tid,
+    (sel, prop) => {
       const el = document.querySelector(sel);
       if (!el) return { error: "Element not found: " + sel };
       const cs = getComputedStyle(el);
@@ -817,8 +834,8 @@ async function cdpFreeStyles(params) {
       for (const n of names) out[n] = cs.getPropertyValue(n);
       return { computed: out };
     },
-    args: [src.selector, src.property || null],
-  });
+    [src.selector, src.property || null],
+  );
   const r = cdpFreeResult(results, "styles");
   return {
     tab_id: tid,
@@ -832,10 +849,9 @@ async function cdpFreeStyles(params) {
 async function cdpFreeFrames(params) {
   const src = params || {};
   const tid = src.tabId || src.tab_id || (await getActiveTabId());
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tid, allFrames: true },
-    world: "MAIN",
-    func: () => {
+  const results = await runInPage(
+    tid,
+    () => {
       let depth = 0;
       let crossOriginParent = false;
       try {
@@ -855,7 +871,9 @@ async function cdpFreeFrames(params) {
         crossOriginParent: crossOriginParent,
       };
     },
-  });
+    [],
+    true,
+  );
   const frames = (results || [])
     .map((entry) => {
       const res = entry.result || {};
@@ -881,10 +899,9 @@ async function cdpFreeFileUpload(params) {
       "file_upload by fileId needs the local server file store, which this browser build cannot reach; pass content (base64) instead",
     );
   }
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tid },
-    world: "MAIN",
-    func: (sel, b64, name) => {
+  const results = await runInPage(
+    tid,
+    (sel, b64, name) => {
       const el = document.querySelector(sel);
       if (!el) return { error: "Element not found: " + sel };
       if (el.tagName !== "INPUT" || String(el.type || "").toLowerCase() !== "file") {
@@ -906,8 +923,8 @@ async function cdpFreeFileUpload(params) {
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return { files: el.files ? el.files.length : 0, name: file.name, size: file.size };
     },
-    args: [src.selector, src.content, src.filename || "upload.bin"],
-  });
+    [src.selector, src.content, src.filename || "upload.bin"],
+  );
   const r = cdpFreeResult(results, "file_upload");
   return { tabId: tid, selector: src.selector, uploaded: r };
 }
@@ -915,10 +932,9 @@ async function cdpFreeFileUpload(params) {
 async function cdpFreeDrag(params) {
   const src = params || {};
   const tid = src.tabId || src.tab_id || (await getActiveTabId());
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tid },
-    world: "MAIN",
-    func: (fromSel, fx, fy, toSel, tx, ty, wantSteps) => {
+  const results = await runInPage(
+    tid,
+    (fromSel, fx, fy, toSel, tx, ty, wantSteps) => {
       const at = (el) => {
         const r = el.getBoundingClientRect();
         return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
@@ -990,7 +1006,7 @@ async function cdpFreeDrag(params) {
       }
       return { from: a, to: b, steps: steps, nativeDnd: nativeDnd };
     },
-    args: [
+    [
       src.fromSelector || null,
       src.fromX != null ? src.fromX : null,
       src.fromY != null ? src.fromY : null,
@@ -999,7 +1015,7 @@ async function cdpFreeDrag(params) {
       src.toY != null ? src.toY : null,
       src.steps || 10,
     ],
-  });
+  );
   const r = cdpFreeResult(results, "drag");
   return { tabId: tid, from: r.from, to: r.to, steps: r.steps, native_dnd: r.nativeDnd };
 }
@@ -1050,6 +1066,56 @@ async function registerPageInstrumentation() {
   }
 }
 
+/**
+ * Inject the page instrumentation on demand. Hosts that do not implement
+ * chrome.scripting.registerContentScripts never get the static registration, so
+ * fall back to injecting it into the tab's frames when a capture tool is used.
+ * Both halves guard themselves, so repeated injection is a no-op.
+ */
+async function injectPageInstrumentation(tabId) {
+  if (HAS_DEBUGGER || !chrome.scripting || !chrome.scripting.executeScript) return false;
+  const target = { tabId: tabId, allFrames: true };
+  try {
+    await chrome.scripting.executeScript({ target: target, files: ["src/page-instrument.js"] });
+  } catch {}
+  try {
+    await chrome.scripting.executeScript({
+      target: target,
+      files: ["src/page-instrument.js"],
+      world: "MAIN",
+    });
+  } catch {}
+  return true;
+}
+
+/**
+ * Some WebKit hosts reject world:"MAIN" on chrome.scripting.executeScript. Rather
+ * than patching every handler, wrap the API once - and only on browsers without
+ * CDP - so a world-related failure transparently retries in the default world
+ * (the DOM is shared either way). Chrome implements world:"MAIN", so this is a
+ * no-op there.
+ */
+function installExecuteScriptCompat() {
+  if (HAS_DEBUGGER) return;
+  const scripting = typeof chrome !== "undefined" ? chrome.scripting : null;
+  if (!scripting || typeof scripting.executeScript !== "function") return;
+  if (scripting.__bmcpWorldCompat) return;
+  const original = scripting.executeScript.bind(scripting);
+  scripting.executeScript = function (details) {
+    const args = Array.prototype.slice.call(arguments);
+    return Promise.resolve(original.apply(null, args)).catch((err) => {
+      const message = String((err && err.message) || err);
+      if (!details || !details.world || !/world/i.test(message)) throw err;
+      const retry = Object.assign({}, details);
+      delete retry.world;
+      return original.apply(null, [retry].concat(args.slice(1)));
+    });
+  };
+  try {
+    scripting.__bmcpWorldCompat = true;
+  } catch {}
+}
+
 /** Fold a relayed page-instrument event into the very same maps CDP fills. */
 function ingestPageInstrumentEvent(tabId, kind, payload) {
   const p = payload || {};
@@ -1091,6 +1157,8 @@ function ingestPageInstrumentEvent(tabId, kind, payload) {
 async function cdpFreeConsole(params) {
   const src = params || {};
   const tid = src.tabId || src.tab_id || (await getActiveTabId());
+  // The events come FROM the page, so make sure the capture is installed.
+  if (!pageInstrumentRegistered) await injectPageInstrumentation(tid);
   if (src.action === "clear") {
     consoleLogs.delete(tid);
     return { cleared: true };
@@ -1115,6 +1183,7 @@ async function cdpFreeConsole(params) {
 async function cdpFreeErrors(params) {
   const src = params || {};
   const tid = src.tabId || src.tab_id || (await getActiveTabId());
+  if (!pageInstrumentRegistered) await injectPageInstrumentation(tid);
   if (src.action === "clear") {
     pageErrors.delete(tid);
     return { cleared: true };
@@ -1136,6 +1205,7 @@ async function cdpFreeErrors(params) {
 async function cdpFreeDialog(params) {
   const src = params || {};
   const tid = src.tabId || src.tab_id || (await getActiveTabId());
+  if (!pageInstrumentRegistered) await injectPageInstrumentation(tid);
 
   if (src.action === "auto") {
     const confirm = src.confirm === true;
@@ -3768,6 +3838,9 @@ async function setWebauthnAuto(enabled) {
 async function guardOsDialogs(tabId) {
   try {
     if (!tabId) return false;
+    // The virtual authenticator is a CDP feature; without chrome.debugger there is
+    // nothing to arm, so skip the work (and the storage read) entirely.
+    if (!HAS_DEBUGGER) return false;
     if (!(await webauthnAutoEnabled())) return false;
     const tab = await chrome.tabs.get(tabId);
     const url = (tab && tab.url) || "";
@@ -5182,6 +5255,11 @@ async function handleNotify({ title, message, url, priority }) {
 const GROUP_COLORS = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
 
 async function handleGroups({ action, tab_ids, group_id, title, color, collapsed }) {
+  if (!chrome.tabGroups) {
+    throw new Error(
+      "Tab groups need the chrome.tabGroups API, which this browser does not provide (WebKit: Safari, Orion on iOS/iPadOS).",
+    );
+  }
   const act = action || "list";
   if (act === "list") {
     const groups = await chrome.tabGroups.query({});
@@ -5731,6 +5809,9 @@ async function handleStyles({ selector, ref, property, tab_id }) {
 // ============================================================================
 
 async function handleSiteData({ origin, cookies, local_storage, cache, indexed_db, service_workers, tab_id }) {
+  if (!chrome.browsingData) {
+    throw new Error("Clearing site data needs the chrome.browsingData API, which this browser does not provide.");
+  }
   const tid = tab_id || (await getActiveTabId());
   let targetOrigin = origin;
   if (!targetOrigin) {
@@ -7881,6 +7962,8 @@ initBridge().catch(() => {});
 // Console/error/dialog capture for browsers without chrome.debugger (no-op on
 // Chrome, which uses the DevTools Protocol for these).
 registerPageInstrumentation().catch(() => {});
+// WebKit-only: tolerate hosts that reject world:"MAIN" on executeScript.
+installExecuteScriptCompat();
 
 // Re-sync toolbar icon after SW restarts (offscreen may already be connected).
 setTimeout(() => {

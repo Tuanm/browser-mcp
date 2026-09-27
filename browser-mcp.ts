@@ -2276,7 +2276,7 @@ const tools: Record<string, ToolDef> = {
           tabId: args.tab_id,
         });
         return outJson({
-          checked: true,
+          checked: result.checked !== undefined ? result.checked : true,
           already: !!result.already,
           tab_id: result.tabId,
         });
@@ -2309,7 +2309,7 @@ const tools: Record<string, ToolDef> = {
           tabId: args.tab_id,
         });
         return outJson({
-          checked: false,
+          checked: result.checked !== undefined ? result.checked : false,
           already: !!result.already,
           tab_id: result.tabId,
         });

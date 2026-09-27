@@ -741,7 +741,9 @@ export function createMcpHandler(dispatch) {
         const sel = a.ref ? resolveRefArg(a) : a.selector;
         if (!sel) throw new Error("ref or selector required");
         const r = await dispatch("check", { selector: sel, tabId: a.tab_id });
-        return { content: textBlocks(jsonOut({ checked: true, already: !!r.already, tab_id: r.tabId })) };
+        return {
+          content: textBlocks(jsonOut({ checked: r.checked !== undefined ? r.checked : true, already: !!r.already, tab_id: r.tabId })),
+        };
       },
     },
     {
@@ -753,7 +755,9 @@ export function createMcpHandler(dispatch) {
         const sel = a.ref ? resolveRefArg(a) : a.selector;
         if (!sel) throw new Error("ref or selector required");
         const r = await dispatch("uncheck", { selector: sel, tabId: a.tab_id });
-        return { content: textBlocks(jsonOut({ checked: false, already: !!r.already, tab_id: r.tabId })) };
+        return {
+          content: textBlocks(jsonOut({ checked: r.checked !== undefined ? r.checked : false, already: !!r.already, tab_id: r.tabId })),
+        };
       },
     },
     {

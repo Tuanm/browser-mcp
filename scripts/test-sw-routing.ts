@@ -26,7 +26,7 @@ const bad = (name: string, why: string) => {
   console.log("  FAIL " + name + ": " + why);
 };
 
-function makeChrome(opts: { debugger: boolean; offscreen: boolean }) {
+function makeChrome(opts: { debugger: boolean; offscreen: boolean; registerContentScripts?: boolean }) {
   const calls = { sendCommand: [] as string[], executeScript: [] as any[], registered: [] as any[] };
   const listeners: Record<string, Function[]> = {};
   const add = (k: string) => (fn: Function) => {
@@ -98,11 +98,14 @@ function makeChrome(opts: { debugger: boolean; offscreen: boolean }) {
   if (opts.offscreen) {
     chrome.offscreen = { hasDocument: async () => true, createDocument: async () => {}, closeDocument: async () => {} };
   }
+  if (opts.registerContentScripts === false) {
+    delete chrome.scripting.registerContentScripts;
+  }
   return { chrome, calls, listeners };
 }
 
 let seq = 0;
-async function load(opts: { debugger: boolean; offscreen: boolean }) {
+async function load(opts: { debugger: boolean; offscreen: boolean; registerContentScripts?: boolean }) {
   const m = makeChrome(opts);
   (globalThis as any).chrome = m.chrome;
   // A distinct specifier gives a fresh module instance per scenario.
@@ -247,6 +250,54 @@ console.log("\n== Chrome: the same methods still take the CDP path ==");
   }
   if (m.calls.registered.length === 0) ok("chrome: no page instrumentation after the full run");
   else bad("chrome: no page instrumentation after the full run", JSON.stringify(m.calls.registered));
+}
+
+console.log("\n== WebKit: capability gaps produce actionable errors, not TypeErrors ==");
+{
+  const m = await load({ debugger: false, offscreen: false });
+  const cases: Array<[string, any, RegExp]> = [
+    ["groups", { action: "list" }, /chrome\.tabGroups/],
+    ["site_data", { origin: "https://example.com" }, /chrome\.browsingData/],
+  ];
+  for (const entry of cases) {
+    let text = "";
+    try {
+      const resp: any = await command(m, entry[0], entry[1]);
+      text = JSON.stringify(resp);
+    } catch (e) {
+      text = String((e as Error).message);
+    }
+    if (entry[2].test(text)) ok("webkit: " + entry[0] + " explains the missing API");
+    else bad("webkit: " + entry[0] + " explains the missing API", text.slice(0, 150));
+  }
+}
+
+console.log("\n== WebKit: check reports the state the page actually reached ==");
+{
+  const m = await load({ debugger: false, offscreen: false });
+  let checked: any = "unset";
+  try {
+    const resp: any = await command(m, "check", { selector: "#agree" });
+    checked = resp && resp.result ? resp.result.checked : "no result";
+  } catch {}
+  if (checked === false) ok("webkit: check reports checked=false when the page stayed unchecked");
+  else bad("webkit: check reports the real state", String(checked));
+}
+
+console.log("\n== WebKit without registerContentScripts: on-demand injection ==");
+{
+  const m = await load({ debugger: false, offscreen: false, registerContentScripts: false });
+  const before = m.calls.executeScript.length;
+  try {
+    await command(m, "console", { action: "view" });
+  } catch {}
+  const injected = m.calls.executeScript
+    .slice(before)
+    .some((c: any) => Array.isArray(c.files) && c.files.indexOf("src/page-instrument.js") !== -1);
+  if (injected) ok("webkit: console injects the instrumentation on demand");
+  else bad("webkit: console injects the instrumentation on demand", "no file injection observed");
+  if (m.calls.registered.length === 0) ok("webkit: nothing statically registered when the API is missing");
+  else bad("webkit: nothing statically registered when the API is missing", JSON.stringify(m.calls.registered));
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

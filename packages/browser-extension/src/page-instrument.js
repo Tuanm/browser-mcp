@@ -25,6 +25,9 @@
 
   if (isIsolatedWorld) {
     // ---------------- relay (isolated world) ----------------
+    // Re-injection (e.g. the on-demand fallback) must not stack relays.
+    if (window.__bmcpPageInstrumentRelay) return;
+    window.__bmcpPageInstrumentRelay = true;
     const nonce = (() => {
       try {
         return crypto.randomUUID();
@@ -60,7 +63,8 @@
       const data = event.data;
       if (!data || data[CHANNEL] !== true || data.nonce !== nonce) return;
       try {
-        chrome.runtime.sendMessage({ type: "page-instrument", kind: data.kind, payload: data.payload });
+        const sent = chrome.runtime.sendMessage({ type: "page-instrument", kind: data.kind, payload: data.payload });
+        if (sent && typeof sent.catch === "function") sent.catch(() => {});
       } catch {}
     });
 
