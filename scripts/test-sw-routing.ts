@@ -27,7 +27,12 @@ const bad = (name: string, why: string) => {
 };
 
 function makeChrome(opts: { debugger: boolean; offscreen: boolean; registerContentScripts?: boolean }) {
-  const calls = { sendCommand: [] as string[], executeScript: [] as any[], registered: [] as any[] };
+  const calls = {
+    sendCommand: [] as string[],
+    executeScript: [] as any[],
+    registered: [] as any[],
+    tabMessages: [] as any[],
+  };
   const listeners: Record<string, Function[]> = {};
   const add = (k: string) => (fn: Function) => {
     (listeners[k] ||= []).push(fn);
@@ -48,7 +53,10 @@ function makeChrome(opts: { debugger: boolean; offscreen: boolean; registerConte
     tabs: {
       query: async () => [{ id: 7, url: "https://example.com/", title: "Example", active: true }],
       get: async () => ({ id: 7, url: "https://example.com/", title: "Example" }),
-      sendMessage: async () => ({}),
+      sendMessage: async (_tabId: any, message: any) => {
+        calls.tabMessages.push(message);
+        return {};
+      },
       update: async () => ({ id: 7, url: "https://example.com/" }),
       onCreated: { addListener: add("tabsCreated") },
       onRemoved: { addListener: add("tabsRemoved") },
@@ -298,6 +306,36 @@ console.log("\n== WebKit without registerContentScripts: on-demand injection =="
   else bad("webkit: console injects the instrumentation on demand", "no file injection observed");
   if (m.calls.registered.length === 0) ok("webkit: nothing statically registered when the API is missing");
   else bad("webkit: nothing statically registered when the API is missing", JSON.stringify(m.calls.registered));
+}
+
+console.log("\n== Capture feedback: no border glow, flash only for screenshots ==");
+{
+  const m = await load({ debugger: true, offscreen: true });
+
+  await command(m, "snapshot", {}).catch(() => {});
+  const glow = m.calls.tabMessages.filter(
+    (x: any) => x.type === "show-agent-overlay" || x.type === "hide-agent-overlay",
+  );
+  if (glow.length === 0) ok("no agent-overlay (glow) messages are ever sent");
+  else bad("no agent-overlay (glow) messages are ever sent", JSON.stringify(glow));
+
+  const beforeSnap = m.calls.tabMessages.length;
+  await command(m, "snapshot", {}).catch(() => {});
+  const snapTypes = m.calls.tabMessages.slice(beforeSnap).map((x: any) => x.type);
+  if (snapTypes.indexOf("flash-capture") === -1) ok("a non-capture command does not flash");
+  else bad("a non-capture command does not flash", JSON.stringify(snapTypes));
+
+  const beforeShot = m.calls.tabMessages.length;
+  try {
+    await command(m, "screenshot", { tabId: 7 });
+  } catch {}
+  const shotTypes = m.calls.tabMessages.slice(beforeShot).map((x: any) => x.type);
+  const cleared = shotTypes.indexOf("clear-capture-flash");
+  const flashed = shotTypes.indexOf("flash-capture");
+  if (cleared !== -1 && flashed !== -1) ok("screenshot clears any old flash and then flashes");
+  else bad("screenshot clears any old flash and then flashes", JSON.stringify(shotTypes));
+  if (cleared !== -1 && flashed !== -1 && cleared < flashed) ok("the flash is fired only after the capture");
+  else bad("the flash is fired only after the capture", JSON.stringify(shotTypes));
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed");

@@ -122,7 +122,7 @@ async function setActionIcon(connected) {
     await chrome.action.setIcon({ path: resolved });
   } catch {}
 } // "__bmcp-*" style prefix
-const activeTabCommands = new Map(); // tabId -> active command count (for glow indicator)
+const activeTabCommands = new Map(); // tabId -> active command count (drives the agent cursor lifecycle)
 const frameContexts = new Map(); // `${tabId}:${frameId}` -> executionContextId
 const tabEmulation = new Map(); // tabId -> {metrics, hasTouch, userAgent} for screenshot restore
 const tabSetOverrides = new Map(); // tabId -> {geo?, offline?, media?} from set (cleared by emulate action=clear)
@@ -718,7 +718,7 @@ async function handleCommand(id, method, params) {
   // While a command is in flight (plus a short grace) the agent is "driving":
   // tabs it opens in that window get their virtual authenticator auto-armed.
   agentActiveUntil = Date.now() + 15000;
-  // Show glow indicator on target tab
+  // Drive the agent cursor on the target tab (no border glow any more).
   let indicatorTab = params?.tabId || null;
   if (!indicatorTab) {
     try {
@@ -1469,7 +1469,26 @@ async function handleNavigate({ url, tabId, waitFor, stealth }) {
 
 // --- Screenshot ---
 
-async function handleScreenshot({ tabId, selector, fullPage }) {
+/**
+ * Screenshot entry point. Clears any in-flight flash first (so a previous flash
+ * cannot bleed into this image) and fires the confirmation flash only after the
+ * capture has succeeded.
+ */
+async function handleScreenshot(params) {
+  const src = params || {};
+  let tid = src.tabId || null;
+  if (!tid) {
+    try {
+      tid = await getActiveTabId();
+    } catch {}
+  }
+  clearCaptureFlash(tid);
+  const shot = await captureScreenshot(src);
+  flashCapture(tid);
+  return shot;
+}
+
+async function captureScreenshot({ tabId, selector, fullPage }) {
   const tid = tabId || (await getActiveTabId());
 
   if (selector || fullPage || tabId) {
@@ -5005,6 +5024,9 @@ async function handlePdf({
   };
   if (headerTemplate) params.headerTemplate = headerTemplate;
   if (footerTemplate) params.footerTemplate = footerTemplate;
+  // A still capture like a screenshot: clear any in-flight flash first so it
+  // cannot end up on the printed page.
+  clearCaptureFlash(tid);
   const result = await sendDebuggerCommand(tid, "Page.printToPDF", params);
   return { data: result.data, mimeType: "application/pdf" };
 }
@@ -6143,7 +6165,9 @@ async function dispatchStealthCommand(method, params) {
     case "screenshot": {
       // Stealth screenshot: captureVisibleTab only (no CDP)
       if (params.tabId) await chrome.tabs.update(tid, { active: true });
+      clearCaptureFlash(tid);
       const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "jpeg", quality: 60 });
+      flashCapture(tid);
       return { tabId: tid, dataUrl, width: null, height: null };
     }
     case "extract":
@@ -7717,7 +7741,7 @@ async function resolveElementCoords(tabId, selector) {
 // ============================================================================
 
 /**
- * The agent cursor + glow overlay stay visible across ALL steps of an agent
+ * The agent cursor stays visible across ALL steps of an agent
  * run. Hiding is idle-based: after the last command completes, we wait
  * CURSOR_IDLE_HIDE_MS of no further commands before fading the UI out. If the
  * next command arrives sooner, the pending hide is cancelled and the cursor
@@ -7732,7 +7756,6 @@ function scheduleAgentUiHide(tabId) {
     tabId,
     setTimeout(() => {
       agentUiHideTimers.delete(tabId);
-      chrome.tabs.sendMessage(tabId, { type: "hide-agent-overlay" }).catch(() => {});
       chrome.tabs.sendMessage(tabId, { type: "hide-activity-cursor" }).catch(() => {});
     }, CURSOR_IDLE_HIDE_MS),
   );
@@ -7761,7 +7784,8 @@ async function showAgentIndicator(tabId) {
       .catch(() => {}); // Already injected or restricted page
     // Send session-random prefix for DOM identifier stealth, then show overlay
     await chrome.tabs.sendMessage(tabId, { type: "set-prefix", prefix: SESSION_PREFIX }).catch(() => {});
-    chrome.tabs.sendMessage(tabId, { type: "show-agent-overlay" }).catch(() => {});
+    // No border glow: the agent no longer tints the page while it works. The only
+    // visual capture feedback is the flash sent after a screenshot completes.
     chrome.tabs.sendMessage(tabId, { type: "show-activity-cursor" }).catch(() => {});
   }
 }
@@ -7821,6 +7845,27 @@ function showActivityCursor(tabId) {
 /** Hide persistent Browser MCP activity cursor when operation completes/fails. */
 function hideActivityCursor(tabId) {
   chrome.tabs.sendMessage(tabId, { type: "hide-activity-cursor" }).catch(() => {});
+}
+
+/** Drop any in-flight capture flash so it can never land inside a screenshot. */
+function clearCaptureFlash(tabId) {
+  if (!tabId) return;
+  try {
+    const sent = chrome.tabs.sendMessage(tabId, { type: "clear-capture-flash" });
+    if (sent && typeof sent.catch === "function") sent.catch(() => {});
+  } catch {}
+}
+
+/**
+ * Briefly flash the tab to confirm a capture. Sent AFTER the pixels are taken, so
+ * the flash itself is never part of the image.
+ */
+function flashCapture(tabId, durationMs) {
+  if (!tabId) return;
+  try {
+    const sent = chrome.tabs.sendMessage(tabId, { type: "flash-capture", duration: durationMs || 450 });
+    if (sent && typeof sent.catch === "function") sent.catch(() => {});
+  } catch {}
 }
 
 /** Check if a download was triggered on this tab within the last N ms. Returns download info or null. */

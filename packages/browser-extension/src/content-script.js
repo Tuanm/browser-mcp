@@ -2,7 +2,7 @@
  * Content Script - injected into every page (isolated world).
  *
  * Provides:
- * 1. Agent activity indicator (glowing border overlay while an agent command runs)
+ * 1. Capture flash (a brief border flash after the agent screenshots the tab)
  * 2. Black MCP-mark action cursor with box shadow at interaction positions
  * 3. Element highlight for highlight
  *
@@ -20,48 +20,50 @@ if (!window[Symbol.for("_x7cs")]) {
   let _pfx = "_x" + Math.random().toString(36).slice(2, 8);
 
   // ========================================================================
-  // Agent Activity Overlay - glowing border while the agent is working
+  // Capture flash - a brief border flash AFTER a screenshot is taken
   // ========================================================================
+  //
+  // The always-on glowing border is gone: the agent no longer tints the page
+  // while it works. This flash is the only capture feedback, it runs AFTER the
+  // pixels are taken, and the worker clears it before every capture - so it can
+  // never end up inside the screenshot itself.
 
-  let overlayCount = 0;
-  let overlayEl = null;
-  let styleEl = null;
-  let hideTimer = null;
-  let fadeTimer = null;
-  let autoHideTimer = null;
+  let flashEl = null;
+  let flashStyleEl = null;
+  let flashTimer = null;
 
-  function showAgentOverlay() {
-    overlayCount++;
-    if (hideTimer) {
-      clearTimeout(hideTimer);
-      hideTimer = null;
+  function clearCaptureFlash() {
+    if (flashTimer) {
+      clearTimeout(flashTimer);
+      flashTimer = null;
     }
-    if (fadeTimer) {
-      clearTimeout(fadeTimer);
-      fadeTimer = null;
+    if (flashEl) {
+      flashEl.remove();
+      flashEl = null;
     }
-    // No auto-hide here: the service worker owns the hide lifecycle via an
-    // idle timer (hide-agent-overlay after inactivity), so the glow stays
-    // visible across multi-step agent runs instead of flashing every 5s.
-    if (overlayEl) {
-      overlayEl.style.opacity = "1";
-      return;
+    if (flashStyleEl) {
+      flashStyleEl.remove();
+      flashStyleEl = null;
     }
+  }
 
-    styleEl = document.createElement("style");
-    styleEl.id = `${_pfx}-overlay-style`;
-    styleEl.textContent = `
-      @keyframes ${_pfx}-glow {
-        0%, 100% { box-shadow: inset 0 0 6px 2px rgba(0,0,0,0.25); }
-        50% { box-shadow: inset 0 0 24px 6px rgba(0,0,0,0.45); }
+  function flashCapture(durationMs) {
+    clearCaptureFlash();
+    const ms = Math.max(150, Math.min(Number(durationMs) || 450, 2000));
+    flashStyleEl = document.createElement("style");
+    flashStyleEl.id = `${_pfx}-flash-style`;
+    flashStyleEl.textContent = `
+      @keyframes ${_pfx}-capture-flash {
+        0% { opacity: 0; }
+        12% { opacity: 1; }
+        100% { opacity: 0; }
       }
-      @keyframes ${_pfx}-glow-in { from { opacity: 0; } to { opacity: 1; } }
     `;
-    (document.head || document.documentElement).appendChild(styleEl);
+    (document.head || document.documentElement).appendChild(flashStyleEl);
 
-    overlayEl = document.createElement("div");
-    overlayEl.id = `${_pfx}-agent-overlay`;
-    Object.assign(overlayEl.style, {
+    flashEl = document.createElement("div");
+    flashEl.id = `${_pfx}-capture-flash`;
+    Object.assign(flashEl.style, {
       position: "fixed",
       top: "0",
       left: "0",
@@ -69,33 +71,16 @@ if (!window[Symbol.for("_x7cs")]) {
       bottom: "0",
       zIndex: "2147483647",
       pointerEvents: "none",
-      border: "none",
-      animation: `${_pfx}-glow 2s ease-in-out infinite, ${_pfx}-glow-in 0.3s ease-out`,
-      transition: "opacity 0.3s ease-out",
+      boxSizing: "border-box",
+      border: "6px solid rgba(255,255,255,0.95)",
+      boxShadow: "inset 0 0 48px 12px rgba(255,255,255,0.7)",
+      animation: `${_pfx}-capture-flash ${ms}ms ease-out forwards`,
     });
-    document.documentElement.appendChild(overlayEl);
-  }
-
-  function hideAgentOverlay() {
-    overlayCount = Math.max(0, overlayCount - 1);
-    if (overlayCount > 0 || !overlayEl) return;
-    if (autoHideTimer) {
-      clearTimeout(autoHideTimer);
-      autoHideTimer = null;
-    }
-    hideTimer = setTimeout(() => {
-      hideTimer = null;
-      if (overlayEl) {
-        overlayEl.style.opacity = "0";
-        fadeTimer = setTimeout(() => {
-          if (overlayEl) overlayEl.remove();
-          if (styleEl) styleEl.remove();
-          overlayEl = null;
-          styleEl = null;
-          fadeTimer = null;
-        }, 300);
-      }
-    }, 500);
+    document.documentElement.appendChild(flashEl);
+    flashTimer = setTimeout(() => {
+      flashTimer = null;
+      clearCaptureFlash();
+    }, ms + 60);
   }
 
   // ========================================================================
@@ -608,30 +593,16 @@ if (!window[Symbol.for("_x7cs")]) {
           const el = document.getElementById(id);
           if (el) el.remove();
         }
-        overlayEl = null;
-        styleEl = null;
         cursorStyleEl = null;
         persistentCursorEl = null;
-        if (hideTimer) {
-          clearTimeout(hideTimer);
-          hideTimer = null;
-        }
-        if (fadeTimer) {
-          clearTimeout(fadeTimer);
-          fadeTimer = null;
-        }
-        if (autoHideTimer) {
-          clearTimeout(autoHideTimer);
-          autoHideTimer = null;
-        }
-        overlayCount = 0;
+        clearCaptureFlash();
       }
       sendResponse({ ok: true });
-    } else if (message.type === "show-agent-overlay") {
-      showAgentOverlay();
+    } else if (message.type === "flash-capture") {
+      flashCapture(message.duration);
       sendResponse({ ok: true });
-    } else if (message.type === "hide-agent-overlay") {
-      hideAgentOverlay();
+    } else if (message.type === "clear-capture-flash") {
+      clearCaptureFlash();
       sendResponse({ ok: true });
     } else if (message.type === "highlight-element") {
       highlightElement(message.selector, message.duration || 2000);
