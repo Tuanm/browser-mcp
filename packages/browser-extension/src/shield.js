@@ -5,16 +5,15 @@
  * Runs BEFORE any page script, making patches invisible.
  *
  * Detection vectors neutralized:
- * 1. debugger statement timing (performance.now / Date.now / Date() / rAF offset)
- * 2. DevTools window dimension check (outerHeight/outerWidth on prototype)
- * 3. navigator.webdriver flag (on prototype)
- * 4. console.clear no-op
- * 5. Function constructor / setTimeout string debugger stripping
- * 6. chrome.csi / chrome.loadTimes normalization
+ * - DevTools window dimension check (outerHeight/outerWidth on prototype)
+ * - navigator.webdriver flag (on prototype)
+ * - console.clear no-op
+ * - Function constructor / setTimeout string debugger stripping
+ * - chrome.csi / chrome.loadTimes normalization
  *
  * Architecture: Direct function replacement + patched Function.prototype.toString.
  * No Proxy on patched functions — survives Function.prototype.toString.call().
- * Date and Function constructors use Proxy with get traps for .prototype.
+ * The Function constructor uses a Proxy with a get trap for .prototype.
  * Each section wrapped in try-catch for resilience.
  */
 
@@ -47,138 +46,17 @@
   Function.prototype.toString = _patchedToString;
 
   // =========================================================================
-  // 1. Debugger statement timing neutralization
-  //
-  // Detection: performance.now() / Date.now() / new Date() / rAF timestamp
-  // gaps reveal debugger pauses.
-  //
-  // Fix: Track cumulative pause time via setInterval detector with
-  // visibility guard, delta cap, adaptive baseline, and monotonicity.
+  // Preserve native Date, performance.now and requestAnimationFrame clocks.
+  // Idle reads, throttling, CPU stalls and sleep cannot be distinguished from
+  // debugger pauses by timing gaps. Subtracting them freezes page wall clocks.
   // =========================================================================
 
   const _perfNow = performance.now.bind(performance);
-  const _dateNow = Date.now;
-  const _OrigDate = Date;
-  let _offset = 0;
-  let _highWater = 0;
-  let _detectorActive = true;
+  const _dateNow = Date.now.bind(Date);
 
   // Capture real chrome height before any DevTools opens
   const _chromeH = Math.min(Math.max(window.outerHeight - window.innerHeight, 20), 120) || 80;
   const _sideChrome = /Win/.test(navigator.platform) ? 14 : 0;
-
-  // Adaptive baseline for interval timing (handles CPU variance)
-  let _baseline = 50;
-  let _lastCheck = _perfNow();
-  let _lastCorrectionTime = 0; // Prevents double correction (inline + tick)
-
-  function _detectorTick() {
-    if (!_detectorActive || document.hidden) {
-      _lastCheck = _perfNow();
-      return;
-    }
-    const now = _perfNow();
-    const delta = now - _lastCheck;
-    if (delta > 200 && delta < 30000) {
-      // Only correct if inline correction hasn't already handled this pause
-      if (now - _lastCorrectionTime > _baseline * 2) {
-        _offset += delta - _baseline;
-        _lastCorrectionTime = now;
-      }
-    } else if (delta < 200) {
-      _baseline = _baseline * 0.9 + delta * 0.1;
-    }
-    _lastCheck = now;
-  }
-
-  let _detector = setInterval(_detectorTick, 50);
-
-  // Pause detector when tab is backgrounded (Chrome throttles to 1000ms+)
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      _detectorActive = false;
-    } else {
-      _lastCheck = _perfNow();
-      _detectorActive = true;
-    }
-  });
-
-  // Monotonic performance.now() with offset — shared high-water for all APIs.
-  // Inline anomaly detection closes the race window between debugger pause
-  // and setInterval correction (synchronous reads before tick fires).
-  // Coordination flag (_lastCorrectionTime) prevents double correction.
-  function _adjustedPerfNow() {
-    var now = _perfNow();
-    var raw = now - _offset;
-    if (_highWater > 0 && raw > _highWater + 200) {
-      _offset += raw - _highWater - 1;
-      _lastCorrectionTime = now;
-      raw = now - _offset;
-    }
-    if (raw > _highWater) _highWater = raw;
-    return _highWater;
-  }
-
-  // Patch Performance.prototype.now (not instance — avoids hasOwnProperty)
-  const _origPerfNowDesc = Object.getOwnPropertyDescriptor(Performance.prototype, "now");
-  const _patchedPerfNow = function now() {
-    return _adjustedPerfNow();
-  };
-  _registerNative(_patchedPerfNow, "now");
-  Object.defineProperty(Performance.prototype, "now", {
-    ...(_origPerfNowDesc || {}),
-    value: _patchedPerfNow,
-    writable: true,
-    configurable: true,
-  });
-
-  // Patch Date.now() — same offset, rounded to integer, monotonic
-  let _lastDateNow = 0;
-  const _patchedDateNow = function now() {
-    var v = Math.round(_dateNow.call(_OrigDate) - _offset);
-    if (v < _lastDateNow) v = _lastDateNow;
-    _lastDateNow = v;
-    return v;
-  };
-  _registerNative(_patchedDateNow, "now");
-  Date.now = _patchedDateNow;
-
-  // Patch Date constructor — new Date() / Date() consistency with Date.now()
-  const _DateProxy = new Proxy(_OrigDate, {
-    construct(target, args, newTarget) {
-      if (args.length === 0) {
-        return Reflect.construct(target, [_patchedDateNow()], newTarget);
-      }
-      return Reflect.construct(target, args, newTarget);
-    },
-    apply(target, thisArg, args) {
-      if (args.length === 0) {
-        return new target(_patchedDateNow()).toString();
-      }
-      return Reflect.apply(target, thisArg, args);
-    },
-    get(target, prop) {
-      if (prop === "now") return _patchedDateNow;
-      if (prop === "prototype") return _OrigDate.prototype;
-      return Reflect.get(target, prop);
-    },
-  });
-  // Proxy get trap handles .prototype reads; set constructor on original
-  _OrigDate.prototype.constructor = _DateProxy;
-  _registerNative(_DateProxy, "Date");
-  try {
-    window.Date = _DateProxy;
-  } catch {}
-
-  // Patch requestAnimationFrame — route through shared monotonic high-water
-  const _origRAF = window.requestAnimationFrame;
-  const _patchedRAF = function requestAnimationFrame(callback) {
-    return _origRAF.call(window, (timestamp) => {
-      callback(_adjustedPerfNow());
-    });
-  };
-  _registerNative(_patchedRAF, "requestAnimationFrame");
-  window.requestAnimationFrame = _patchedRAF;
 
   // =========================================================================
   // 2. Window dimension spoofing (on prototype, matching native shape)
@@ -324,11 +202,11 @@
       if (!window.chrome.csi) {
         var _csiOnloadT = null;
         window.chrome.csi = () => {
-          if (_csiOnloadT === null) _csiOnloadT = _patchedDateNow();
+          if (_csiOnloadT === null) _csiOnloadT = _dateNow();
           return {
             onloadT: _csiOnloadT,
             startE: _csiOnloadT - 500,
-            pageT: _adjustedPerfNow(),
+            pageT: _perfNow(),
             tran: 15,
           };
         };
@@ -336,7 +214,7 @@
       }
       if (!window.chrome.loadTimes) {
         window.chrome.loadTimes = () => {
-          var now = _patchedDateNow() / 1000;
+          var now = _dateNow() / 1000;
           return {
             commitLoadTime: now,
             connectionInfo: "h2",
@@ -372,19 +250,4 @@
       }
     }
   } catch {}
-
-  // =========================================================================
-  // Cleanup: stop pause detector on unload, restart on bfcache restore
-  // =========================================================================
-
-  window.addEventListener("pagehide", () => {
-    clearInterval(_detector);
-  });
-  window.addEventListener("pageshow", (e) => {
-    if (e.persisted) {
-      _lastCheck = _perfNow();
-      _detectorActive = true;
-      _detector = setInterval(_detectorTick, 50);
-    }
-  });
 })();
