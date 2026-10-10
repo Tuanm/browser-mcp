@@ -131,6 +131,14 @@ const pendingAuthByTab = new Map(); // tabId -> Set<requestId>  (for status look
 const webauthnAuthenticators = new Map(); // tabId -> authenticatorId (CDP virtual authenticator for passkeys)
 let agentActiveUntil = 0; // ms epoch; while in the future the agent is actively driving
 const recentDownloads = []; // Recent download events (from CDP Browser.downloadWillBegin), max 20
+// Downloads the agent's own tabs started, kept apart from recentDownloads because
+// click/navigate consume those entries to report download_triggered. This is the
+// gate for sending a download to gateway storage: CDP reports downloadWillBegin
+// only for tabs the agent has attached the debugger to, so a file the user
+// downloaded in an unrelated tab can never qualify.
+const agentDownloadOrigins = []; // { tabId, guid, url, timestamp, completed }
+const AGENT_DOWNLOAD_ORIGIN_TTL_MS = 10 * 60 * 1000;
+const AGENT_DOWNLOAD_ORIGIN_MAX = 50;
 const cdpCompletedUrls = new Map(); // url -> timestamp — CDP-confirmed download completions (separate from recentDownloads to survive consumeRecentDownload splice)
 
 // --- Multi-tab session recording (CDP screencast frames) ---
@@ -891,7 +899,7 @@ async function cdpFreeFrames(params) {
 }
 
 async function cdpFreeFileUpload(params) {
-  const src = params || {};
+  const src = await resolveUploadSource(params || {});
   const tid = src.tabId || src.tab_id || (await getActiveTabId());
   if (!src.selector) throw new Error("file_upload requires a selector for the <input type=file>");
   if (!src.content) {
@@ -901,7 +909,7 @@ async function cdpFreeFileUpload(params) {
   }
   const results = await runInPage(
     tid,
-    (sel, b64, name) => {
+    (sel, b64, name, mime) => {
       const el = document.querySelector(sel);
       if (!el) return { error: "Element not found: " + sel };
       if (el.tagName !== "INPUT" || String(el.type || "").toLowerCase() !== "file") {
@@ -915,7 +923,7 @@ async function cdpFreeFileUpload(params) {
       } catch {
         return { error: "content is not valid base64" };
       }
-      const file = new File([bytes], name, { type: "application/octet-stream" });
+      const file = new File([bytes], name, { type: mime || "application/octet-stream" });
       const dt = new DataTransfer();
       dt.items.add(file);
       el.files = dt.files;
@@ -923,10 +931,12 @@ async function cdpFreeFileUpload(params) {
       el.dispatchEvent(new Event("change", { bubbles: true }));
       return { files: el.files ? el.files.length : 0, name: file.name, size: file.size };
     },
-    [src.selector, src.content, src.filename || "upload.bin"],
+    [src.selector, src.content, src.filename || "upload.bin", src.mimeType || ""],
   );
   const r = cdpFreeResult(results, "file_upload");
-  return { tabId: tid, selector: src.selector, uploaded: r };
+  const done = { tabId: tid, selector: src.selector, uploaded: r };
+  if (src.gateway) Object.assign(done, { source: "gateway", fileId: src.gateway.id, fileName: src.gateway.name, size: src.gateway.size });
+  return done;
 }
 
 async function cdpFreeDrag(params) {
@@ -2782,9 +2792,17 @@ if (chrome.debugger && chrome.debugger.onEvent)
       timestamp: Date.now(),
     });
     if (recentDownloads.length > 20) recentDownloads.shift();
+    const now = Date.now();
+    while (agentDownloadOrigins.length && now - agentDownloadOrigins[0].timestamp > AGENT_DOWNLOAD_ORIGIN_TTL_MS) {
+      agentDownloadOrigins.shift();
+    }
+    agentDownloadOrigins.push({ tabId: source.tabId, guid: params.guid, url: params.url, timestamp: now, completed: false });
+    if (agentDownloadOrigins.length > AGENT_DOWNLOAD_ORIGIN_MAX) agentDownloadOrigins.shift();
   }
   // Track download completion via CDP (more reliable than chrome.downloads for blob: URLs)
   if (method === "Browser.downloadProgress" && params.state === "completed") {
+    const origin = agentDownloadOrigins.find((d) => d.guid === params.guid);
+    if (origin) origin.completed = true;
     const rd = recentDownloads.find((d) => d.guid === params.guid);
     if (rd) {
       rd.cdpCompleted = true;
@@ -3060,7 +3078,34 @@ const SET_FILE_JS = `function(base64, fileName, mimeType) {
   return fileName;
 }`;
 
-async function handleFileUpload({ selector, fileId, content, filename, tabId }) {
+/** Resolve a gateway-sourced upload to content, or reject a malformed request. */
+async function resolveUploadSource(params) {
+  const source = params.source;
+  if (source === undefined || source === null || source === "device") return params;
+  if (source !== "gateway") throw new Error('Unknown source "' + source + '". Use "device" or "gateway".');
+  if (params.content) throw new Error('source "gateway" takes a file_id, not content');
+  // A stored file is only handed to a page that will send it on encrypted: an
+  // http:// page would post it in the clear. Local hosts are the exception,
+  // exactly as for the gateway connection itself.
+  const tid = params.tabId || params.tab_id || (await getActiveTabId());
+  const tab = await chrome.tabs.get(tid);
+  let page;
+  try {
+    page = new URL(tab.url || "");
+  } catch {}
+  const localPage = page && /^(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.|\[::1\])/.test(page.host);
+  if (!page || !(page.protocol === "https:" || (page.protocol === "http:" && localPage))) {
+    throw new Error(
+      'source "gateway" uploads only into https:// pages (or a local http:// one); this tab is on ' +
+        (page ? page.protocol + "//" + page.host : "an unknown page"),
+    );
+  }
+  const g = await readGatewayFile(params.fileId);
+  return { ...params, tabId: tid, content: g.base64, filename: g.name, mimeType: g.mime, fileId: undefined, gateway: g };
+}
+
+async function handleFileUpload(rawParams) {
+  const { selector, fileId, content, filename, tabId, mimeType: sourceMime, gateway } = await resolveUploadSource(rawParams);
   const tid = tabId || (await getActiveTabId());
   await ensureDebugger(tid);
   // Runtime needed for Runtime.callFunctionOn (script execution on resolved node)
@@ -3071,7 +3116,7 @@ async function handleFileUpload({ selector, fileId, content, filename, tabId }) 
   try {
     let base64 = content || null;
     let fileName = filename || "upload.bin";
-    let mimeType = "application/octet-stream";
+    let mimeType = sourceMime || "application/octet-stream";
     if (!base64) {
       // File from the local server (file_id).
       if (!fileId) throw new Error("fileId (or content) is required");
@@ -3169,7 +3214,9 @@ async function handleFileUpload({ selector, fileId, content, filename, tabId }) 
       );
     }
 
-    return { tabId: tid, selector: selector || "(file chooser)", fileId, fileName };
+    const done = { tabId: tid, selector: selector || "(file chooser)", fileId, fileName };
+    if (gateway) Object.assign(done, { source: "gateway", fileId: gateway.id, size: gateway.size });
+    return done;
   } catch (err) {
     // Clean up file chooser interception state if an early error occurred before the pendingFC branch handled it
     if (hadPendingFC && pendingFileChoosers.has(tid)) {
@@ -3412,6 +3459,230 @@ async function getServerBaseUrl() {
   return { baseUrl: httpUrl, authToken: config.authToken || null };
 }
 
+// --- code-mcp-gateway file storage ------------------------------------------
+//
+// destination "gateway" (download) and source "gateway" (upload) move files
+// between a website and this device's temporary storage on the gateway instead
+// of the device's disk. The rules below are what keep that from leaking data:
+//
+//   - The gateway origin comes ONLY from the extension's stored config, never
+//     from a tool argument: device credentials are sent there, so an argument
+//     choosing it would let an agent - or a page steering one - redirect them.
+//   - Credentials travel in an Authorization header (never a URL), from
+//     extension contexts only. A page receives file bytes, never the token.
+//   - A download is sent only if CDP saw it begin in the agent's tab.
+//   - Stored files are protected with a random key that is never disclosed, so
+//     they are reachable only with this device's credentials until a person
+//     chooses to share one from /files.
+//   - Uploads take only files this device owns.
+
+const GATEWAY_FILE_ID_RE = /^[a-f0-9]{32}$/;
+const GATEWAY_FILE_MAX_BYTES = 200 * 1024 * 1024; // the gateway's per-file cap (it re-checks)
+const PAGE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024; // what the page-injection path can carry
+
+/** Gateway HTTP origin and device credentials, from stored config only. */
+async function gatewayFileApi() {
+  const cfg = (await chrome.storage.local.get(["deviceId", "authToken", "gatewayHost"])) || {};
+  if (!cfg.deviceId || !cfg.authToken) {
+    throw new Error(
+      "gateway file storage needs this browser connected to code-mcp-gateway with a device id and token (set them in the extension popup)",
+    );
+  }
+  let host = String(cfg.gatewayHost || SW_BRIDGE_DEFAULT_GATEWAY).trim();
+  host = host.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
+  const hostOnly = host.split("/")[0];
+  // Plain HTTP only for a gateway on this machine or the local network, exactly
+  // like the WebSocket bridge; anything else is HTTPS so Basic credentials are
+  // never sent in the clear.
+  const local = /^(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.|\[::1\])/.test(hostOnly);
+  const base = (local ? "http" : "https") + "://" + host;
+  const pair = cfg.deviceId + ":" + cfg.authToken;
+  const authorization = "Basic " + btoa(unescape(encodeURIComponent(pair)));
+  return { base, authorization };
+}
+
+function bytesToBase64(bytes) {
+  const parts = [];
+  for (let i = 0; i < bytes.length; i += 32768) {
+    parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 32768)));
+  }
+  return btoa(parts.join(""));
+}
+
+function randomHex(byteCount) {
+  const a = new Uint8Array(byteCount);
+  crypto.getRandomValues(a);
+  return Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Where a download came from, minus query and fragment (signed URLs carry secrets there). */
+function safeSourceUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "blob:" || u.protocol === "data:") return u.protocol.slice(0, -1) + " URL";
+    return u.origin + u.pathname;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The completed download the agent's tab started. Looks back lookbackMs for one
+ * already begun (click, then download) and waits up to maxWait for it to finish.
+ * Never returns a download from anywhere else.
+ */
+async function findAgentDownload(tabId, lookbackMs, maxWait) {
+  const startedAt = Date.now();
+  const deadline = startedAt + maxWait;
+  for (;;) {
+    const origins = agentDownloadOrigins
+      .filter((o) => o.tabId === tabId && o.timestamp >= startedAt - lookbackMs)
+      .sort((a, b) => b.timestamp - a.timestamp);
+    if (origins.length) {
+      const items = (await chrome.downloads.search({ limit: 30, orderBy: ["-startTime"] })) || [];
+      for (const o of origins) {
+        const item = items.find(
+          (i) =>
+            (i.url === o.url || i.finalUrl === o.url) &&
+            Math.abs(new Date(i.startTime).getTime() - o.timestamp) < 30000,
+        );
+        if (!item) continue;
+        if (item.state === "complete") return item;
+        if (item.state === "interrupted") throw new Error("Download interrupted: " + (item.error || "unknown reason"));
+        // blob: downloads can sit in_progress with every byte received.
+        if (o.completed && item.totalBytes > 0 && item.bytesReceived >= item.totalBytes) return item;
+      }
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(
+    "No completed download from the agent's tab " +
+      tabId +
+      ". Only a download that tab started is sent to gateway storage - trigger it there first (e.g. click the link), " +
+      "then call download. Downloads in stealth mode are not tracked.",
+  );
+}
+
+async function downloadToGateway({ action, timeout, tabId, expiryDays }) {
+  if (action !== "wait" && action !== "latest") {
+    throw new Error('destination "gateway" works with action "wait" or "latest"');
+  }
+  if (expiryDays !== undefined && expiryDays !== null && !(Number.isFinite(Number(expiryDays)) && Number(expiryDays) > 0)) {
+    throw new Error("expiry_days must be a positive number");
+  }
+  // Credentials first, so a misconfigured browser fails before waiting.
+  const api = await gatewayFileApi();
+  const tid = tabId || (await getActiveTabId());
+  const item =
+    action === "latest"
+      ? await findAgentDownload(tid, 5 * 60 * 1000, 0)
+      : await findAgentDownload(tid, 15 * 1000, Math.min(timeout || 30000, 120000));
+
+  if (!item.filename) throw new Error("That download has no file on disk to send");
+  const size = item.fileSize > 0 ? item.fileSize : item.totalBytes;
+  if (size > GATEWAY_FILE_MAX_BYTES) {
+    throw new Error(
+      "That download is " + (size / 1048576).toFixed(1) + " MiB, over gateway storage's 200 MiB per-file limit; it stays on this device",
+    );
+  }
+
+  const name = item.filename.split(/[\\/]/).pop() || "download";
+  const query = new URLSearchParams({ name: name.replace(/\.crdownload$/, "") || "download" });
+  if (expiryDays !== undefined && expiryDays !== null) query.set("expiry_days", String(Number(expiryDays)));
+  const message = {
+    type: "gateway-store-download",
+    mime: item.mime || "application/octet-stream",
+    uploadUrl: api.base + "/api/files?" + query.toString(),
+    authorization: api.authorization,
+    // Never returned to the caller: the file is reachable only with this
+    // device's credentials until someone shares it on purpose.
+    fileKey: randomHex(32),
+  };
+
+  await ensureOffscreen();
+  let resp = await chrome.runtime.sendMessage({ ...message, filePath: item.filename });
+  if (!resp || !resp.ok) {
+    // blob: downloads stuck in_progress keep their bytes in the .crdownload file.
+    const fallback = await chrome.runtime.sendMessage({ ...message, filePath: item.filename + ".crdownload" });
+    if (fallback && fallback.ok) resp = fallback;
+    else {
+      throw new Error(
+        "Could not store the download in gateway storage: " + ((resp && resp.error) || "no response") + ". It is still on this device.",
+      );
+    }
+  }
+  const stored = resp.file;
+
+  // Only now, with the gateway holding it, take the copy off this device.
+  let removed = false;
+  let removeError;
+  try {
+    if (item.state === "complete") await chrome.downloads.removeFile(item.id);
+    else await chrome.downloads.cancel(item.id); // drops the partial .crdownload
+    removed = true;
+  } catch (err) {
+    removeError = (err && err.message) || String(err);
+  }
+  try {
+    await chrome.downloads.erase({ id: item.id });
+  } catch {}
+
+  const out = {
+    saved_to: "gateway",
+    file: {
+      id: stored.id,
+      name: stored.name,
+      size: stored.size,
+      content_type: stored.content_type,
+      expires_at: stored.expires_at,
+      protected: true,
+    },
+    page_url: stored.page_url,
+    manage_url: api.base + "/files",
+    note: "Stored privately: only this device's credentials can retrieve it. Set a key in /files to share it.",
+    source: safeSourceUrl(item.finalUrl || item.url),
+    removed_from_device: removed,
+  };
+  if (removeError) out.remove_error = removeError;
+  return out;
+}
+
+/**
+ * Fetch a file from this device's gateway storage for a page upload. Ownership
+ * is checked against the device's own listing first: an id alone would also
+ * fetch another device's unprotected file, and a page steering the agent could
+ * supply one.
+ */
+async function readGatewayFile(fileId) {
+  const id = String(fileId || "").trim();
+  if (!GATEWAY_FILE_ID_RE.test(id)) {
+    throw new Error('source "gateway" needs file_id: the 32-character id of a file in gateway storage');
+  }
+  const api = await gatewayFileApi();
+  const init = { headers: { authorization: api.authorization }, credentials: "omit", cache: "no-store" };
+  const listResp = await fetch(api.base + "/api/files", init);
+  if (!listResp.ok) throw new Error("Gateway file storage refused the request (HTTP " + listResp.status + ")");
+  const listing = await listResp.json();
+  const meta = (listing.files || []).find((f) => f && f.id === id);
+  if (!meta) {
+    throw new Error("No file " + id + " in this device's gateway storage (it may have expired, or belong to another device)");
+  }
+  if (meta.status !== "ready") throw new Error("That file has not finished uploading to gateway storage");
+  if (meta.size > PAGE_UPLOAD_MAX_BYTES) {
+    throw new Error(
+      "That file is " + (meta.size / 1048576).toFixed(1) + " MiB; a page upload can carry at most " + PAGE_UPLOAD_MAX_BYTES / 1048576 + " MiB",
+    );
+  }
+  const resp = await fetch(api.base + "/api/files/" + id, init);
+  if (!resp.ok) throw new Error("Gateway file storage returned HTTP " + resp.status + " for " + id);
+  const bytes = new Uint8Array(await resp.arrayBuffer());
+  if (bytes.byteLength !== meta.size) {
+    throw new Error("Gateway returned " + bytes.byteLength + " bytes for " + id + ", expected " + meta.size);
+  }
+  return { id, base64: bytesToBase64(bytes), name: meta.name, mime: meta.content_type || "application/octet-stream", size: meta.size };
+}
+
 async function uploadFileToChatServer(filePath, mime) {
   const { baseUrl, authToken } = await getServerBaseUrl();
   const uploadUrl = `${baseUrl}/browser/files/upload` + (authToken ? `?token=${encodeURIComponent(authToken)}` : "");
@@ -3483,7 +3754,11 @@ async function inlineReadDownload(downloadInfo, err) {
   };
 }
 
-async function handleDownload({ action, timeout }) {
+async function handleDownload({ action, timeout, destination, tabId, expiryDays }) {
+  if (destination === "gateway") return downloadToGateway({ action, timeout, tabId, expiryDays });
+  if (destination !== undefined && destination !== null && destination !== "device") {
+    throw new Error('Unknown destination "' + destination + '". Use "device" or "gateway".');
+  }
   if (action === "list") {
     const items = await chrome.downloads.search({ limit: 20, orderBy: ["-startTime"] });
     return {

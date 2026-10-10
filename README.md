@@ -83,6 +83,39 @@ Encrypted in-browser credential store: master password → PBKDF2 → AES-256-GC
 | `fill` | Fill a login form from the vault — secrets never leave the extension |
 | `auth` (`vault_name`) | Supply HTTP Basic/Digest credentials from the unlocked vault instead of tool arguments |
 
+### Gateway file storage
+
+`download` and `upload` can use the device's temporary file storage on code-mcp-gateway (`/files`) instead of this machine's disk:
+
+```jsonc
+// 1. after a click starts a download in the agent's tab
+{ "name": "download", "arguments": { "action": "wait", "destination": "gateway" } }
+// -> { "saved_to": "gateway", "file": { "id": "3f2a…", "name": "report.pdf", "protected": true, … }, "removed_from_device": true }
+
+// 2. later, into another site's <input type=file>
+{ "name": "upload", "arguments": { "selector": "#attachment", "source": "gateway", "file_id": "3f2a…" } }
+```
+
+| Argument | Tool | Meaning |
+| --- | --- | --- |
+| `destination: "device" \| "gateway"` | `download` (`wait`, `latest`) | Where the finished download ends up. Default `device` (unchanged behaviour) |
+| `expiry_days` | `download` | Gateway lifetime, max 7 (the default) |
+| `source: "device" \| "gateway"` | `upload` | Where the file comes from. With `gateway`, pass `file_id` instead of `content` |
+
+What keeps this from moving data it shouldn't:
+
+- **Only the agent's own downloads leave the device.** A download is sent only if the DevTools Protocol saw it begin in the agent's tab (`tab_id`, default the active tab). That event is scoped to the tab's session — verified in Chromium: a download in another tab is never reported to it — so a file the user downloads elsewhere is refused and stays put. Stealth-mode downloads are not tracked and cannot be sent.
+- **Stored privately.** Each file is protected at creation (`X-File-Key`, a random 256-bit key that is never returned or logged), so only this device's credentials can read it until a person chooses to share it from `/files`.
+- **Credentials stay in the extension.** The gateway origin comes from the popup configuration, never from a tool argument; device credentials go in an `Authorization` header from extension contexts only — never in a URL, a tool result, or the page.
+- **Only this device's files go up.** `file_id` must be a 32-hex id from the device's own listing; another device's file is refused before its bytes are fetched.
+- **Never in the clear.** The gateway is reached over HTTPS (plain HTTP only for localhost/LAN, as for the bridge), and a gateway file is uploaded only into an `https://` page (or a local `http://` one).
+- **Nothing is lost on failure.** The local copy is removed only after the gateway confirms the file (`201`); otherwise it stays on the device. Signed-URL query strings are stripped from the reported `source`.
+- **Nothing in a tab can drive it.** Web pages cannot message the extension at all; as defence in depth, the offscreen document's file handlers also refuse the extension's own content scripts (which run inside pages), and will only ever post to a gateway `/api/files` endpoint.
+
+Limits: 200 MiB per stored file (and the gateway's per-device quotas), 25 MiB per page upload. The browser still writes a download to disk before it is sent; "instead of the device" means it is removed once stored.
+
+`bun scripts/test-gateway-files.ts` checks all of the above through the real extension code; `bun run test:gateway` repeats it against a real code-mcp-gateway worker from a sibling checkout.
+
 ### OS-dialog prevention (automatic)
 
 While the extension is **connected** and an agent is driving a tab, native prompts that no extension can read or click are suppressed automatically — **the agent never has to call a tool for this**:
@@ -138,6 +171,7 @@ bun browser-mcp.ts --gateway <domain> --token <s> --id <device-id>
 - `--token` gates `/mcp` and `/files/*` (`?token=` or Bearer); `--extension-token` gates the extension bridge.
 - In gateway mode the extension verifies the device token forwarded with each request before answering.
 - File IDs are 12-char random hex, validated and sanitized; uploads capped at 500 MiB, screenshots 8 MiB inline.
+- Gateway file storage (`destination`/`source: "gateway"`): agent-tab downloads only, stored privately, credentials never in URLs or results, own files only, HTTPS-only pages — see [Gateway file storage](#gateway-file-storage).
 - Binds to `127.0.0.1` by default; binding to `0.0.0.0` without `--token` prints a warning.
 
 ## Development

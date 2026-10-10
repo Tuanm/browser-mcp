@@ -1032,15 +1032,28 @@ export function createMcpHandler(dispatch) {
     },
     {
       name: "download",
-      description: "Track and capture file downloads. Actions: list, wait, latest.",
+      description:
+        "Track and capture file downloads. Actions: list, wait, latest. " +
+        'destination "device" (default) keeps the file on this machine. destination "gateway" sends it to this ' +
+        "device's temporary file storage on code-mcp-gateway (/files) and removes it from the machine; it accepts only " +
+        "a download started in the agent's tab (tab_id, default the active tab), stores it privately (retrievable only " +
+        "with this device's credentials), and returns its file id for upload source=gateway. Max 200 MiB, kept up to 7 days.",
       parameters: {
         action: { type: "string", enum: ["list", "wait", "latest"] },
         timeout: { type: "number" },
         tab_id: { type: "number" },
+        destination: { type: "string", enum: ["device", "gateway"] },
+        expiry_days: { type: "number", description: 'destination "gateway" only: days to keep it (max 7, the default)' },
       },
       required: ["action"],
       run: async (a) => {
-        const r = await dispatch("download", { action: a.action, timeout: a.timeout });
+        const r = await dispatch("download", {
+          action: a.action,
+          timeout: a.timeout,
+          tabId: a.tab_id,
+          destination: a.destination,
+          expiryDays: a.expiry_days,
+        });
         return { content: textBlocks(jsonOut(r)) };
       },
     },
@@ -1189,7 +1202,11 @@ export function createMcpHandler(dispatch) {
     },
     {
       name: "upload",
-      description: "Upload a file to a page input. Direct mode: pass content (base64) plus filename.",
+      description:
+        "Upload a file to a page input. Direct mode: pass content (base64) plus filename. " +
+        'source "gateway": pass file_id of a file in this device\'s code-mcp-gateway storage (e.g. from download ' +
+        "destination=gateway); the browser fetches it with the device's own credentials, which never reach the page. " +
+        "Only this device's own files; max 25 MiB.",
       parameters: {
         selector: { type: "string" },
         ref: { type: "string" },
@@ -1197,6 +1214,7 @@ export function createMcpHandler(dispatch) {
         content: { type: "string" },
         filename: { type: "string" },
         tab_id: { type: "number" },
+        source: { type: "string", enum: ["device", "gateway"] },
       },
       required: [],
       run: async (a) => {
@@ -1207,8 +1225,11 @@ export function createMcpHandler(dispatch) {
           content: a.content,
           filename: a.filename,
           tabId: a.tab_id,
+          source: a.source,
         });
-        return { content: textBlocks(jsonOut({ uploaded: true, selector: sel || "(file chooser)", tab_id: r.tabId })) };
+        const out = { uploaded: true, selector: sel || "(file chooser)", tab_id: r.tabId };
+        if (r && r.source === "gateway") Object.assign(out, { source: "gateway", file_id: r.fileId, name: r.fileName, size: r.size });
+        return { content: textBlocks(jsonOut(out)) };
       },
     },
     {

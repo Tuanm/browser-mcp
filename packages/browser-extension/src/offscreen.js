@@ -820,8 +820,28 @@ function sessionStop() {
   });
 }
 
+/**
+ * Only the extension's own pages and service worker may use the file handlers
+ * below: they read local files and send them over the network, one of them with
+ * the device's gateway credentials. Web pages cannot message the extension
+ * directly, but the extension's content scripts run inside them and handle
+ * page-influenced data, so - as defence in depth - nothing that comes from a
+ * tab is accepted here. A content script's message always carries sender.tab;
+ * extension contexts never do.
+ */
+function fromExtensionContext(sender) {
+  return !!sender && sender.id === chrome.runtime.id && !sender.tab;
+}
+
+const FILE_HANDLER_TYPES = new Set(["read-file", "upload-file", "gateway-store-download"]);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log("[bmcp-offscreen] Received message:", message.type);
+
+  if (FILE_HANDLER_TYPES.has(message.type) && !fromExtensionContext(sender)) {
+    sendResponse({ ok: false, error: "file handlers accept messages from the extension only" });
+    return false;
+  }
 
   if (message.type === "record-start") {
     startRecording(message.streamId, message.includeAudio !== false, message.mode || "tab", message.targetTabId).then(
@@ -1116,6 +1136,71 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const name = filePath.split(/[\\/]/).pop() || "download";
         sendResponse({ ok: true, base64: btoa(parts.join("")), mime: blob.type, size: blob.size, name });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  // Send a finished download to the device's code-mcp-gateway file storage. The
+  // service worker chose the URL (from stored config, never a tool argument) and
+  // built the Authorization header; this side only has file:// access. The
+  // body is the file's Blob, so it streams with a known length instead of being
+  // copied into memory, and the protection key travels as a header so it never
+  // appears in a URL.
+  if (message.type === "gateway-store-download") {
+    (async () => {
+      try {
+        const { filePath, mime, uploadUrl, authorization, fileKey } = message;
+        // Even from a trusted caller, this only ever posts to a files endpoint.
+        const target = new URL(uploadUrl);
+        if (!/^https?:$/.test(target.protocol) || !target.pathname.replace(/\/+$/, "").endsWith("/api/files")) {
+          throw new Error("refusing to send a file anywhere but a gateway /api/files endpoint");
+        }
+        const fileUrl = /^[A-Za-z]:/.test(filePath) ? "file:///" + filePath.replace(/\\/g, "/") : "file://" + filePath;
+        const fileResp = await fetch(fileUrl);
+        if (!fileResp.ok) throw new Error("cannot read the downloaded file");
+        const blob = await fileResp.blob();
+        const resp = await fetch(uploadUrl, {
+          method: "POST",
+          headers: { authorization, "content-type": mime || "application/octet-stream", "x-file-key": fileKey },
+          body: blob,
+          credentials: "omit",
+          cache: "no-store",
+        });
+        const text = await resp.text();
+        let json = {};
+        try {
+          json = JSON.parse(text);
+        } catch {}
+        if (resp.status !== 201 || !json.file) {
+          throw new Error("gateway refused the upload (HTTP " + resp.status + "): " + (json.error || text.slice(0, 160)));
+        }
+        // Fail closed on a gateway too old to protect at upload: it ignores the
+        // header and stores the file publicly. Take it back down rather than
+        // leave it reachable by id.
+        if (json.file.protected !== true) {
+          await fetch(target.origin + target.pathname.replace(/\/+$/, "") + "/" + encodeURIComponent(json.file.id), {
+            method: "DELETE",
+            headers: { authorization },
+            credentials: "omit",
+          }).catch(() => {});
+          throw new Error("the gateway did not protect the stored file (it predates X-File-Key on upload); it was deleted again - update code-mcp-gateway");
+        }
+        // Hand back only what the caller reports; never the key.
+        const f = json.file;
+        sendResponse({
+          ok: true,
+          file: {
+            id: f.id,
+            name: f.name,
+            size: f.size,
+            content_type: f.content_type,
+            expires_at: f.expires_at,
+            page_url: f.page_url,
+          },
+        });
       } catch (err) {
         sendResponse({ ok: false, error: err.message });
       }
